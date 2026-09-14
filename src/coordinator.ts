@@ -17,9 +17,20 @@
  * превращается в двух агентов, спорящих сами с собой за счёт владельца.
  * Предел настраиваемый; ноль означает «только вручную».
  *
+ * **Материал накапливается ПО АГЕНТУ.** Один общий накопитель приводил к
+ * подмене авторства: Codex мог получить свой же комментарий с подписью «от
+ * разработчика Claude», потому что после завершения хода уходило всё
+ * содержимое накопителя от имени завершившего. Адресат «Оба» стоит по
+ * умолчанию, так что сценарий был обычным, а не краевым.
+ *
+ * **Снимок версии привязан к ходу АГЕНТА, а не к комнате.** Одна общая
+ * метка переписывалась репликой человека посреди проверки, и замечание
+ * оказывалось привязано к состоянию, которого рецензент не видел.
+ *
  * И одно свойство, которое легко потерять: агент бывает занят. Отправка
- * занятому агенту не теряется и не прерывает его ход — она встаёт в очередь.
- * Иначе реплика исчезала бы молча.
+ * занятому агенту не теряется и не прерывает его ход — она встаёт в
+ * очередь, и очередь выгружается В ПОРЯДКЕ ПОСТУПЛЕНИЯ. Выгрузка с конца
+ * переставляла сообщения местами.
  */
 import { Adapter, AgentId, AgentPrompt, PanelEvent } from "./adapters/types.js";
 import { Journal } from "./journal.js";
@@ -37,13 +48,17 @@ export interface CoordinatorOptions {
 interface Отложенное {
   readonly to: AgentId;
   readonly prompt: AgentPrompt;
+  readonly снимок?: Snapshot;
 }
 
 export class Coordinator {
   #раунд = 0;
-  #снимок: Snapshot | undefined;
-  /** Законченные события с момента последней передачи — материал для рецензии. */
-  readonly #накопленное: PanelEvent[] = [];
+  /** Снимок последней задачи человека: им помечаются его реплики. */
+  #снимокКомнаты: Snapshot | undefined;
+  /** Снимок, с которым начался текущий ход каждого агента. */
+  readonly #снимки = new Map<AgentId, Snapshot>();
+  /** Материал по агенту: смешивать нельзя, иначе подменяется авторство. */
+  readonly #накопители = new Map<AgentId, PanelEvent[]>();
   readonly #очередь: Отложенное[] = [];
   #автоматика = true;
 
@@ -59,7 +74,7 @@ export class Coordinator {
   }
 
   get snapshot(): Snapshot | undefined {
-    return this.#снимок;
+    return this.#снимокКомнаты;
   }
 
   /**
@@ -69,8 +84,14 @@ export class Coordinator {
    * закончился — значит есть что показать.
    */
   handle(событие: PanelEvent): void {
-    const сПометкой: PanelEvent = this.#снимок
-      ? { ...событие, snapshot: this.#снимок.id }
+    // Пометка берётся из снимка ХОДА этого агента, а не из общей метки
+    // комнаты: иначе чужая реплика переписала бы версию идущего хода.
+    const снимок =
+      событие.agent === "human"
+        ? this.#снимокКомнаты
+        : (this.#снимки.get(событие.agent) ?? this.#снимокКомнаты);
+    const сПометкой: PanelEvent = снимок
+      ? { ...событие, snapshot: снимок.id }
       : событие;
     this.journal.append(this.опции.room, сПометкой);
     this.опции.onEvent(сПометкой);
@@ -84,7 +105,9 @@ export class Coordinator {
       сПометкой.visibility === "turn" &&
       ПЕРЕДАВАЕМЫЕ.has(сПометкой.kind)
     ) {
-      this.#накопленное.push(сПометкой);
+      const накопитель = this.#накопители.get(сПометкой.agent) ?? [];
+      накопитель.push(сПометкой);
+      this.#накопители.set(сПометкой.agent, накопитель);
     }
 
     if (сПометкой.kind === "turn_completed") {
@@ -99,12 +122,12 @@ export class Coordinator {
   /** Сообщение человека. Сбрасывает счётчик раундов: это новая задача. */
   async fromHuman(текст: string, кому: Addressee): Promise<void> {
     this.#раунд = 0;
-    this.#накопленное.length = 0;
-    this.#снимок = await takeSnapshot(this.опции.cwd);
+    this.#накопители.clear();
+    this.#снимокКомнаты = await takeSnapshot(this.опции.cwd);
     const prompt: AgentPrompt = {
       text: текст,
       from: "human",
-      snapshot: describeSnapshot(this.#снимок),
+      snapshot: describeSnapshot(this.#снимокКомнаты),
     };
     this.handle({
       id: `h${Date.now().toString(36)}`,
@@ -158,20 +181,21 @@ export class Coordinator {
       return;
     }
 
-    const материал = this.#собрать();
+    // Берётся ТОЛЬКО материал завершившего агента.
+    const материал = this.#собрать(кто);
     if (!материал) return;
-    this.#накопленное.length = 0;
+    this.#накопители.set(кто, []);
     this.#раунд += 1;
 
-    // Снимок берётся В МОМЕНТ ПЕРЕДАЧИ, а не в момент ответа: замечание
-    // относится к тому состоянию файлов, которое рецензент видел.
-    this.#снимок = await takeSnapshot(this.опции.cwd);
+    // Снимок берётся в момент передачи и закрепляется за ходом получателя:
+    // замечание относится к тому состоянию файлов, которое он увидел.
+    const снимок = await takeSnapshot(this.опции.cwd);
     const кому: AgentId = кто === "claude" ? "codex" : "claude";
-    await this.#отправить(кому, {
-      text: материал,
-      from: кто,
-      snapshot: describeSnapshot(this.#снимок),
-    });
+    await this.#отправить(
+      кому,
+      { text: материал, from: кто, snapshot: describeSnapshot(снимок) },
+      снимок,
+    );
   }
 
   /**
@@ -180,10 +204,11 @@ export class Coordinator {
    * Вызовы инструментов и их результаты идут отдельными блоками с пометкой
    * «сырой вывод», чтобы получатель не путал его с утверждением автора.
    */
-  #собрать(): string | undefined {
-    if (this.#накопленное.length === 0) return undefined;
+  #собрать(кто: AgentId): string | undefined {
+    const накопленное = this.#накопители.get(кто) ?? [];
+    if (накопленное.length === 0) return undefined;
     const части: string[] = [];
-    for (const е of this.#накопленное) {
+    for (const е of накопленное) {
       if (е.kind === "message" && е.text) {
         части.push(е.text);
       } else if (е.kind === "tool_call") {
@@ -198,12 +223,20 @@ export class Coordinator {
     return собранное.length > 0 ? собранное : undefined;
   }
 
-  async #отправить(кому: AgentId, prompt: AgentPrompt): Promise<void> {
+  async #отправить(
+    кому: AgentId,
+    prompt: AgentPrompt,
+    снимок?: Snapshot,
+  ): Promise<void> {
     const адаптер = кому === "claude" ? this.claude : this.codex;
     if (адаптер.busy) {
-      this.#очередь.push({ to: кому, prompt });
+      this.#очередь.push({ to: кому, prompt, ...(снимок ? { снимок } : {}) });
       return;
     }
+    // Снимок закрепляется за ходом получателя ДО отправки: события,
+    // которые он начнёт выдавать, помечаются тем, что он видел.
+    const закрепить = снимок ?? this.#снимокКомнаты;
+    if (закрепить) this.#снимки.set(кому, закрепить);
     try {
       await адаптер.send(prompt);
     } catch (беда) {
@@ -219,13 +252,20 @@ export class Coordinator {
   }
 
   async #выгрузитьОчередь(): Promise<void> {
-    for (let i = this.#очередь.length - 1; i >= 0; i -= 1) {
+    // В ПОРЯДКЕ ПОСТУПЛЕНИЯ: обход с конца переставлял сообщения местами.
+    for (let i = 0; i < this.#очередь.length; ) {
       const запись = this.#очередь[i];
-      if (!запись) continue;
+      if (!запись) {
+        i += 1;
+        continue;
+      }
       const адаптер = запись.to === "claude" ? this.claude : this.codex;
-      if (адаптер.busy) continue;
+      if (адаптер.busy) {
+        i += 1;
+        continue;
+      }
       this.#очередь.splice(i, 1);
-      await this.#отправить(запись.to, запись.prompt);
+      await this.#отправить(запись.to, запись.prompt, запись.снимок);
     }
   }
 }

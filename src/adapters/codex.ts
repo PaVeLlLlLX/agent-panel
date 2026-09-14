@@ -59,6 +59,22 @@ export interface CodexOptions {
   readonly reviewerInstructions?: string;
 }
 
+/** Ответ на thread/start и thread/resume: объект thread, а не плоский id. */
+interface ОтветВетки {
+  readonly thread?: { readonly id?: string; readonly sessionId?: string };
+}
+
+/** Виды элементов ThreadItem, которые панель показывает как инструменты. */
+const ИНСТРУМЕНТАЛЬНЫЕ = new Set([
+  "commandExecution",
+  "fileChange",
+  "mcpToolCall",
+  "dynamicToolCall",
+  "functionCallOutput",
+  "webSearch",
+  "collabAgentToolCall",
+]);
+
 interface Ожидание {
   readonly resolve: (значение: unknown) => void;
   readonly reject: (ошибка: Error) => void;
@@ -107,9 +123,16 @@ export class CodexAdapter implements Adapter {
     });
     процесс.on("exit", (код, сигнал) => {
       this.#занят = false;
-      this.#выдать("error", "turn", {
-        text: `процесс Codex завершился: код ${код}, сигнал ${сигнал}`,
-      });
+      this.#ход = undefined;
+      this.#процесс = undefined;
+      // Ожидающие запросы надо отклонить, иначе вызывающий будет ждать
+      // ответа от мёртвого процесса до конца сессии панели.
+      const беда = new Error(
+        `процесс Codex завершился: код ${код}, сигнал ${сигнал}`,
+      );
+      for (const [, о] of this.#ожидания) о.reject(беда);
+      this.#ожидания.clear();
+      this.#выдать("error", "turn", { text: беда.message });
     });
 
     await this.#запрос("initialize", {
@@ -124,8 +147,8 @@ export class CodexAdapter implements Adapter {
         cwd: this.опции.cwd,
         sandbox: "read-only",
         approvalPolicy: "never",
-      })) as { threadId?: string };
-      this.#ветка = ответ.threadId ?? this.опции.resumeThreadId;
+      })) as ОтветВетки;
+      this.#ветка = ответ.thread?.id ?? this.опции.resumeThreadId;
     } else {
       const ответ = (await this.#запрос("thread/start", {
         cwd: this.опции.cwd,
@@ -133,8 +156,8 @@ export class CodexAdapter implements Adapter {
         approvalPolicy: "never",
         developerInstructions:
           this.опции.reviewerInstructions ?? ИНСТРУКЦИЯ_РЕЦЕНЗЕНТА,
-      })) as { threadId?: string };
-      this.#ветка = ответ.threadId;
+      })) as ОтветВетки;
+      this.#ветка = ответ.thread?.id;
     }
     this.#выдать("turn_started", "turn", {
       text: `ветка ${String(this.#ветка).slice(0, 8)}, песочница read-only, одобрения never`,
@@ -147,10 +170,17 @@ export class CodexAdapter implements Adapter {
     if (!ветка) throw new Error("ветка Codex не создана");
     this.#занят = true;
     const текст = this.#оформить(prompt);
-    await this.#запрос("turn/start", {
-      threadId: ветка,
-      input: [{ type: "text", text: текст }],
-    });
+    try {
+      await this.#запрос("turn/start", {
+        threadId: ветка,
+        input: [{ type: "text", text: текст }],
+      });
+    } catch (беда) {
+      // Без этого отклонённый turn/start оставлял бы агента «занятым»
+      // навсегда, и очередь встала бы молча.
+      this.#занят = false;
+      throw беда;
+    }
   }
 
   #оформить(prompt: AgentPrompt): string {
@@ -271,14 +301,21 @@ export class CodexAdapter implements Adapter {
     const п = (запись["params"] ?? {}) as Record<string, unknown>;
 
     switch (метод) {
-      case "thread/started":
-        if (typeof п["threadId"] === "string") this.#ветка = п["threadId"];
+      case "thread/started": {
+        // По схеме приходит объект thread, а не плоское поле threadId.
+        // Прежняя версия читала threadId, ветка оставалась неизвестной, и
+        // первая же отправка падала с «ветка Codex не создана».
+        const ветка = п["thread"] as { id?: string } | undefined;
+        if (typeof ветка?.id === "string") this.#ветка = ветка.id;
         return;
-      case "turn/started":
-        this.#ход = typeof п["turnId"] === "string" ? п["turnId"] : undefined;
+      }
+      case "turn/started": {
+        const ход = п["turn"] as { id?: string } | undefined;
+        this.#ход = typeof ход?.id === "string" ? ход.id : undefined;
         this.#занят = true;
         this.#выдать("turn_started", "turn", {});
         return;
+      }
       case "turn/completed":
         this.#занят = false;
         this.#ход = undefined;
@@ -290,6 +327,19 @@ export class CodexAdapter implements Adapter {
       case "item/completed":
         this.#элемент(п, true);
         return;
+      case "item/agentMessage/delta": {
+        const текст = this.#текстИз(п["delta"] ?? п["text"]);
+        if (текст) this.#выдать("text_delta", "stream", { text: текст });
+        return;
+      }
+      case "item/reasoning/textDelta":
+      case "item/reasoning/summaryTextDelta": {
+        // Рассуждения показываем человеку, второму агенту не передаём.
+        const текст = this.#текстИз(п["delta"] ?? п["text"]);
+        if (текст) this.#выдать("text_delta", "stream", { text: текст });
+        return;
+      }
+      case "item/commandExecution/outputDelta":
       case "process/outputDelta": {
         const текст = this.#текстИз(п["chunk"] ?? п["delta"] ?? п["output"]);
         if (текст) this.#выдать("text_delta", "stream", { text: текст });
@@ -318,13 +368,16 @@ export class CodexAdapter implements Adapter {
     const вид = String(элемент["type"] ?? элемент["itemType"] ?? "");
     const текст = this.#текстИз(элемент["text"] ?? элемент["content"]);
 
-    if (вид.includes("agent_message") || вид === "message") {
+    // Имена типов взяты из схемы ThreadItem: agentMessage, commandExecution,
+    // fileChange, mcpToolCall, reasoning, functionCallOutput. Прежняя версия
+    // искала agent_message с подчёркиванием и отбрасывала законченный ответ.
+    if (вид === "agentMessage") {
       if (завершён && текст) {
         this.#выдать("message", "turn", { text: clamp(текст) });
       }
       return;
     }
-    if (вид.includes("command") || вид.includes("tool")) {
+    if (ИНСТРУМЕНТАЛЬНЫЕ.has(вид)) {
       this.#выдать(завершён ? "tool_result" : "tool_call", "turn", {
         tool: вид,
         text: clamp(текст || JSON.stringify(элемент)),
@@ -333,7 +386,7 @@ export class CodexAdapter implements Adapter {
       return;
     }
     // Рассуждения показываются человеку, но второму агенту не передаются.
-    if (вид.includes("reasoning") && текст) {
+    if (вид === "reasoning" && текст) {
       this.#выдать("text_delta", "stream", { text: текст });
     }
   }

@@ -27,11 +27,13 @@ class Комната {
   readonly #координатор: Coordinator;
   readonly #claude: ClaudeAdapter;
   readonly #codex: CodexAdapter;
+  readonly #имя: string;
   #закрыта = false;
 
   constructor(контекст: vscode.ExtensionContext, cwd: string) {
     const настройки = vscode.workspace.getConfiguration("agentPanel");
     const имя = `room:${cwd}`;
+    this.#имя = имя;
 
     this.#журнал = new Journal(
       join(контекст.globalStorageUri.fsPath, "agent-panel.sqlite"),
@@ -50,6 +52,10 @@ class Комната {
 
     const принять = (событие: PanelEvent) => this.#координатор.handle(событие);
 
+    const режим = настройки.get<string>(
+      "claudePermissionMode",
+      "default",
+    );
     this.#claude = new ClaudeAdapter(
       {
         command: настройки.get<string>("claudeCommand", "claude"),
@@ -57,6 +63,17 @@ class Комната {
         ...(привязка?.claudeSessionId
           ? { resumeSessionId: привязка.claudeSessionId }
           : {}),
+        ...(режим && режим !== "default"
+          ? { extraArgs: ["--permission-mode", режим] }
+          : {}),
+        // session_id приходит асинхронно, уже после start(). Без этого
+        // обратного вызова привязка сохранялась бы до его появления, и
+        // после перезапуска панель показывала бы старую историю,
+        // разговаривая с новой сессией, которая о ней не знает.
+        onSessionId: (id) => {
+          if (this.#закрыта) return;
+          this.#журнал.bindSessions(this.#имя, id, undefined);
+        },
       },
       принять,
     );
@@ -131,8 +148,11 @@ class Комната {
         `Комната готова. Claude: ${this.#claude.sessionId?.slice(0, 8) ?? "—"}, ` +
         `Codex: ${this.#codex.sessionId?.slice(0, 8) ?? "—"}. ` +
         `Рецензент работает в песочнице read-only; попытки записи ` +
-        `отклоняются панелью. Запуск команд рецензентом технически ` +
-        `не запрещён — это известное ограничение.`,
+        `отклоняются панелью. Два известных ограничения: запуск команд ` +
+        `рецензентом технически не запрещён, и у разработчика нет ` +
+        `канала согласования в панели — действия, требующие ` +
+        `одобрения, будут отклонены, пока режим разрешений не задан ` +
+        `настройкой agentPanel.claudePermissionMode.`,
     });
   }
 

@@ -29,6 +29,12 @@
           "type": "number", "default": 3,
           "description": "Предел автоматических раундов рецензирования. 0 отключает автоматику."
         },
+        "agentPanel.claudePermissionMode": {
+          "type": "string",
+          "enum": ["default", "acceptEdits", "plan", "bypassPermissions"],
+          "default": "default",
+          "description": "Режим разрешений Claude. Панель пока НЕ показывает запросы одобрения, поэтому при значении default действия, требующие согласования, будут отклонены. Это осознанный выбор: молча принимать правки за вас нельзя."
+        },
         "agentPanel.reviewerReadOnly": {
           "type": "boolean", "default": true,
           "description": "Отказывать рецензенту в записи файлов и запуске команд. Выключать не следует: разделение ролей держится на этом."
@@ -39,7 +45,7 @@
   "scripts": {
     "build": "tsc -p .",
     "watch": "tsc -w -p .",
-    "test": "node --test --experimental-strip-types test/*.test.ts"
+    "test": "npm run build && node --test"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

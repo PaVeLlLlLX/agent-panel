@@ -44,6 +44,8 @@ export interface ClaudeOptions {
   readonly resumeSessionId?: string;
   /** Дополнительные аргументы: модель, разрешения, ограничения инструментов. */
   readonly extraArgs?: readonly string[];
+  /** Вызывается, когда становится известен session_id (асинхронно). */
+  readonly onSessionId?: (id: string) => void;
 }
 
 export class ClaudeAdapter implements Adapter {
@@ -53,6 +55,7 @@ export class ClaudeAdapter implements Adapter {
   #строки: Interface | undefined;
   #сессия: string | undefined;
   #занят = false;
+  #прерван = false;
   #ходИдёт: string | undefined;
   /** Незавершённые вызовы инструментов: callId -> имя. */
   readonly #вызовы = new Map<string, string>();
@@ -74,6 +77,8 @@ export class ClaudeAdapter implements Adapter {
     if (this.#процесс) {
       throw new Error("адаптер Claude уже запущен");
     }
+    // При перезапуске после прерывания продолжается та же сессия.
+    const продолжить = this.опции.resumeSessionId ?? this.#сессия;
     const аргументы = [
       "-p",
       "--input-format",
@@ -82,9 +87,7 @@ export class ClaudeAdapter implements Adapter {
       "stream-json",
       "--verbose",
       "--include-partial-messages",
-      ...(this.опции.resumeSessionId
-        ? ["--resume", this.опции.resumeSessionId]
-        : []),
+      ...(продолжить ? ["--resume", продолжить] : []),
       ...(this.опции.extraArgs ?? []),
     ];
     const процесс = spawn(this.опции.command, аргументы, {
@@ -113,6 +116,12 @@ export class ClaudeAdapter implements Adapter {
   }
 
   async send(prompt: AgentPrompt): Promise<void> {
+    // После прерывания процесс поднимается заново с той же сессией:
+    // иначе прерывание было бы необратимым выключением агента.
+    if (!this.#процесс && this.#прерван) {
+      this.#прерван = false;
+      await this.start();
+    }
     const процесс = this.#процесс;
     if (!процесс) throw new Error("адаптер Claude не запущен");
     const запись = {
@@ -146,11 +155,22 @@ export class ClaudeAdapter implements Adapter {
     return `${шапка}${версия}\n${prompt.text}`;
   }
 
+  /**
+   * Прерывание хода, после которого разговор можно продолжить.
+   *
+   * У CLI в режиме print отдельной команды прерывания нет, поэтому
+   * прерывание — это остановка процесса. Но прежняя версия на этом и
+   * останавливалась: следующее сообщение получало «адаптер Claude не
+   * запущен», то есть кнопка «Прервать ход» выключала агента насовсем.
+   *
+   * Теперь запомненный session_id позволяет поднять процесс заново с
+   * `--resume`, и история сохраняется.
+   */
   async interrupt(): Promise<void> {
-    // У CLI в режиме print нет отдельной команды прерывания хода, поэтому
-    // прерывание — это остановка процесса. Сессия сохраняется и может быть
-    // продолжена через --resume, поэтому история не теряется.
+    const сессия = this.#сессия;
     await this.stop();
+    this.#сессия = сессия;
+    this.#прерван = true;
   }
 
   async stop(): Promise<void> {
@@ -181,7 +201,15 @@ export class ClaudeAdapter implements Adapter {
 
     const вид = запись["type"];
     if (typeof запись["session_id"] === "string") {
+      const прежняя = this.#сессия;
       this.#сессия = запись["session_id"];
+      // Идентификатор приходит АСИНХРОННО, уже после start(). Если о нём
+      // не сообщить, вызывающий сохранит привязку до его появления, и
+      // после перезапуска панель покажет старую историю, разговаривая с
+      // новой сессией, которая о ней не знает.
+      if (прежняя !== this.#сессия) {
+        this.опции.onSessionId?.(this.#сессия);
+      }
     }
 
     if (вид === "system" && запись["subtype"] === "init") {

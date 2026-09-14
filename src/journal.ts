@@ -13,6 +13,12 @@
  * Порядок событий задаётся автоинкрементом `seq`, а не временем: события
  * двух агентов приходят почти одновременно, и разрешение времени в
  * миллисекундах не гарантирует различия.
+ *
+ * **Полный вывод хранится отдельно от показанного.** Текст события
+ * обрезается до 64 000 символов для показа, и первая версия журнала
+ * хранила только обрезанное — окончание большого вывода терялось
+ * безвозвратно. Теперь исходная запись протокола пишется в поле `raw`,
+ * и дочитать её можно.
  */
 import { DatabaseSync } from "node:sqlite";
 import { PanelEvent } from "./adapters/types.js";
@@ -27,6 +33,7 @@ export interface RoomBinding {
 
 export class Journal {
   readonly #бд: DatabaseSync;
+  #закрыт = false;
 
   constructor(путь: string) {
     this.#бд = new DatabaseSync(путь);
@@ -52,7 +59,8 @@ export class Journal {
         tool       TEXT,
         call_id    TEXT,
         turn_id    TEXT,
-        snapshot   TEXT
+        snapshot   TEXT,
+        raw        TEXT
       );
       CREATE INDEX IF NOT EXISTS events_room_seq ON events(room, seq);
     `);
@@ -112,11 +120,16 @@ export class Journal {
    * что человек видел в момент решения, будет нельзя.
    */
   append(room: string, событие: PanelEvent): void {
+    // После закрытия журнал молча ничего не делает: позднее событие
+    // exit процесса иначе обратилось бы к закрытой базе и уронило
+    // закрытие комнаты.
+    if (this.#закрыт) return;
     this.#бд
       .prepare(
         `INSERT INTO events
-           (room, id, agent, kind, visibility, at, text, tool, call_id, turn_id, snapshot)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (room, id, agent, kind, visibility, at, text, tool, call_id,
+            turn_id, snapshot, raw)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         room,
@@ -130,11 +143,13 @@ export class Journal {
         событие.callId ?? null,
         событие.turnId ?? null,
         событие.snapshot ?? null,
+        событие.raw === undefined ? null : JSON.stringify(событие.raw),
       );
   }
 
   /** История комнаты для восстановления панели после перезапуска. */
   history(room: string, limit = 2000): PanelEvent[] {
+    if (this.#закрыт) return [];
     const строки = this.#бд
       .prepare(
         `SELECT id, agent, kind, visibility, at, text, tool, call_id, turn_id, snapshot
@@ -155,7 +170,23 @@ export class Journal {
     })) as PanelEvent[];
   }
 
+  /** Полная запись протокола для события: чтобы дочитать обрезанное. */
+  rawOf(room: string, id: string): unknown {
+    if (this.#закрыт) return undefined;
+    const строка = this.#бд
+      .prepare(`SELECT raw FROM events WHERE room = ? AND id = ?`)
+      .get(room, id) as Record<string, unknown> | undefined;
+    const сырое = строка?.["raw"];
+    return typeof сырое === "string" ? JSON.parse(сырое) : undefined;
+  }
+
+  get closed(): boolean {
+    return this.#закрыт;
+  }
+
   close(): void {
+    if (this.#закрыт) return;
+    this.#закрыт = true;
     this.#бд.close();
   }
 }
