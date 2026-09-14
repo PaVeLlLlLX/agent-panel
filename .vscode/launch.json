@@ -5,8 +5,13 @@
       "name": "Запустить панель (Extension Development Host)",
       "type": "extensionHost",
       "request": "launch",
-      "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
-      "outFiles": ["${workspaceFolder}/out/**/*.js"],
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "C:/Users/21435/source/Trading"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/out/**/*.js"
+      ],
       "preLaunchTask": "npm: build"
     }
   ]
