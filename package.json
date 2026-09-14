@@ -1,0 +1,49 @@
+{
+  "name": "agent-panel",
+  "displayName": "Agent Panel",
+  "description": "Общая комната для человека, Claude Code и Codex: один поток разговора, действия обоих агентов и рецензирование с привязкой к версии файлов.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "local",
+  "engines": { "vscode": "^1.90.0", "node": ">=22.5.0" },
+  "categories": ["Other"],
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      { "command": "agentPanel.open", "title": "Agent Panel: открыть комнату" },
+      { "command": "agentPanel.stopAll", "title": "Agent Panel: остановить обоих" }
+    ],
+    "configuration": {
+      "title": "Agent Panel",
+      "properties": {
+        "agentPanel.claudeCommand": {
+          "type": "string", "default": "claude",
+          "description": "Исполняемый файл Claude Code."
+        },
+        "agentPanel.codexCommand": {
+          "type": "string", "default": "codex",
+          "description": "Исполняемый файл Codex."
+        },
+        "agentPanel.maxAutoRounds": {
+          "type": "number", "default": 3,
+          "description": "Предел автоматических раундов рецензирования. 0 отключает автоматику."
+        },
+        "agentPanel.reviewerReadOnly": {
+          "type": "boolean", "default": true,
+          "description": "Отказывать рецензенту в записи файлов и запуске команд. Выключать не следует: разделение ролей держится на этом."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "watch": "tsc -w -p .",
+    "test": "node --test --experimental-strip-types test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.6.0"
+  }
+}
