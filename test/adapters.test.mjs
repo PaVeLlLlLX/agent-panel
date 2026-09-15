@@ -131,6 +131,21 @@ test("Claude: ход с ошибкой — завершение хода с от
   }
 });
 
+test("Claude: отказы в разрешениях приходят в завершении хода, ход не провален", async () => {
+  // Отказы приходят при is_error: false, поэтому по failed их не отличить.
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await а.send({ text: "ОТКАЗ", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода");
+    const конец = с.события.find((е) => е.kind === "turn_completed");
+    assert.notEqual(конец.failed, true);
+    assert.deepEqual(конец.denials, ["Bash: git -C C:\\agent-panel show d748e88"]);
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: плановая остановка не показывается как ошибка", async () => {
   const с = собиратель();
   const а = claude(с);

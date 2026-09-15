@@ -88,6 +88,11 @@ export interface PanelEvent {
    * перестаёт ждать ответа.
    */
   readonly failed?: boolean;
+  /**
+   * Отказы в разрешениях за ход, по строке на отказ: «Bash: git …».
+   * Приходят при is_error: false, поэтому по failed их не отличить.
+   */
+  readonly denials?: readonly string[];
 }
 
 /** Что панель просит агента сделать. */

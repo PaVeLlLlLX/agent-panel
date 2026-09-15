@@ -50,7 +50,13 @@ export interface RoomState {
   readonly round: number;
   readonly maxRounds: number;
   readonly verdict: Verdict | undefined;
-  readonly held: { readonly to: AgentId; readonly reason: string } | undefined;
+  /**
+   * Удержанное: send — переслать дальше, retry — заново отдать Claude его
+   * рабочую задачу (после отказов в разрешениях).
+   */
+  readonly held:
+    | { readonly to: AgentId; readonly reason: string; readonly action: "send" | "retry" }
+    | undefined;
   readonly queued: number;
   readonly auto: boolean;
   readonly claudeBusy: boolean;
@@ -87,7 +93,9 @@ export class Coordinator {
   #задача: string | undefined;
   #раунд = 0;
   #вердикт: Verdict | undefined;
-  #удержано: (Отправка & { причина: string }) | undefined;
+  #удержано: (Отправка & { причина: string; действие: "send" | "retry" }) | undefined;
+  /** Последняя рабочая отправка Claude в цикле — для повтора после отказов. */
+  #последняяРабота: Отправка | undefined;
   #автоматика = true;
   #снимокКомнаты: Snapshot | undefined;
   readonly #снимки = new Map<AgentId, Snapshot>();
@@ -118,7 +126,7 @@ export class Coordinator {
       maxRounds: this.опции.maxAutoRounds,
       verdict: this.#вердикт,
       held: this.#удержано
-        ? { to: this.#удержано.to, reason: this.#удержано.причина }
+        ? { to: this.#удержано.to, reason: this.#удержано.причина, action: this.#удержано.действие }
         : undefined,
       queued: this.#очередь.length,
       auto: this.#автоматика,
@@ -149,7 +157,7 @@ export class Coordinator {
     }
 
     if (сПометкой.kind === "turn_completed") {
-      void this.#ходЗакончен(агент, сПометкой.failed === true);
+      void this.#ходЗакончен(агент, сПометкой.failed === true, сПометкой.denials ?? []);
     } else if (сПометкой.kind === "error" && сПометкой.failed) {
       void this.#агентУпал(агент);
     } else if (сПометкой.kind === "turn_started") {
@@ -247,7 +255,7 @@ export class Coordinator {
     this.#этап = этап;
   }
 
-  async #ходЗакончен(агент: AgentId, провал: boolean): Promise<void> {
+  async #ходЗакончен(агент: AgentId, провал: boolean, отказы: readonly string[]): Promise<void> {
     const цель = this.#цели.get(агент)?.shift() ?? { роль: "direct", цикл: undefined };
     const материал = this.#забрать(агент);
     const текущий = цель.цикл !== undefined && цель.цикл === this.#цикл;
@@ -257,10 +265,28 @@ export class Coordinator {
       this.#сообщить(
         `Ход ${ИМЕНА[агент]} завершился с ошибкой — цикл рецензии остановлен.`,
       );
+    } else if (текущий && цель.роль === "work" && отказы.length > 0) {
+      // Отказы — дело человека, а не рецензента: в живом прогоне три раунда
+      // проверки ушли на спор о причинах блокировки.
+      const повтор = this.#последняяРабота;
+      if (повтор) {
+        this.#удержать(
+          повтор,
+          `Claude получил отказы в разрешениях (${отказы.length}): ${отказы.join("; ")}. ` +
+            "Проверка не запускалась. Разрешите эти действия или измените задачу, затем повторите.",
+          "retry",
+        );
+      }
     } else if (текущий && цель.роль === "work") {
       await this.#послеРаботы(материал);
     } else if (текущий && цель.роль === "review") {
       await this.#послеПроверки(материал);
+    }
+
+    else if (отказы.length > 0) {
+      this.#сообщить(
+        `${ИМЕНА[агент]} получил отказы в разрешениях (${отказы.length}): ${отказы.join("; ")}.`,
+      );
     }
 
     await this.#выгрузитьОчередь();
@@ -342,8 +368,8 @@ export class Coordinator {
     await this.#отправить(отправка);
   }
 
-  #удержать(отправка: Отправка, причина: string): void {
-    this.#удержано = { ...отправка, причина };
+  #удержать(отправка: Отправка, причина: string, действие: "send" | "retry" = "send"): void {
+    this.#удержано = { ...отправка, причина, действие };
     this.#этап = "held";
     this.#сообщить(причина);
   }
@@ -382,6 +408,7 @@ export class Coordinator {
       return;
     }
     if (о.снимок) this.#снимки.set(о.to, о.снимок);
+    if (о.to === "claude" && о.цель.роль === "work") this.#последняяРабота = о;
     this.#накопители.set(о.to, []);
     try {
       await адаптер.send(о.prompt);

@@ -48,6 +48,30 @@ const строки = createInterface({ input: process.stdin });
   if (текст.includes("УПАСТЬ")) {
     process.exit(3);
   }
+  if (текст.includes("ОТКАЗ")) {
+    // Форма снята с настоящего result живого прогона 15 сентября:
+    // отказы приходят при is_error: false.
+    записать({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "команда заблокирована" }] },
+      session_id: СЕССИЯ,
+    });
+    записать({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 1,
+      session_id: СЕССИЯ,
+      permission_denials: [
+        {
+          tool_name: "Bash",
+          tool_use_id: "toolu_fake",
+          tool_input: { command: "git -C C:\\agent-panel show d748e88", description: "Show commit" },
+        },
+      ],
+    });
+    return;
+  }
   if (текст.includes("ОШИБКА-ХОДА")) {
     записать({
       type: "result",

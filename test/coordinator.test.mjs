@@ -277,6 +277,94 @@ test("поток без законченной реплики нечего от�
 });
 
 // ---------------------------------------------------------------------------
+// Отказы в разрешениях
+//
+// Живой прогон 15 сентября: команды Claude отклонены на согласовании, Claude
+// объяснил блокировку, объяснение ушло на проверку, и три раунда рецензии
+// потрачены на спор о причинах блокировки. Отказы — дело человека, а не
+// рецензента.
+// ---------------------------------------------------------------------------
+
+const ОТКАЗЫ = ["Bash: git -C C:\\agent-panel show d748e88"];
+
+test("работа с отказами в разрешениях не идёт на проверку, а ждёт человека", async () => {
+  const { к, codex, журнал, события } = комната();
+  await к.fromHuman("покажи коммит", "review");
+  к.handle(событие("claude", "message", { text: "команды заблокированы" }));
+  к.handle(событие("claude", "turn_completed", { denials: ОТКАЗЫ }));
+  await дождаться(() => к.state.stage === "held", "удержание");
+
+  assert.equal(codex.полученное.length, 0, "спорить о блокировке рецензенту незачем");
+  assert.equal(к.state.round, 0, "проверка не состоялась — раунд не расходуется");
+  assert.equal(к.state.held.to, "claude");
+  assert.equal(к.state.held.action, "retry");
+  assert.match(к.state.held.reason, /разрешени/i);
+  assert.match(к.state.held.reason, /git -C/, "человек должен видеть, что именно отклонено");
+  assert.ok(системные(события).some((е) => /разрешени/i.test(е.text ?? "")));
+  журнал.close();
+});
+
+test("повтор после отказов заново отдаёт Claude исходную задачу", async () => {
+  const { к, claude, журнал } = комната();
+  await к.fromHuman("покажи коммит", "review");
+  к.handle(событие("claude", "message", { text: "заблокировано" }));
+  к.handle(событие("claude", "turn_completed", { denials: ОТКАЗЫ }));
+  await дождаться(() => к.state.stage === "held", "удержание");
+
+  await к.releaseHeld();
+  assert.equal(claude.полученное.length, 2);
+  assert.match(claude.полученное[1].text, /покажи коммит/);
+  assert.equal(к.state.stage, "working");
+  assert.equal(к.state.held, undefined);
+  журнал.close();
+});
+
+test("успешный повтор после отказов уходит на проверку как обычно", async () => {
+  const { к, codex, журнал } = комната();
+  await к.fromHuman("покажи коммит", "review");
+  к.handle(событие("claude", "message", { text: "заблокировано" }));
+  к.handle(событие("claude", "turn_completed", { denials: ОТКАЗЫ }));
+  await дождаться(() => к.state.stage === "held", "удержание");
+  await к.releaseHeld();
+
+  ход(к, "claude", "вот вывод коммита");
+  await дождаться(() => codex.полученное.length === 1, "передача рецензенту");
+  assert.match(codex.полученное[0].text, /вот вывод коммита/);
+  assert.equal(к.state.round, 1);
+  журнал.close();
+});
+
+test("отказы в прямом вопросе показываются человеку без удержания", async () => {
+  const { к, журнал, события } = комната();
+  await к.fromHuman("вопрос", "claude");
+  к.handle(событие("claude", "message", { text: "не смог" }));
+  к.handle(событие("claude", "turn_completed", { denials: ОТКАЗЫ }));
+  await дождаться(
+    () => системные(события).some((е) => /разрешени/i.test(е.text ?? "")),
+    "уведомление об отказах",
+  );
+  assert.equal(к.state.held, undefined);
+  журнал.close();
+});
+
+test("новая задача отменяет ожидающий повтор", async () => {
+  const { к, claude, журнал } = комната();
+  await к.fromHuman("задача А", "review");
+  к.handle(событие("claude", "message", { text: "заблокировано" }));
+  к.handle(событие("claude", "turn_completed", { denials: ОТКАЗЫ }));
+  await дождаться(() => к.state.stage === "held", "удержание");
+
+  await к.fromHuman("задача Б", "review");
+  assert.equal(к.state.held, undefined);
+  await к.releaseHeld();
+  assert.ok(
+    claude.полученное.every((п) => !/задача А/.test(п.text) || п === claude.полученное[0]),
+    "отменённый повтор не должен уйти",
+  );
+  журнал.close();
+});
+
+// ---------------------------------------------------------------------------
 // Прямые вопросы и вопрос обоим: ничего не пересылается
 // ---------------------------------------------------------------------------
 

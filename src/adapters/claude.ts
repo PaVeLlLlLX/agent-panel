@@ -56,6 +56,26 @@ export interface ClaudeOptions {
   readonly onSessionId?: (id: string) => void;
 }
 
+/**
+ * Отказы в разрешениях из result: `{ tool_name, tool_use_id, tool_input }`.
+ * Форма снята с настоящего result живого прогона. Команда показывается
+ * как есть — человеку нужно видеть, что именно отклонено.
+ */
+function разобратьОтказы(значение: unknown): string[] {
+  if (!Array.isArray(значение)) return [];
+  return значение.map((о) => {
+    const запись = (о ?? {}) as { tool_name?: unknown; tool_input?: Record<string, unknown> };
+    const вход = запись.tool_input ?? {};
+    const суть =
+      typeof вход["command"] === "string"
+        ? вход["command"]
+        : typeof вход["file_path"] === "string"
+          ? вход["file_path"]
+          : JSON.stringify(вход);
+    return clamp(`${String(запись.tool_name ?? "?")}: ${суть}`, 300);
+  });
+}
+
 export class ClaudeAdapter implements Adapter {
   readonly id = "claude" as const;
 
@@ -213,7 +233,9 @@ export class ClaudeAdapter implements Adapter {
       this.#занят = false;
       this.#ходИдёт = undefined;
       const ошибка = запись["is_error"] === true;
+      const отказы = разобратьОтказы(запись["permission_denials"]);
       this.#выдать("turn_completed", "turn", {
+        ...(отказы.length > 0 ? { denials: отказы } : {}),
         text: ошибка
           ? `ход завершён с ошибкой: ${String(запись["stop_reason"] ?? запись["subtype"] ?? "причина не указана")}`
           : `ход завершён, реплик ${String(запись["num_turns"])}`,
