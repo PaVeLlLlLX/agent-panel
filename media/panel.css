@@ -49,6 +49,26 @@ body {
 #этап[data-этап="held"] { border-color: var(--vscode-charts-yellow); }
 #этап[data-этап="accepted"] { border-color: var(--vscode-charts-green); background: color-mix(in srgb, var(--vscode-charts-green) 15%, transparent); }
 #этап[data-этап="stopped"] { color: var(--тихий); }
+#этап[data-этап="approval"] {
+  border-color: var(--vscode-charts-yellow);
+  background: color-mix(in srgb, var(--vscode-charts-yellow) 15%, transparent);
+}
+
+/* Запрос разрешения: ход агента стоит, пока человек не ответит. */
+.разрешение {
+  border: 1px solid var(--vscode-charts-yellow);
+  border-left-width: 3px;
+  border-radius: 4px;
+  padding: 6px 10px;
+  max-width: 80ch;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.разрешение .кнопки { display: flex; flex-wrap: wrap; gap: var(--щель); }
+.разрешение .итог { font-size: 0.85em; color: var(--тихий); overflow-wrap: anywhere; }
+.разрешение.решено { border-color: var(--рамка); }
+.разрешение.отклонено .итог { color: var(--vscode-errorForeground); }
 #вердикт[data-вердикт="accepted"] { color: var(--vscode-charts-green); }
 #вердикт[data-вердикт="remarks"] { color: var(--vscode-charts-orange); }
 #вердикт[data-вердикт="missing"] { color: var(--vscode-charts-yellow); }

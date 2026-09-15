@@ -40,6 +40,11 @@ class Заглушка {
   async stop() {
     this.остановлен += 1;
   }
+  async answerApproval(id, решение) {
+    this.решения.push([id, решение]);
+    return true;
+  }
+  решения = [];
 }
 
 function комната(предел = 3) {
@@ -370,6 +375,60 @@ test("новая задача отменяет ожидающий повтор",
 // ---------------------------------------------------------------------------
 // Прямые вопросы и вопрос обоим: ничего не пересылается
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Запросы разрешений
+// ---------------------------------------------------------------------------
+
+test("открытый запрос разрешения виден в состоянии, пока не решён", () => {
+  const { к } = комната();
+  к.handle(событие("claude", "approval_requested", { callId: "p1", tool: "Bash", text: "mkdir x" }));
+  assert.equal(к.state.approvals, 1);
+  к.handle(событие("claude", "approval_decided", { callId: "p1", text: "разрешено" }));
+  assert.equal(к.state.approvals, 0);
+});
+
+test("решение человека уходит адаптеру того агента, который спросил", async () => {
+  const { к, claude, codex } = комната();
+  к.handle(событие("claude", "approval_requested", { callId: "p1", tool: "Bash" }));
+  await к.answerApproval("p1", "allowSession");
+  assert.deepEqual(claude.решения, [["p1", "allowSession"]]);
+  assert.deepEqual(codex.решения, []);
+});
+
+test("ответ на неизвестный или решённый запрос не отправляется", async () => {
+  const { к, claude } = комната();
+  await к.answerApproval("нет-такого", "allow");
+  к.handle(событие("claude", "approval_requested", { callId: "p1" }));
+  к.handle(событие("claude", "approval_decided", { callId: "p1" }));
+  await к.answerApproval("p1", "allow");
+  assert.deepEqual(claude.решения, []);
+});
+
+test("остановка закрывает открытые запросы разрешений", async () => {
+  const { к } = комната();
+  к.handle(событие("claude", "approval_requested", { callId: "p1" }));
+  await к.stopAll();
+  assert.equal(к.state.approvals, 0);
+});
+
+test("падение процесса закрывает его запросы разрешений", () => {
+  const { к } = комната();
+  к.handle(событие("claude", "approval_requested", { callId: "p1" }));
+  к.handle(событие("claude", "error", { failed: true, text: "процесс завершился" }));
+  assert.equal(к.state.approvals, 0);
+});
+
+test("запрос разрешения не попадает в материал рецензенту", async () => {
+  const { к, claude, codex } = комната();
+  await к.fromHuman("создай каталог", "review");
+  await дождаться(() => claude.полученное.length === 1, "работа у Claude");
+  к.handle(событие("claude", "approval_requested", { callId: "p1", tool: "Bash", text: "СЕКРЕТНАЯ-КОМАНДА" }));
+  к.handle(событие("claude", "approval_decided", { callId: "p1", text: "разрешено" }));
+  ход(к, "claude", "сделано");
+  await дождаться(() => codex.полученное.length === 1, "проверка у Codex");
+  assert.doesNotMatch(codex.полученное[0].text, /СЕКРЕТНАЯ-КОМАНДА/);
+});
 
 test("спросить обоих: оба отвечают, друг другу ничего не пересылается", async () => {
   const { к, claude, codex, журнал } = комната();

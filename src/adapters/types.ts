@@ -93,7 +93,18 @@ export interface PanelEvent {
    * Приходят при is_error: false, поэтому по failed их не отличить.
    */
   readonly denials?: readonly string[];
+  /**
+   * У approval_requested: правила, которые добавит «разрешить в этой сессии»,
+   * в виде «Bash(mkdir x *)». Пусто — такой кнопки нет.
+   */
+  readonly sessionRules?: readonly string[];
 }
+
+/**
+ * Решение человека по запросу разрешения: разрешить один раз, разрешить
+ * такие вызовы до конца сессии агента, отклонить.
+ */
+export type ApprovalChoice = "allow" | "allowSession" | "deny";
 
 /** Что панель просит агента сделать. */
 export interface AgentPrompt {
@@ -128,6 +139,12 @@ export interface Adapter {
   interrupt(): Promise<void>;
   /** Остановить процесс. */
   stop(): Promise<void>;
+  /**
+   * Ответить на запрос разрешения, который агент ждёт от человека.
+   * false — запроса нет: уже решён или процесс, задавший его, остановлен.
+   * Нет метода — агент разрешений у человека не спрашивает.
+   */
+  answerApproval?(id: string, choice: ApprovalChoice): Promise<boolean>;
   /** Занят ли агент ходом прямо сейчас. */
   readonly busy: boolean;
   /** Идентификатор сессии агента, если известен: нужен для восстановления. */

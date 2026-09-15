@@ -39,7 +39,7 @@
  * Сохранены прежние правила: передаётся законченное, сырой вывод идёт
  * целиком, материал копится по агенту, снимок версии закреплён за ходом.
  */
-import { Adapter, AgentId, AgentPrompt, PanelEvent } from "./adapters/types.js";
+import { Adapter, AgentId, AgentPrompt, ApprovalChoice, PanelEvent } from "./adapters/types.js";
 import { Journal } from "./journal.js";
 import { Snapshot, describeSnapshot, takeSnapshot } from "./snapshot.js";
 import { VERDICT_REQUEST, Verdict, parseVerdict } from "./verdict.js";
@@ -62,6 +62,8 @@ export interface RoomState {
     | { readonly to: AgentId; readonly reason: string; readonly action: "send" | "retry" }
     | undefined;
   readonly queued: number;
+  /** Запросы разрешений, ждущие ответа человека. Пока они есть, ход агента стоит. */
+  readonly approvals: number;
   readonly auto: boolean;
   readonly claudeBusy: boolean;
   readonly codexBusy: boolean;
@@ -110,6 +112,8 @@ export class Coordinator {
   readonly #накопители = new Map<AgentId, PanelEvent[]>();
   readonly #цели = new Map<AgentId, Цель[]>();
   readonly #очередь: Отправка[] = [];
+  /** Открытые запросы разрешений: id запроса → агент, который спросил. */
+  readonly #запросы = new Map<string, AgentId>();
   readonly #снять: (cwd: string) => Promise<Snapshot>;
 
   constructor(
@@ -140,6 +144,7 @@ export class Coordinator {
         ? { to: this.#удержано.to, reason: this.#удержано.причина, action: this.#удержано.действие }
         : undefined,
       queued: this.#очередь.length,
+      approvals: this.#запросы.size,
       auto: this.#автоматика,
       claudeBusy: this.claude.busy,
       codexBusy: this.codex.busy,
@@ -165,9 +170,16 @@ export class Coordinator {
       this.#накопители.set(агент, накопитель);
     }
 
-    if (сПометкой.kind === "turn_completed") {
+    if (сПометкой.kind === "approval_requested" && сПометкой.callId) {
+      this.#запросы.set(сПометкой.callId, агент);
+      this.#обновить();
+    } else if (сПометкой.kind === "approval_decided" && сПометкой.callId) {
+      this.#запросы.delete(сПометкой.callId);
+      this.#обновить();
+    } else if (сПометкой.kind === "turn_completed") {
       void this.#ходЗакончен(агент, сПометкой.failed === true, сПометкой.denials ?? []);
     } else if (сПометкой.kind === "error" && сПометкой.failed) {
+      for (const [id, кто] of this.#запросы) if (кто === агент) this.#запросы.delete(id);
       void this.#агентУпал(агент);
     } else if (сПометкой.kind === "turn_started") {
       this.#обновить();
@@ -227,6 +239,17 @@ export class Coordinator {
     this.#обновить();
   }
 
+  /** Решение человека по запросу разрешения — адаптеру того агента, который спросил. */
+  async answerApproval(id: string, выбор: ApprovalChoice): Promise<void> {
+    const агент = this.#запросы.get(id);
+    if (!агент) return;
+    const адаптер = агент === "claude" ? this.claude : this.codex;
+    const принято = (await адаптер.answerApproval?.(id, выбор)) ?? false;
+    // Не принят — запрос уже закрыт на стороне агента; карточка не должна висеть.
+    if (!принято) this.#запросы.delete(id);
+    this.#обновить();
+  }
+
   setAuto(включена: boolean): void {
     this.#автоматика = включена;
     this.#обновить();
@@ -273,6 +296,9 @@ export class Coordinator {
     this.#цикл += 1; // всё, что принадлежало прежнему циклу, теперь чужое
     this.#цели.clear();
     this.#удержано = undefined;
+    // Адаптеры закрывают свои запросы при остановке; здесь — на случай,
+    // если закрытие не дойдёт (адаптер уже без процесса).
+    this.#запросы.clear();
     this.#этап = этап;
   }
 

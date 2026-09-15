@@ -146,6 +146,153 @@ test("Claude: отказы в разрешениях приходят в зав�
   }
 });
 
+// --- Разрешения: --permission-prompt-tool stdio ------------------------------
+
+const ПРЕФИКС_ОТВЕТА = "ОТВЕТ-ПАНЕЛИ ";
+/** Что панель ответила агенту: фальшивка пишет каждый control_response в stderr. */
+const ответыПанели = (события) =>
+  события
+    .filter((е) => е.kind === "diagnostic" && (е.text ?? "").startsWith(ПРЕФИКС_ОТВЕТА))
+    .map((е) => JSON.parse(е.text.slice(ПРЕФИКС_ОТВЕТА.length)));
+const найти = (события, вид) => события.find((е) => е.kind === вид);
+
+async function запросРазрешения(с, а) {
+  await а.send({ text: "НУЖНО-РАЗРЕШЕНИЕ", from: "human" });
+  await дождаться(() => найти(с.события, "approval_requested"), "запрос разрешения");
+  return найти(с.события, "approval_requested");
+}
+
+test("Claude: запускается с каналом запросов разрешений", async () => {
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await а.start();
+    await дождаться(() => с.события.some((е) => е.raw?.argv), "запись запуска");
+    const argv = с.события.find((е) => е.raw?.argv).raw.argv;
+    const i = argv.indexOf("--permission-prompt-tool");
+    assert.ok(i >= 0, "без флага действия, требующие согласия, отклоняются молча");
+    assert.equal(argv[i + 1], "stdio");
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: запрос разрешения — событие с командой, ход ждёт ответа человека", async () => {
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    const з = await запросРазрешения(с, а);
+    assert.equal(з.tool, "Bash");
+    assert.equal(з.callId, "perm-1");
+    assert.match(з.text, /mkdir probe-dir/);
+    assert.deepEqual(з.sessionRules, ["Bash(mkdir probe-dir *)"]);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(!найти(с.события, "turn_completed"), "ход не должен завершаться без ответа");
+    assert.equal(а.busy, true);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: «разрешить» — агент получает исходный ввод, ход завершается без отказов", async () => {
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await запросРазрешения(с, а);
+    assert.equal(await а.answerApproval("perm-1", "allow"), true);
+    assert.equal(await а.answerApproval("perm-1", "allow"), false, "повторный ответ не отправляется");
+    await дождаться(() => найти(с.события, "turn_completed"), "конец хода");
+    const ответы = ответыПанели(с.события);
+    assert.equal(ответы.length, 1);
+    assert.equal(ответы[0].subtype, "success");
+    assert.equal(ответы[0].request_id, "perm-1");
+    assert.deepEqual(ответы[0].response, {
+      behavior: "allow",
+      updatedInput: { command: "mkdir probe-dir", description: "Create directory" },
+    });
+    const решение = найти(с.события, "approval_decided");
+    assert.equal(решение.callId, "perm-1");
+    assert.match(решение.text, /разрешено/);
+    assert.equal(найти(с.события, "turn_completed").denials, undefined);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: «в этой сессии» — только правила команды и только на сессию", async () => {
+  // Предложение addRules приходит с destination localSettings: записать его
+  // как есть значило бы править файл настроек владельца. setMode acceptEdits
+  // разрешил бы все правки сразу — шире, чем видит человек на кнопке.
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await запросРазрешения(с, а);
+    assert.equal(await а.answerApproval("perm-1", "allowSession"), true);
+    await дождаться(() => найти(с.события, "turn_completed"), "конец хода");
+    const [ответ] = ответыПанели(с.события);
+    assert.deepEqual(ответ.response.updatedPermissions, [
+      {
+        type: "addRules",
+        rules: [{ toolName: "Bash", ruleContent: "mkdir probe-dir *" }],
+        behavior: "allow",
+        destination: "session",
+      },
+    ]);
+    assert.match(найти(с.события, "approval_decided").text, /в этой сессии/);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: «отклонить» — агент получает причину, отказ человека не удерживает работу", async () => {
+  // Отказ, данный человеком, — его решение, а не блокировка: повторять ход
+  // незачем, работа идёт дальше как обычно.
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await запросРазрешения(с, а);
+    assert.equal(await а.answerApproval("perm-1", "deny"), true);
+    await дождаться(() => найти(с.события, "turn_completed"), "конец хода");
+    const [ответ] = ответыПанели(с.события);
+    assert.equal(ответ.response.behavior, "deny");
+    assert.match(ответ.response.message, /человек/);
+    assert.match(найти(с.события, "approval_decided").text, /отклонено/);
+    assert.equal(найти(с.события, "turn_completed").denials, undefined);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: остановка закрывает открытый запрос, поздний ответ не отправляется", async () => {
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await запросРазрешения(с, а);
+    await а.stop();
+    const решение = найти(с.события, "approval_decided");
+    assert.ok(решение, "карточка запроса осталась бы открытой навсегда");
+    assert.equal(решение.callId, "perm-1");
+    assert.equal(await а.answerApproval("perm-1", "allow"), false);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: необслуживаемый запрос агента получает ответ-ошибку, ход не виснет", async () => {
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await а.send({ text: "ЧУЖОЙ-ЗАПРОС", from: "human" });
+    await дождаться(() => найти(с.события, "turn_completed"), "конец хода");
+    const [ответ] = ответыПанели(с.события);
+    assert.equal(ответ.subtype, "error");
+    assert.equal(ответ.request_id, "hook-1");
+    assert.equal(найти(с.события, "approval_requested"), undefined);
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: плановая остановка не показывается как ошибка", async () => {
   const с = собиратель();
   const а = claude(с);

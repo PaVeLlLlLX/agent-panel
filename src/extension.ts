@@ -15,13 +15,14 @@ import * as vscode from "vscode";
 import { join } from "node:path";
 import { ClaudeAdapter } from "./adapters/claude.js";
 import { CodexAdapter } from "./adapters/codex.js";
-import { PanelEvent, stripAnsi } from "./adapters/types.js";
+import { ApprovalChoice, PanelEvent, stripAnsi } from "./adapters/types.js";
 import { Coordinator, RoomState, Route } from "./coordinator.js";
 import { Journal } from "./journal.js";
 
 let комната: Комната | undefined;
 
 const МАРШРУТЫ = new Set<Route>(["review", "both", "claude", "codex"]);
+const ВЫБОРЫ = new Set<ApprovalChoice>(["allow", "allowSession", "deny"]);
 
 class Комната {
   readonly #панель: vscode.WebviewPanel;
@@ -110,6 +111,10 @@ class Комната {
       case "setAuto":
         this.#координатор.setAuto(сообщение.on);
         return;
+      case "approval":
+        if (!ВЫБОРЫ.has(сообщение.choice as ApprovalChoice)) return;
+        await this.#координатор.answerApproval(сообщение.id, сообщение.choice as ApprovalChoice);
+        return;
     }
   }
 
@@ -133,7 +138,8 @@ type ВходящееUI =
   | { type: "release" }
   | { type: "stopAll" }
   | { type: "interrupt" }
-  | { type: "setAuto"; on: boolean };
+  | { type: "setAuto"; on: boolean }
+  | { type: "approval"; id: string; choice: string };
 
 function разметка(webview: vscode.Webview, контекст: vscode.ExtensionContext): string {
   const ресурс = (имя: string) =>

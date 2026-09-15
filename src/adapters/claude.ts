@@ -5,19 +5,30 @@
  *
  *   claude -p --input-format stream-json --output-format stream-json
  *          --verbose --include-partial-messages --setting-sources project,local
+ *          --permission-prompt-tool stdio
  *
  * Ввод — по строке NDJSON на реплику; контекст и session_id сохраняются между
  * репликами, на каждую приходит свой `result`.
  *
  * Вывод: system/init, stream_event (text_delta / input_json_delta), assistant
  * (text / tool_use), user (tool_result), result (is_error, num_turns,
- * permission_denials).
+ * permission_denials), control_request.
  *
  * Решения, за которые заплачено живыми прогонами:
  *
  * **`--setting-sources project,local`.** Без него дочерняя сессия загружает
  * пользовательский settings.json со всеми хуками, и Stop-хук приходит в неё
  * как реплика. `--bare` не годится — он не читает OAuth.
+ *
+ * **Разрешения спрашиваются у человека.** Без `--permission-prompt-tool stdio`
+ * всё, что требует согласия, отклонялось молча, и в живом прогоне три проверки
+ * ушли на спор о заблокированной команде. С флагом Claude пишет
+ * `control_request` с подтипом `can_use_tool` и ждёт `control_response` —
+ * форма снята пробой с Claude Code 2.1.220. «Разрешить в этой сессии»
+ * передаёт только правила команды (`addRules`) с destination "session":
+ * предложение приходит с localSettings, и записать его как есть значило бы
+ * править файл настроек владельца; `setMode acceptEdits` разрешил бы все
+ * правки сразу — шире, чем видит человек на кнопке.
  *
  * **stderr — диагностика, а не ошибка.** Служебные логи показывались красной
  * репликой с цветовыми кодами.
@@ -36,6 +47,7 @@ import { запуститьПроцесс, остановитьДерево } fr
 import {
   Adapter,
   AgentPrompt,
+  ApprovalChoice,
   EventSink,
   PanelEvent,
   clamp,
@@ -57,23 +69,60 @@ export interface ClaudeOptions {
   readonly onSessionId?: (id: string) => void;
 }
 
+/** Запрос разрешения, на который человек ещё не ответил. */
+interface ОткрытыйЗапрос {
+  /** Процесс, задавший вопрос: ответ в перезапущенный процесс не имеет смысла. */
+  readonly процесс: ChildProcessWithoutNullStreams;
+  readonly вход: unknown;
+  readonly вызов: string | undefined;
+  /** Предложения addRules, переписанные на destination "session". */
+  readonly правила: readonly Record<string, unknown>[];
+}
+
+/** Суть ввода инструмента для человека: команда, путь или весь ввод. */
+function сутьВвода(вход: unknown): string {
+  const запись = (вход ?? {}) as Record<string, unknown>;
+  if (typeof запись["command"] === "string") return запись["command"];
+  if (typeof запись["file_path"] === "string") return запись["file_path"];
+  return JSON.stringify(запись, null, 1);
+}
+
 /**
  * Отказы в разрешениях из result: `{ tool_name, tool_use_id, tool_input }`.
- * Форма снята с настоящего result живого прогона.
+ * Форма снята с настоящего result живого прогона. Отказы, данные человеком
+ * в панели, пропускаются: это решение, а не блокировка.
  */
-function разобратьОтказы(значение: unknown): string[] {
+function разобратьОтказы(значение: unknown, решённыеЧеловеком: Set<string>): string[] {
   if (!Array.isArray(значение)) return [];
-  return значение.map((о) => {
-    const запись = (о ?? {}) as { tool_name?: unknown; tool_input?: Record<string, unknown> };
-    const вход = запись.tool_input ?? {};
-    const суть =
-      typeof вход["command"] === "string"
-        ? вход["command"]
-        : typeof вход["file_path"] === "string"
-          ? вход["file_path"]
-          : JSON.stringify(вход);
-    return clamp(`${String(запись.tool_name ?? "?")}: ${суть}`, 300);
-  });
+  const отказы: string[] = [];
+  for (const о of значение) {
+    const запись = (о ?? {}) as { tool_name?: unknown; tool_use_id?: unknown; tool_input?: unknown };
+    if (typeof запись.tool_use_id === "string" && решённыеЧеловеком.delete(запись.tool_use_id)) continue;
+    отказы.push(clamp(`${String(запись.tool_name ?? "?")}: ${сутьВвода(запись.tool_input)}`, 300));
+  }
+  return отказы;
+}
+
+/** Правила «на сессию» из permission_suggestions: только addRules. */
+function правилаСессии(предложения: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(предложения)) return [];
+  return предложения
+    .filter((п): п is Record<string, unknown> => {
+      const запись = (п ?? {}) as Record<string, unknown>;
+      return запись["type"] === "addRules" && Array.isArray(запись["rules"]);
+    })
+    .map((п) => ({ ...п, destination: "session" }));
+}
+
+/** «Bash(mkdir x *)» — как правило видно человеку на кнопке. */
+function подписиПравил(правила: readonly Record<string, unknown>[]): string[] {
+  return правила.flatMap((п) =>
+    (п["rules"] as { toolName?: unknown; ruleContent?: unknown }[]).map((r) =>
+      typeof r.ruleContent === "string" && r.ruleContent
+        ? `${String(r.toolName ?? "?")}(${r.ruleContent})`
+        : String(r.toolName ?? "?"),
+    ),
+  );
 }
 
 export class ClaudeAdapter implements Adapter {
@@ -85,6 +134,9 @@ export class ClaudeAdapter implements Adapter {
   #занят = false;
   #ходИдёт: string | undefined;
   readonly #вызовы = new Map<string, string>();
+  readonly #запросы = new Map<string, ОткрытыйЗапрос>();
+  /** tool_use_id вызовов, отклонённых человеком: в итоге хода это не отказ без спроса. */
+  readonly #отклонённыеЧеловеком = new Set<string>();
   readonly #останавливаемые = new WeakSet<object>();
   readonly #отчитанные = new WeakSet<object>();
 
@@ -115,6 +167,8 @@ export class ClaudeAdapter implements Adapter {
       "stream-json",
       "--verbose",
       "--include-partial-messages",
+      "--permission-prompt-tool",
+      "stdio",
       ...(источники ? ["--setting-sources", источники] : []),
       // Перезапуск после падения или прерывания продолжает ту же сессию.
       ...(this.#сессия ? ["--resume", this.#сессия] : []),
@@ -144,6 +198,7 @@ export class ClaudeAdapter implements Adapter {
       this.#процесс = undefined;
       this.#занят = false;
     }
+    this.#закрытьЗапросы(процесс, "запрос закрыт: процесс Claude завершился");
     if (this.#отчитанные.has(процесс)) return;
     this.#отчитанные.add(процесс);
     if (this.#останавливаемые.has(процесс)) {
@@ -168,9 +223,40 @@ export class ClaudeAdapter implements Adapter {
       message: { role: "user", content: [{ type: "text", text: this.#оформить(prompt) }] },
     };
     this.#занят = true;
-    процесс.stdin.write(`${JSON.stringify(запись)}\n`, (беда) => {
-      if (беда) this.#сбойКанала(процесс, беда);
+    this.#записать(процесс, запись);
+  }
+
+  async answerApproval(id: string, выбор: ApprovalChoice): Promise<boolean> {
+    const запрос = this.#запросы.get(id);
+    if (!запрос || запрос.процесс !== this.#процесс) return false;
+    this.#запросы.delete(id);
+
+    const наСессию = выбор === "allowSession" && запрос.правила.length > 0;
+    const решение =
+      выбор === "deny"
+        ? { behavior: "deny", message: "Отклонено человеком в панели." }
+        : {
+            behavior: "allow",
+            updatedInput: запрос.вход,
+            ...(наСессию ? { updatedPermissions: запрос.правила } : {}),
+          };
+    if (выбор === "deny" && запрос.вызов) this.#отклонённыеЧеловеком.add(запрос.вызов);
+
+    this.#записать(запрос.процесс, {
+      type: "control_response",
+      response: { subtype: "success", request_id: id, response: решение },
     });
+    this.#выдать("approval_decided", "turn", {
+      callId: id,
+      text:
+        выбор === "deny"
+          ? "отклонено человеком"
+          : наСессию
+            ? `разрешено в этой сессии: ${подписиПравил(запрос.правила).join(", ")}`
+            : "разрешено",
+      raw: решение,
+    });
+    return true;
   }
 
   /** Кто прислал реплику — часть сообщения: указание человека и замечание рецензента весят по-разному. */
@@ -201,7 +287,24 @@ export class ClaudeAdapter implements Adapter {
     this.#занят = false;
     if (!процесс) return;
     this.#останавливаемые.add(процесс);
+    // Карточки закрываются сразу: после остановки ответ уже некому отдать,
+    // а открытая карточка звала бы человека нажимать бесполезную кнопку.
+    this.#закрытьЗапросы(процесс, "запрос закрыт: процесс Claude остановлен");
     await остановитьДерево(процесс);
+  }
+
+  #закрытьЗапросы(процесс: ChildProcessWithoutNullStreams, причина: string): void {
+    for (const [id, запрос] of this.#запросы) {
+      if (запрос.процесс !== процесс) continue;
+      this.#запросы.delete(id);
+      this.#выдать("approval_decided", "turn", { callId: id, text: причина });
+    }
+  }
+
+  #записать(процесс: ChildProcessWithoutNullStreams, запись: unknown): void {
+    процесс.stdin.write(`${JSON.stringify(запись)}\n`, (беда) => {
+      if (беда) this.#сбойКанала(процесс, беда);
+    });
   }
 
   #разобрать(строка: string): void {
@@ -233,11 +336,13 @@ export class ClaudeAdapter implements Adapter {
       this.#блокиАссистента(запись);
     } else if (вид === "user") {
       this.#блокиПользователя(запись);
+    } else if (вид === "control_request") {
+      this.#запросАгента(запись);
     } else if (вид === "result") {
       this.#занят = false;
       this.#ходИдёт = undefined;
       const ошибка = запись["is_error"] === true;
-      const отказы = разобратьОтказы(запись["permission_denials"]);
+      const отказы = разобратьОтказы(запись["permission_denials"], this.#отклонённыеЧеловеком);
       this.#выдать("turn_completed", "turn", {
         ...(отказы.length > 0 ? { denials: отказы } : {}),
         text: ошибка
@@ -247,6 +352,53 @@ export class ClaudeAdapter implements Adapter {
         ...(ошибка ? { failed: true } : {}),
       });
     }
+  }
+
+  /** Запрос агента к панели. Необслуживаемый получает ошибку: без ответа агент ждал бы вечно. */
+  #запросАгента(запись: Record<string, unknown>): void {
+    const процесс = this.#процесс;
+    if (!процесс) return;
+    const id = String(запись["request_id"] ?? "");
+    const запрос = (запись["request"] ?? {}) as Record<string, unknown>;
+
+    if (запрос["subtype"] !== "can_use_tool") {
+      this.#выдать("diagnostic", "stream", {
+        text: `запрос Claude «${String(запрос["subtype"])}» панелью не обслуживается — отвечено ошибкой`,
+        raw: запись,
+      });
+      this.#записать(процесс, {
+        type: "control_response",
+        response: {
+          subtype: "error",
+          request_id: id,
+          error: `панель не обслуживает запрос ${String(запрос["subtype"])}`,
+        },
+      });
+      return;
+    }
+
+    const правила = правилаСессии(запрос["permission_suggestions"]);
+    const вход = запрос["input"] ?? {};
+    this.#запросы.set(id, {
+      процесс,
+      вход,
+      вызов: typeof запрос["tool_use_id"] === "string" ? запрос["tool_use_id"] : undefined,
+      правила,
+    });
+
+    const строки = [сутьВвода(вход)];
+    if (typeof запрос["description"] === "string" && запрос["description"] !== строки[0]) {
+      строки.push(запрос["description"]);
+    }
+    if (typeof запрос["blocked_path"] === "string") строки.push(`путь: ${запрос["blocked_path"]}`);
+
+    this.#выдать("approval_requested", "turn", {
+      tool: String(запрос["display_name"] ?? запрос["tool_name"] ?? "?"),
+      callId: id,
+      text: clamp(строки.join("\n")),
+      sessionRules: подписиПравил(правила),
+      raw: запись,
+    });
   }
 
   #дельта(запись: Record<string, unknown>): void {

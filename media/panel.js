@@ -25,6 +25,7 @@ const ЭТАПЫ = {
   working: "Claude работает",
   reviewing: "Codex проверяет",
   held: "ждёт вашего решения",
+  approval: "ждёт разрешения",
   accepted: "работа принята",
   stopped: "остановлено",
 };
@@ -83,7 +84,48 @@ function обновитьСводку(агент, г) {
   г.сводка.textContent = `${ИМЕНА[агент]} · ${итог}`;
 }
 
-function показатьСобытие(е) {
+/** Открытые карточки разрешений по id запроса. */
+const запросы = new Map();
+
+function карточкаРазрешения(е, история) {
+  const карточка = элемент("article", "разрешение");
+  карточка.append(
+    элемент("div", "автор", `${ИМЕНА[е.agent] ?? е.agent} просит разрешение · ${е.tool ?? "?"}`),
+    элемент("pre", "аргументы", е.text ?? ""),
+  );
+  const итог = элемент("div", "итог");
+  if (история) {
+    // Из журнала: процесс, задавший вопрос, уже другой — ответить нельзя.
+    итог.textContent = "запрос из прошлого запуска панели";
+  } else {
+    const кнопки = элемент("div", "кнопки");
+    const ответить = (выбор) => {
+      for (const к of кнопки.querySelectorAll("button")) к.disabled = true;
+      vscode.postMessage({ type: "approval", id: е.callId, choice: выбор });
+    };
+    const разрешить = элемент("button", "главная", "Разрешить");
+    разрешить.title = "Выполнить этот вызов один раз";
+    разрешить.addEventListener("click", () => ответить("allow"));
+    кнопки.append(разрешить);
+    if (е.sessionRules?.length) {
+      const сессия = элемент("button", "", "Разрешить в этой сессии");
+      сессия.title = `Больше не спрашивать до остановки Claude: ${е.sessionRules.join(", ")}. В файлы настроек ничего не пишется`;
+      сессия.addEventListener("click", () => ответить("allowSession"));
+      кнопки.append(сессия);
+    }
+    const отклонить = элемент("button", "опасно", "Отклонить");
+    отклонить.title = "Не выполнять; Claude узнает, что отказал человек";
+    отклонить.addEventListener("click", () => ответить("deny"));
+    кнопки.append(отклонить);
+    карточка.append(кнопки);
+  }
+  карточка.append(итог);
+  беседа.append(карточка);
+  // И карточку из журнала закроет решение, записанное следом за ней.
+  запросы.set(е.callId, карточка);
+}
+
+function показатьСобытие(е, история = false) {
   switch (е.kind) {
     case "text_delta": {
       let п = потоки.get(е.agent);
@@ -153,9 +195,22 @@ function показатьСобытие(е) {
       вызов.append(вывод);
       return;
     }
-    case "approval_requested":
+    case "approval_requested": {
+      // Без callId запрос уже решён самим адаптером (запись файлов у Codex).
+      if (!е.callId) return;
+      карточкаРазрешения(е, история);
+      вниз();
       return;
+    }
     case "approval_decided": {
+      const карточка = запросы.get(е.callId);
+      if (карточка) {
+        карточка.querySelector(".кнопки")?.remove();
+        карточка.querySelector(".итог").textContent = е.text ?? "решено";
+        карточка.classList.add(/^отклонено/.test(е.text ?? "") ? "отклонено" : "решено");
+        запросы.delete(е.callId);
+        return;
+      }
       const г = группаДействий(е.agent);
       г.список.append(элемент("div", "вызов отказ", е.text ?? "отказано"));
       return;
@@ -188,8 +243,10 @@ function показатьСобытие(е) {
 }
 
 function показатьСостояние(с) {
-  $("этап").textContent = ЭТАПЫ[с.stage] ?? с.stage;
-  $("этап").dataset.этап = с.stage;
+  // Открытый запрос разрешения важнее этапа цикла: без ответа никто не двинется.
+  const этап = с.approvals > 0 ? "approval" : с.stage;
+  $("этап").textContent = ЭТАПЫ[этап] ?? этап;
+  $("этап").dataset.этап = этап;
   $("раунд").textContent = `проверок ${с.round} из ${с.maxRounds}`;
 
   const вердикт = $("вердикт");
@@ -221,7 +278,7 @@ function показатьСостояние(с) {
 
 window.addEventListener("message", (событие) => {
   const д = событие.data;
-  if (д?.type === "event") показатьСобытие(д.событие);
+  if (д?.type === "event") показатьСобытие(д.событие, д.история === true);
   else if (д?.type === "state") показатьСостояние(д.состояние);
 });
 

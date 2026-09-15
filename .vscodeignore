@@ -4,6 +4,7 @@
 src/**
 test/**
 fixtures/**
+docs/**
 .vscode/**
 .gitignore
 .gitattributes
