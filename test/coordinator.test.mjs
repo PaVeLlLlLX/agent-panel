@@ -1,13 +1,20 @@
 /**
- * Проверка координатора: приёмочные критерии, которые можно проверить без
- * VS Code и без живых агентов.
+ * Проверка координатора: порядок разговора и пересылка.
  *
- * Адаптеры подменяются заглушками намеренно. Живой запуск проверяет протокол,
- * а здесь проверяются правила маршрутизации — то есть решения, а не связь.
+ * Адаптеры подменяются заглушками намеренно — здесь проверяются решения
+ * маршрутизации, а связь с живыми агентами проверяется в adapters.test.mjs
+ * на фальшивых процессах.
+ *
+ * Почему правила именно такие. Живой прогон 14 сентября показал, что при
+ * отправке «обоим» ответы агентов расходятся по времени: Claude пять секунд
+ * спорил с замечанием, которое Codex уже отозвал, и построил проверку того,
+ * что было подтверждено. Отсюда три маршрута с разным смыслом, строгая
+ * очерёдность в рецензии, завершение цикла по вердикту и явное удержание
+ * всего, что не доставлено, вместо молчаливой потери.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -52,251 +59,322 @@ function комната(предел = 3) {
 }
 
 /**
- * Ожидание по условию.
- *
- * Один setImmediate здесь не годится: пересылка материала ждёт снимок
- * версии, а он делается вызовом git. Первая версия этих тестов падала
- * именно на этом, и падение было в тесте, а не в продукте.
+ * Ожидание по условию. Пересылка ждёт снимок версии файлов, поэтому один
+ * тик цикла событий здесь не годится.
  */
 async function дождаться(условие, сообщение, предел = 5000) {
   const начало = Date.now();
   while (Date.now() - начало < предел) {
     if (условие()) return;
-    await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 15));
   }
   assert.fail(`не дождались: ${сообщение}`);
 }
+
+const пауза = (мс) => new Promise((r) => setTimeout(r, мс));
 
 function событие(agent, kind, доп = {}) {
   return {
     id: `${kind}-${Math.random().toString(36).slice(2)}`,
     agent,
     kind,
-    visibility: kind === "text_delta" || kind === "tool_running" ? "stream" : "turn",
+    visibility: ["text_delta", "tool_running", "diagnostic"].includes(kind)
+      ? "stream"
+      : "turn",
     at: Date.now(),
     ...доп,
   };
 }
 
-test("сообщение человека доходит обоим агентам", async () => {
+/** Законченный ход агента: реплика и завершение. */
+function ход(к, агент, текст, доп = {}) {
+  к.handle(событие(агент, "message", { text: текст }));
+  к.handle(событие(агент, "turn_completed", доп));
+}
+
+const системные = (события) => события.filter((е) => е.agent === "system");
+
+// ---------------------------------------------------------------------------
+// Рецензия: строгая очерёдность и завершение по вердикту
+// ---------------------------------------------------------------------------
+
+test("задача с рецензией уходит только разработчику", async () => {
   const { к, claude, codex, журнал } = комната();
-  await к.fromHuman("проверьте постановку", "both");
+  await к.fromHuman("сделай отчёт", "review");
   assert.equal(claude.полученное.length, 1);
-  assert.equal(codex.полученное.length, 1);
-  assert.match(claude.полученное[0].text, /проверьте постановку/);
+  assert.equal(codex.полученное.length, 0, "рецензент не должен работать параллельно");
   assert.equal(claude.полученное[0].from, "human");
+  assert.equal(к.state.stage, "working");
+  assert.equal(к.state.task, "сделай отчёт");
   журнал.close();
 });
 
-test("адресат учитывается: сообщение одному не уходит второму", async () => {
-  const { к, claude, codex, журнал } = комната();
-  await к.fromHuman("только тебе", "codex");
-  assert.equal(claude.полученное.length, 0);
-  assert.equal(codex.полученное.length, 1);
-  журнал.close();
-});
-
-test("ответ одного доходит до другого без копирования человеком", async () => {
-  const { к, claude, codex, журнал } = комната();
-  await к.fromHuman("задача", "claude");
-  claude.полученное.length = 0;
-  к.handle(событие("claude", "message", { text: "я предлагаю подход" }));
+test("рецензент получает задачу, материал разработчика и просьбу о вердикте", async () => {
+  const { к, codex, журнал } = комната();
+  await к.fromHuman("исходная задача", "review");
+  к.handle(событие("claude", "message", { text: "сделал" }));
+  к.handle(событие("claude", "tool_call", { tool: "Bash", callId: "c1", text: "npm test" }));
+  к.handle(
+    событие("claude", "tool_result", { tool: "Bash", callId: "c1", text: "25 passed" }),
+  );
   к.handle(событие("claude", "turn_completed"));
-  await дождаться(() => codex.полученное.length > 0, "передача рецензенту");
-  assert.equal(codex.полученное.length, 1, "передаётся только материал агента");
-  assert.match(codex.полученное[0].text, /я предлагаю подход/);
-  assert.equal(codex.полученное[0].from, "claude");
+  await дождаться(() => codex.полученное.length === 1, "передача рецензенту");
+
+  const п = codex.полученное[0];
+  assert.equal(п.from, "claude");
+  assert.match(п.text, /исходная задача/, "без задачи рецензент не знает, что проверять");
+  assert.match(п.text, /сделал/);
+  assert.match(п.text, /СЫРОЙ вывод инструмента Bash/);
+  assert.match(п.text, /25 passed/);
+  assert.match(п.text, /ВЕРДИКТ/, "без просьбы о вердикте цикл нечем завершить");
+  assert.equal(к.state.round, 1);
+  assert.equal(к.state.stage, "reviewing");
+  журнал.close();
+});
+
+test("вердикт ПРИНЯТО завершает цикл", async () => {
+  const { к, claude, codex, журнал, события } = комната();
+  await к.fromHuman("задача", "review");
+  ход(к, "claude", "сделал");
+  await дождаться(() => codex.полученное.length === 1, "передача рецензенту");
+  ход(к, "codex", "Расхождений нет.\nВЕРДИКТ: ПРИНЯТО");
+  await дождаться(() => к.state.stage === "accepted", "завершение цикла");
+
+  assert.equal(claude.полученное.length, 1, "принятую работу не возвращают разработчику");
+  assert.equal(к.state.verdict, "accepted");
   assert.ok(
-    !/задача/.test(codex.полученное[0].text),
-    "реплика человека не должна пересылаться как материал агента",
+    системные(события).some((е) => /принял/i.test(е.text ?? "")),
+    "человек должен увидеть, что работа принята",
   );
   журнал.close();
 });
 
-test("поток НЕ передаётся второму агенту", async () => {
+test("вердикт ЕСТЬ ЗАМЕЧАНИЯ возвращает работу разработчику", async () => {
   const { к, claude, codex, журнал } = комната();
-  await к.fromHuman("задача", "claude");
-  codex.полученное.length = 0;
+  await к.fromHuman("задача", "review");
+  ход(к, "claude", "сделал");
+  await дождаться(() => codex.полученное.length === 1, "передача рецензенту");
+  ход(к, "codex", "Найден дефект в расчёте.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await дождаться(() => claude.полученное.length === 2, "возврат разработчику");
+
+  assert.equal(claude.полученное[1].from, "codex");
+  assert.match(claude.полученное[1].text, /Найден дефект/);
+  assert.equal(к.state.verdict, "remarks");
+  assert.equal(к.state.stage, "working");
+  журнал.close();
+});
+
+test("без вердикта ответ рецензента удерживается до решения человека", async () => {
+  const { к, claude, codex, журнал, события } = комната();
+  await к.fromHuman("задача", "review");
+  ход(к, "claude", "сделал");
+  await дождаться(() => codex.полученное.length === 1, "передача рецензенту");
+  ход(к, "codex", "Что-то не нравится, но не уверен.");
+  await дождаться(() => к.state.stage === "held", "удержание");
+
+  assert.equal(claude.полученное.length, 1, "без вердикта нельзя решать за человека");
+  assert.equal(к.state.held.to, "claude");
+  assert.match(к.state.held.reason, /вердикт/i);
+  assert.equal(к.state.verdict, "missing");
+  assert.ok(системные(события).some((е) => /вердикт/i.test(е.text ?? "")));
+  журнал.close();
+});
+
+test("удержанное отправляется по команде человека", async () => {
+  const { к, claude, codex, журнал } = комната();
+  await к.fromHuman("задача", "review");
+  ход(к, "claude", "сделал");
+  await дождаться(() => codex.полученное.length === 1, "передача рецензенту");
+  ход(к, "codex", "Что-то не нравится.");
+  await дождаться(() => к.state.stage === "held", "удержание");
+
+  await к.releaseHeld();
+  assert.equal(claude.полученное.length, 2);
+  assert.match(claude.полученное[1].text, /Что-то не нравится/);
+  assert.equal(к.state.held, undefined);
+  журнал.close();
+});
+
+test("предел раундов удерживает непроверенные исправления, а не теряет их", async () => {
+  const { к, claude, codex, журнал, события } = комната(1);
+  await к.fromHuman("задача", "review");
+  ход(к, "claude", "версия один");
+  await дождаться(() => codex.полученное.length === 1, "первая проверка");
+  ход(к, "codex", "Плохо.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await дождаться(() => claude.полученное.length === 2, "возврат разработчику");
+  ход(к, "claude", "версия два");
+  await дождаться(() => к.state.stage === "held", "удержание на пределе");
+
+  assert.equal(codex.полученное.length, 1, "сверх предела рецензент не вызывается");
+  assert.equal(к.state.held.to, "codex");
+  assert.match(
+    к.state.held.reason,
+    /не провер/i,
+    "человек должен знать, что исправления остались непроверенными",
+  );
+  assert.ok(системные(события).some((е) => /предел/i.test(е.text ?? "")));
+
+  await к.releaseHeld();
+  assert.equal(codex.полученное.length, 2);
+  assert.match(codex.полученное[1].text, /версия два/);
+  журнал.close();
+});
+
+test("нулевой предел: работа разработчика удерживается, а не пропадает", async () => {
+  const { к, codex, журнал } = комната(0);
+  await к.fromHuman("задача", "review");
+  ход(к, "claude", "готово");
+  await дождаться(() => к.state.stage === "held", "удержание");
+  assert.equal(codex.полученное.length, 0);
+  assert.equal(к.state.held.to, "codex");
+  журнал.close();
+});
+
+test("выключенные автораунды удерживают пересылку", async () => {
+  const { к, codex, журнал } = комната();
+  к.setAuto(false);
+  await к.fromHuman("задача", "review");
+  ход(к, "claude", "готово");
+  await дождаться(() => к.state.stage === "held", "удержание");
+  assert.equal(codex.полученное.length, 0);
+  assert.match(к.state.held.reason, /автораунд/i);
+  журнал.close();
+});
+
+test("проваленный ход разработчика останавливает цикл без пересылки", async () => {
+  const { к, codex, журнал, события } = комната();
+  await к.fromHuman("задача", "review");
+  к.handle(событие("claude", "message", { text: "начал" }));
+  к.handle(событие("claude", "turn_completed", { failed: true }));
+  await дождаться(() => к.state.stage === "stopped", "остановка цикла");
+  assert.equal(codex.полученное.length, 0);
+  assert.ok(системные(события).some((е) => /ошибк/i.test(е.text ?? "")));
+  журнал.close();
+});
+
+test("падение процесса агента посреди цикла прекращает ожидание", async () => {
+  const { к, codex, журнал } = комната();
+  await к.fromHuman("задача", "review");
+  к.handle(событие("claude", "error", { failed: true, text: "процесс упал" }));
+  await дождаться(() => к.state.stage === "stopped", "остановка цикла");
+  assert.equal(codex.полученное.length, 0, "ждать ответа от мёртвого процесса нельзя");
+  журнал.close();
+});
+
+test("поток без законченной реплики нечего отдавать на проверку", async () => {
+  const { к, codex, журнал } = комната();
+  await к.fromHuman("задача", "review");
   к.handle(событие("claude", "text_delta", { text: "по" }));
   к.handle(событие("claude", "text_delta", { text: "ток" }));
   к.handle(событие("claude", "turn_completed"));
-  await new Promise((r) => setImmediate(r));
+  await дождаться(() => к.state.stage === "stopped", "остановка цикла");
   assert.equal(
     codex.полученное.length,
     0,
-    "дельты не должны порождать передачу: иначе каждая буква запускала бы ответ",
+    "дельты не передаются: иначе каждая буква запускала бы ответ",
   );
   журнал.close();
 });
 
-test("сырой вывод инструмента передаётся целиком и помечен как сырой", async () => {
-  const { к, codex, журнал } = комната();
-  await к.fromHuman("задача", "claude");
-  codex.полученное.length = 0;
-  к.handle(
-    событие("claude", "tool_result", {
-      tool: "Bash",
-      callId: "c1",
-      text: "398 passed, 9 deselected",
-    }),
-  );
-  к.handle(событие("claude", "turn_completed"));
-  await дождаться(() => codex.полученное.length > 0, "передача сырого вывода");
-  const текст = codex.полученное[0].text;
-  assert.match(текст, /СЫРОЙ вывод инструмента Bash/);
-  assert.match(текст, /398 passed, 9 deselected/);
-  журнал.close();
-});
+// ---------------------------------------------------------------------------
+// Прямые вопросы и вопрос обоим: ничего не пересылается
+// ---------------------------------------------------------------------------
 
-test("предел автоматических раундов соблюдается", async () => {
-  const { к, claude, codex, журнал, события } = комната(2);
-  await к.fromHuman("задача", "claude");
-  for (let i = 0; i < 6; i += 1) {
-    const кто = i % 2 === 0 ? "claude" : "codex";
-    к.handle(событие(кто, "message", { text: `реплика ${i}` }));
-    к.handle(событие(кто, "turn_completed"));
-    await new Promise((r) => setTimeout(r, 120));
-  }
-  const передач = claude.полученное.length + codex.полученное.length;
-  assert.ok(
-    передач <= 1 + 2,
-    `передач ${передач}: предел 2 раунда плюс исходное сообщение человека`,
-  );
-  assert.ok(
-    события.some((е) => /Предел автоматических раундов/.test(е.text ?? "")),
-    "человек должен увидеть, что автоматика остановилась",
-  );
-  журнал.close();
-});
-
-test("предел ноль отключает автоматику полностью", async () => {
-  const { к, codex, журнал } = комната(0);
-  await к.fromHuman("задача", "claude");
-  codex.полученное.length = 0;
-  к.handle(событие("claude", "message", { text: "готово" }));
-  к.handle(событие("claude", "turn_completed"));
-  await new Promise((r) => setImmediate(r));
-  assert.equal(codex.полученное.length, 0);
-  журнал.close();
-});
-
-test("сообщение человека сбрасывает счётчик раундов", async () => {
-  const { к, журнал } = комната(2);
-  await к.fromHuman("первая задача", "claude");
-  к.handle(событие("claude", "message", { text: "а" }));
-  к.handle(событие("claude", "turn_completed"));
-  await дождаться(() => к.round === 1, "раунд должен вырасти");
-  await к.fromHuman("новая задача", "claude");
-  assert.equal(к.round, 0, "новая задача человека начинает счёт заново");
-  журнал.close();
-});
-
-test("отправка занятому агенту не теряется, а ждёт очереди", async () => {
+test("спросить обоих: оба отвечают, друг другу ничего не пересылается", async () => {
   const { к, claude, codex, журнал } = комната();
-  await к.fromHuman("задача", "claude");
+  await к.fromHuman("ваше мнение?", "both");
+  assert.equal(claude.полученное.length, 1);
+  assert.equal(codex.полученное.length, 1);
+  ход(к, "codex", "мнение Codex");
+  ход(к, "claude", "мнение Claude");
+  await пауза(150);
+  assert.equal(claude.полученное.length, 1, "именно здесь разошлись ответы в живом прогоне");
+  assert.equal(codex.полученное.length, 1);
+  журнал.close();
+});
+
+test("прямой вопрос рецензенту не запускает пересылку", async () => {
+  const { к, claude, codex, журнал } = комната();
+  await к.fromHuman("вопрос", "codex");
+  assert.equal(codex.полученное.length, 1);
+  ход(к, "codex", "ответ");
+  await пауза(150);
+  assert.equal(claude.полученное.length, 0);
+  журнал.close();
+});
+
+test("ход прямого вопроса не путается с ходом цикла", async () => {
+  const { к, claude, codex, журнал } = комната();
+  await к.fromHuman("задача", "review");
+  claude.busy = true;
+  await к.fromHuman("вопрос мимоходом", "claude");
+  assert.equal(claude.полученное.length, 1, "занятому не отправляем");
+  assert.equal(к.state.queued, 1);
+
+  claude.busy = false;
+  ход(к, "claude", "работа сделана");
+  await дождаться(
+    () => codex.полученное.length === 1 && claude.полученное.length === 2,
+    "пересылка работы и выдача отложенного вопроса",
+  );
+  assert.match(codex.полученное[0].text, /работа сделана/);
+
+  ход(к, "claude", "ответ на вопрос");
+  await пауза(150);
+  assert.equal(codex.полученное.length, 1, "ответ на прямой вопрос не идёт на проверку");
+  assert.ok(!/ответ на вопрос/.test(codex.полученное[0].text));
+  журнал.close();
+});
+
+test("материал прямого ответа не попадает в пересылку цикла", async () => {
+  // Родственник дефекта с общим накопителем: материал предыдущего хода,
+  // не предназначенного для проверки, не должен уходить рецензенту.
+  const { к, codex, журнал } = комната();
+  await к.fromHuman("вопрос", "claude");
+  ход(к, "claude", "постороннее рассуждение");
+  await пауза(100);
+  await к.fromHuman("задача", "review");
+  ход(к, "claude", "работа по задаче");
+  await дождаться(() => codex.полученное.length === 1, "передача рецензенту");
+  assert.match(codex.полученное[0].text, /работа по задаче/);
+  assert.ok(!/постороннее/.test(codex.полученное[0].text));
+  журнал.close();
+});
+
+// ---------------------------------------------------------------------------
+// Устаревшее и очередь
+// ---------------------------------------------------------------------------
+
+test("новая задача отменяет устаревшие пересылки прежней", async () => {
+  const { к, claude, codex, журнал, события } = комната();
+  await к.fromHuman("задача А", "review");
   codex.busy = true;
-  codex.полученное.length = 0;
-  к.handle(событие("claude", "message", { text: "материал" }));
-  к.handle(событие("claude", "turn_completed"));
-  await new Promise((r) => setImmediate(r));
-  assert.equal(codex.полученное.length, 0, "занятому не отправляем");
+  ход(к, "claude", "работа по задаче А");
+  await дождаться(() => к.state.queued === 1, "пересылка встала в очередь");
+
+  await к.fromHuman("задача Б", "review");
+  assert.equal(к.state.queued, 0, "пересылка по задаче А устарела");
+  assert.match(claude.полученное.at(-1).text, /задача Б/);
+  assert.ok(
+    системные(события).some((е) => /устаревш/i.test(е.text ?? "")),
+    "человек должен знать, что что-то не доставлено",
+  );
+
   codex.busy = false;
   к.handle(событие("codex", "turn_completed"));
-  await дождаться(() => codex.полученное.length === 1, "выгрузка очереди");
+  await пауза(150);
+  assert.ok(codex.полученное.every((п) => !/работа по задаче А/.test(п.text)));
   журнал.close();
 });
 
-test("остановка останавливает обоих и глушит автоматику", async () => {
-  const { к, claude, codex, журнал } = комната();
-  await к.stopAll();
-  assert.equal(claude.остановлен, 1);
-  assert.equal(codex.остановлен, 1);
-  к.handle(событие("claude", "message", { text: "после остановки" }));
-  к.handle(событие("claude", "turn_completed"));
-  await new Promise((r) => setImmediate(r));
-  assert.equal(codex.полученное.length, 0);
-  журнал.close();
-});
-
-test("каждое передаваемое событие помечено версией файлов", async () => {
-  const { к, журнал, события } = комната();
-  await к.fromHuman("задача", "claude");
-  к.handle(событие("claude", "message", { text: "ответ" }));
-  const помеченные = события.filter((е) => е.agent === "claude" && е.snapshot);
-  assert.ok(
-    помеченные.length > 0,
-    "без привязки к версии замечания будут относиться к неизвестному состоянию",
-  );
-  журнал.close();
-});
-
-test("история переживает перезапуск вместе с привязкой сессий", async () => {
-  const { к, журнал, каталог } = комната();
-  await к.fromHuman("запомни это", "claude");
-  журнал.bindSessions("r", "claude-s", "codex-t");
-  журнал.close();
-
-  const второй = new Journal(join(каталог, "j.sqlite"));
-  const история = второй.history("r");
-  assert.ok(
-    история.some((е) => е.text === "запомни это"),
-    "история должна читаться после перезапуска",
-  );
-  const привязка = второй.binding("r");
-  assert.equal(привязка.claudeSessionId, "claude-s");
-  assert.equal(привязка.codexThreadId, "codex-t");
-  второй.close();
-});
-
-test("привязка не перетирается неизвестным значением", async () => {
-  const { журнал, каталог } = комната();
-  журнал.bindSessions("r", "claude-s", "codex-t");
-  журнал.bindSessions("r", undefined, undefined);
-  const п = журнал.binding("r");
-  assert.equal(п.claudeSessionId, "claude-s", "потеря привязки хуже её отсутствия");
-  assert.equal(п.codexThreadId, "codex-t");
-  журнал.close();
-});
-
-test("материал одного агента не приписывается другому", async () => {
-  // Нашла Astra. Один общий накопитель принимал материал обоих агентов, и
-  // после завершения хода ВСЁ содержимое уходило от имени завершившего.
-  // Сценарий обычный, потому что адресат «Оба» стоит по умолчанию: Codex
-  // мог получить свой же комментарий с подписью «от разработчика Claude».
-  const { к, claude, codex, журнал } = комната();
-  await к.fromHuman("задача", "both");
-  claude.полученное.length = 0;
-  codex.полученное.length = 0;
-
-  к.handle(событие("codex", "message", { text: "замечание рецензента" }));
-  к.handle(событие("claude", "message", { text: "ответ разработчика" }));
-  к.handle(событие("claude", "turn_completed"));
-  await дождаться(() => codex.полученное.length > 0, "передача рецензенту");
-
-  const текст = codex.полученное[0].text;
-  assert.match(текст, /ответ разработчика/);
-  assert.ok(
-    !/замечание рецензента/.test(текст),
-    "рецензенту нельзя возвращать его же реплику от имени разработчика",
-  );
-  assert.equal(codex.полученное[0].from, "claude");
-  журнал.close();
-});
-
-test("очередь занятому агенту сохраняет порядок сообщений", async () => {
-  // Выгрузка шла с конца массива, поэтому несколько отложенных сообщений
-  // приходили в обратном порядке.
-  const { к, claude, codex, журнал } = комната(9);
-  await к.fromHuman("задача", "claude");
+test("очередь занятому агенту сохраняет порядок прямых сообщений", async () => {
+  const { к, codex, журнал } = комната();
   codex.busy = true;
-  codex.полученное.length = 0;
-
   for (const метка of ["первое", "второе", "третье"]) {
-    к.handle(событие("claude", "message", { text: метка }));
-    к.handle(событие("claude", "turn_completed"));
-    await new Promise((r) => setTimeout(r, 60));
+    await к.fromHuman(метка, "codex");
   }
-  assert.equal(codex.полученное.length, 0, "занятому не отправляем");
+  assert.equal(codex.полученное.length, 0);
+  assert.equal(к.state.queued, 3);
 
   codex.busy = false;
   к.handle(событие("codex", "turn_completed"));
@@ -307,60 +385,111 @@ test("очередь занятому агенту сохраняет поряд
   журнал.close();
 });
 
-test("сообщение человека не меняет версию идущего хода агента", async () => {
-  // Метка версии была одна на комнату. Реплика человека посреди проверки
-  // переписывала её, и замечание оказывалось привязано к состоянию, которого
-  // рецензент не видел.
-  const { к, журнал, события } = комната();
-  await к.fromHuman("первая задача", "claude");
-  к.handle(событие("claude", "message", { text: "начал работу" }));
-  const версияДо = события.filter((е) => е.agent === "claude").at(-1).snapshot;
+test("остановка останавливает обоих, поздний ход ничего не пересылает", async () => {
+  const { к, claude, codex, журнал } = комната();
+  await к.fromHuman("задача", "review");
+  await к.stopAll();
+  assert.equal(claude.остановлен, 1);
+  assert.equal(codex.остановлен, 1);
+  assert.equal(к.state.stage, "stopped");
+  ход(к, "claude", "после остановки");
+  await пауза(150);
+  assert.equal(codex.полученное.length, 0);
+  журнал.close();
+});
 
-  await к.fromHuman("а ещё вот что", "codex");
-  к.handle(событие("claude", "message", { text: "продолжаю тот же ход" }));
-  const версияПосле = события.filter((е) => е.agent === "claude").at(-1).snapshot;
+// ---------------------------------------------------------------------------
+// Подпись, версия, журнал
+// ---------------------------------------------------------------------------
 
-  assert.equal(
-    версияПосле,
-    версияДо,
-    "версия идущего хода не должна меняться от чужой реплики",
+test("служебные сообщения подписаны панелью, а не человеком", async () => {
+  // В живом прогоне «Предел автоматических раундов» показывался как «Вы».
+  const { к, codex, журнал, события } = комната();
+  await к.fromHuman("задача", "review");
+  ход(к, "claude", "сделал");
+  await дождаться(() => codex.полученное.length === 1, "передача рецензенту");
+  ход(к, "codex", "ВЕРДИКТ: ПРИНЯТО");
+  await дождаться(() => к.state.stage === "accepted", "завершение");
+  assert.ok(системные(события).length > 0);
+  const отЧеловека = события.filter((е) => е.agent === "human");
+  assert.ok(
+    отЧеловека.every((е) => е.text === "задача"),
+    "от имени человека — только то, что он написал",
   );
   журнал.close();
 });
 
+test("реплика человека не меняет версию идущего хода агента", async () => {
+  const { к, журнал, события, каталог } = комната();
+  await к.fromHuman("первая задача", "review");
+  к.handle(событие("claude", "message", { text: "начал работу" }));
+  const версияДо = события.filter((е) => е.agent === "claude").at(-1).snapshot;
+
+  writeFileSync(join(каталог, "изменение.txt"), "другое состояние");
+  await к.fromHuman("а вот вопрос", "codex");
+  assert.notEqual(к.snapshot.id, версияДо, "иначе проверка ничего не доказывает");
+
+  к.handle(событие("claude", "message", { text: "продолжаю тот же ход" }));
+  const версияПосле = события.filter((е) => е.agent === "claude").at(-1).snapshot;
+  assert.equal(версияПосле, версияДо);
+  журнал.close();
+});
+
+test("события агента помечены версией файлов", async () => {
+  const { к, журнал, события } = комната();
+  await к.fromHuman("задача", "review");
+  к.handle(событие("claude", "message", { text: "ответ" }));
+  assert.ok(события.some((е) => е.agent === "claude" && е.snapshot));
+  журнал.close();
+});
+
+test("история переживает перезапуск вместе с привязкой сессий", async () => {
+  const { к, журнал, каталог } = комната();
+  await к.fromHuman("запомни это", "claude");
+  журнал.bindSessions("r", "claude-s", "codex-t");
+  журнал.close();
+
+  const второй = new Journal(join(каталог, "j.sqlite"));
+  assert.ok(второй.history("r").some((е) => е.text === "запомни это"));
+  const привязка = второй.binding("r");
+  assert.equal(привязка.claudeSessionId, "claude-s");
+  assert.equal(привязка.codexThreadId, "codex-t");
+  второй.close();
+});
+
+test("привязка не перетирается неизвестным значением", async () => {
+  const { журнал } = комната();
+  журнал.bindSessions("r", "claude-s", "codex-t");
+  журнал.bindSessions("r", undefined, undefined);
+  const п = журнал.binding("r");
+  assert.equal(п.claudeSessionId, "claude-s");
+  assert.equal(п.codexThreadId, "codex-t");
+  журнал.close();
+});
+
 test("полная запись протокола сохраняется отдельно от показанного текста", async () => {
-  // Текст обрезается до 64 000 символов для показа. Первая версия журнала
-  // хранила только обрезанное, и окончание большого вывода терялось.
   const { к, журнал } = комната();
   await к.fromHuman("задача", "claude");
-  const длинный = "x".repeat(200_000);
   к.handle(
     событие("claude", "tool_result", {
       tool: "Bash",
       callId: "c9",
       text: "обрезано для показа",
-      raw: { content: длинный },
+      raw: { content: "x".repeat(200_000) },
     }),
   );
-  const события_ = журнал.history("r");
-  const запись = события_.find((е) => е.callId === "c9");
-  assert.ok(запись, "событие должно быть в журнале");
-  const сырое = журнал.rawOf("r", запись.id);
-  assert.equal(
-    сырое.content.length,
-    200_000,
-    "полный вывод обязан оставаться доступным",
-  );
+  const запись = журнал.history("r").find((е) => е.callId === "c9");
+  assert.ok(запись);
+  assert.equal(журнал.rawOf("r", запись.id).content.length, 200_000);
   журнал.close();
 });
 
 test("журнал после закрытия не роняет позднее событие", async () => {
-  // Процесс агента может выдать exit уже после закрытия комнаты.
   const { к, журнал } = комната();
   await к.fromHuman("задача", "claude");
   журнал.close();
   assert.doesNotThrow(() => {
-    к.handle(событие("claude", "error", { text: "процесс завершился" }));
-  }, "закрытая база не должна ронять обработку позднего события");
+    к.handle(событие("claude", "error", { failed: true, text: "процесс завершился" }));
+  });
   assert.deepEqual(журнал.history("r"), []);
 });

@@ -29,6 +29,11 @@
           "type": "number", "default": 3,
           "description": "Предел автоматических раундов рецензирования. 0 отключает автоматику."
         },
+        "agentPanel.claudeSettingSources": {
+          "type": "string",
+          "default": "project,local",
+          "description": "Какие настройки загружает Claude панели. По умолчанию без пользовательских: иначе в сессии панели срабатывают ваши глобальные хуки. Пустая строка — загружать всё."
+        },
         "agentPanel.claudePermissionMode": {
           "type": "string",
           "enum": ["default", "acceptEdits", "plan", "bypassPermissions"],

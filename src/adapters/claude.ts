@@ -1,30 +1,36 @@
 /**
  * Адаптер Claude Code: запуск через CLI в режиме потока.
  *
- * Формат не угадан, а проверен запуском на этой машине (Claude Code 2.1.259):
+ * Формат снят запуском на этой машине (Claude Code 2.1.259):
  *
  *   claude -p --input-format stream-json --output-format stream-json
- *          --verbose --include-partial-messages
+ *          --verbose --include-partial-messages --setting-sources project,local
  *
- * Ввод: по одной строке NDJSON на реплику,
- *   {"type":"user","message":{"role":"user","content":[{"type":"text","text":"…"}]}}
- * Контекст между репликами сохраняется, session_id один и тот же,
- * на каждую реплику приходит свой `result`. Это проверено двумя репликами:
- * вторая вспомнила число из первой.
+ * Ввод — по строке NDJSON на реплику; контекст и session_id сохраняются между
+ * репликами, на каждую приходит свой `result`.
  *
- * Вывод, наблюдённые виды записей:
- *   system/init            — session_id, tools, model, cwd, permissionMode
- *   stream_event           — обёртка событий Anthropic API:
- *     content_block_delta с delta.type = text_delta      (.text)
- *                          или delta.type = input_json_delta (.partial_json)
- *   assistant              — message.content[]: блоки tool_use или text
- *   user                   — message.content[]: блоки tool_result
- *   result                 — session_id, is_error, num_turns, permission_denials
+ * Вывод: system/init, stream_event (text_delta / input_json_delta), assistant
+ * (text / tool_use), user (tool_result), result (is_error, num_turns).
  *
- * **Почему input_json_delta не превращается в «инструмент выполняется».**
- * Эти дельты — формирование АРГУМЕНТОВ вызова. Инструмент в этот момент ещё
- * не запущен. Показать их как выполнение значило бы врать человеку о
- * состоянии, а различение состояний — требование постановки.
+ * Решения, за которые заплачено живым прогоном:
+ *
+ * **`--setting-sources project,local`.** Без него дочерняя сессия загружает
+ * пользовательский settings.json со всеми хуками, и Stop-хук приходит в неё
+ * как реплика: в тестовом прогоне панель записала две заметки в хранилище
+ * владельца. Проверено запуском: с флагом событий хуков ноль, вход по
+ * подписке работает. `--bare` не годится — он не читает OAuth.
+ *
+ * **stderr — диагностика, а не ошибка.** Служебные логи показывались красной
+ * репликой с цветовыми кодами.
+ *
+ * **Плановая остановка — не авария.** Закрытие комнаты порождало «процесс
+ * завершился: SIGTERM» как ошибку.
+ *
+ * **Обработчики error на процессе и stdin обязательны.** Без них ненайденная
+ * команда или запись в умерший процесс роняют хост расширений целиком.
+ *
+ * input_json_delta не показывается как «инструмент выполняется»: это
+ * формирование аргументов, а не выполнение.
  */
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createInterface, Interface } from "node:readline";
@@ -35,16 +41,18 @@ import {
   PanelEvent,
   clamp,
   newEventId,
+  stripAnsi,
 } from "./types.js";
 
 export interface ClaudeOptions {
   readonly command: string;
+  /** Аргументы перед флагами Claude — например путь к скрипту. */
+  readonly commandArgs?: readonly string[];
   readonly cwd: string;
-  /** Продолжить существующую сессию вместо новой. */
   readonly resumeSessionId?: string;
-  /** Дополнительные аргументы: модель, разрешения, ограничения инструментов. */
   readonly extraArgs?: readonly string[];
-  /** Вызывается, когда становится известен session_id (асинхронно). */
+  /** Источники настроек. По умолчанию без пользовательских; "" — флаг не передаётся. */
+  readonly settingSources?: string;
   readonly onSessionId?: (id: string) => void;
 }
 
@@ -55,15 +63,17 @@ export class ClaudeAdapter implements Adapter {
   #строки: Interface | undefined;
   #сессия: string | undefined;
   #занят = false;
-  #прерван = false;
   #ходИдёт: string | undefined;
-  /** Незавершённые вызовы инструментов: callId -> имя. */
   readonly #вызовы = new Map<string, string>();
+  readonly #останавливаемые = new WeakSet<object>();
+  readonly #отчитанные = new WeakSet<object>();
 
   constructor(
     private readonly опции: ClaudeOptions,
     private readonly sink: EventSink,
-  ) {}
+  ) {
+    this.#сессия = опции.resumeSessionId;
+  }
 
   get busy(): boolean {
     return this.#занят;
@@ -74,12 +84,10 @@ export class ClaudeAdapter implements Adapter {
   }
 
   async start(): Promise<void> {
-    if (this.#процесс) {
-      throw new Error("адаптер Claude уже запущен");
-    }
-    // При перезапуске после прерывания продолжается та же сессия.
-    const продолжить = this.опции.resumeSessionId ?? this.#сессия;
+    if (this.#процесс) throw new Error("адаптер Claude уже запущен");
+    const источники = this.опции.settingSources ?? "project,local";
     const аргументы = [
+      ...(this.опции.commandArgs ?? []),
       "-p",
       "--input-format",
       "stream-json",
@@ -87,7 +95,9 @@ export class ClaudeAdapter implements Adapter {
       "stream-json",
       "--verbose",
       "--include-partial-messages",
-      ...(продолжить ? ["--resume", продолжить] : []),
+      ...(источники ? ["--setting-sources", источники] : []),
+      // Перезапуск после падения или прерывания продолжает ту же сессию.
+      ...(this.#сессия ? ["--resume", this.#сессия] : []),
       ...(this.опции.extraArgs ?? []),
     ];
     const процесс = spawn(this.опции.command, аргументы, {
@@ -99,78 +109,63 @@ export class ClaudeAdapter implements Adapter {
 
     this.#строки = createInterface({ input: процесс.stdout });
     this.#строки.on("line", (строка) => this.#разобрать(строка));
-
-    // stderr не смешивается с потоком: строка, не являющаяся JSON, иначе
-    // выглядела бы как повреждённое событие протокола.
-    процесс.stderr.on("data", (кусок: Buffer) => {
-      const текст = кусок.toString("utf8").trim();
-      if (текст) this.#выдать("error", "turn", { text: clamp(текст) });
+    createInterface({ input: процесс.stderr }).on("line", (строка) => {
+      const текст = stripAnsi(строка).trim();
+      if (текст) this.#выдать("diagnostic", "stream", { text: clamp(текст) });
     });
+    процесс.stdin.on("error", (беда) => {
+      this.#выдать("diagnostic", "stream", { text: `запись в Claude не удалась: ${беда.message}` });
+    });
+    процесс.on("error", (беда) => this.#конец(процесс, `Claude не запустился: ${беда.message}`));
+    процесс.on("exit", (код, сигнал) =>
+      this.#конец(процесс, `процесс Claude завершился неожиданно (код ${код}, сигнал ${сигнал}). Подробности — в диагностике.`),
+    );
+  }
 
-    процесс.on("exit", (код, сигнал) => {
+  #конец(процесс: ChildProcessWithoutNullStreams, текстОшибки: string): void {
+    if (this.#процесс === процесс) {
+      this.#процесс = undefined;
       this.#занят = false;
-      this.#выдать("error", "turn", {
-        text: `процесс Claude завершился: код ${код}, сигнал ${сигнал}`,
-      });
-    });
+    }
+    if (this.#отчитанные.has(процесс)) return;
+    this.#отчитанные.add(процесс);
+    if (this.#останавливаемые.has(процесс)) {
+      this.#выдать("diagnostic", "stream", { text: "процесс Claude остановлен" });
+    } else {
+      this.#выдать("error", "turn", { text: текстОшибки, failed: true });
+    }
   }
 
   async send(prompt: AgentPrompt): Promise<void> {
-    // После прерывания процесс поднимается заново с той же сессией:
-    // иначе прерывание было бы необратимым выключением агента.
-    if (!this.#процесс && this.#прерван) {
-      this.#прерван = false;
-      await this.start();
-    }
+    if (!this.#процесс) await this.start();
     const процесс = this.#процесс;
     if (!процесс) throw new Error("адаптер Claude не запущен");
     const запись = {
       type: "user",
-      message: {
-        role: "user",
-        content: [{ type: "text", text: this.#оформить(prompt) }],
-      },
+      message: { role: "user", content: [{ type: "text", text: this.#оформить(prompt) }] },
     };
     this.#занят = true;
     процесс.stdin.write(`${JSON.stringify(запись)}\n`);
   }
 
-  /**
-   * Кто прислал реплику — часть сообщения, а не только журнала.
-   *
-   * Без пометки агент не отличит замечание рецензента от указания человека,
-   * а это разные по весу вещи: указание человека исполняется, замечание
-   * рецензента обсуждается.
-   */
+  /** Кто прислал реплику — часть сообщения: указание человека и замечание рецензента весят по-разному. */
   #оформить(prompt: AgentPrompt): string {
     const шапка =
       prompt.from === "human"
         ? "[от человека]"
         : prompt.from === "codex"
           ? "[замечание рецензента Codex]"
-          : "[от Claude]";
-    const версия = prompt.snapshot
-      ? `\n[версия файлов: ${prompt.snapshot}]`
-      : "";
+          : "[от панели]";
+    const версия = prompt.snapshot ? `\n[версия файлов: ${prompt.snapshot}]` : "";
     return `${шапка}${версия}\n${prompt.text}`;
   }
 
   /**
-   * Прерывание хода, после которого разговор можно продолжить.
-   *
-   * У CLI в режиме print отдельной команды прерывания нет, поэтому
-   * прерывание — это остановка процесса. Но прежняя версия на этом и
-   * останавливалась: следующее сообщение получало «адаптер Claude не
-   * запущен», то есть кнопка «Прервать ход» выключала агента насовсем.
-   *
-   * Теперь запомненный session_id позволяет поднять процесс заново с
-   * `--resume`, и история сохраняется.
+   * У CLI в режиме print нет команды прерывания хода, поэтому это остановка
+   * процесса. Следующая отправка поднимет его заново с --resume той же сессии.
    */
   async interrupt(): Promise<void> {
-    const сессия = this.#сессия;
     await this.stop();
-    this.#сессия = сессия;
-    this.#прерван = true;
   }
 
   async stop(): Promise<void> {
@@ -180,6 +175,7 @@ export class ClaudeAdapter implements Adapter {
     this.#процесс = undefined;
     this.#занят = false;
     if (!процесс) return;
+    this.#останавливаемые.add(процесс);
     процесс.stdin.end();
     процесс.kill();
   }
@@ -191,59 +187,38 @@ export class ClaudeAdapter implements Adapter {
     try {
       запись = JSON.parse(обрезанная) as Record<string, unknown>;
     } catch {
-      // Не JSON — это сбой, а не событие. Прятать его нельзя: человек должен
-      // видеть повреждённый поток, а не молчание.
-      this.#выдать("error", "turn", {
-        text: clamp(`строка вне протокола: ${обрезанная}`),
-      });
+      this.#выдать("diagnostic", "stream", { text: clamp(`строка вне протокола: ${stripAnsi(обрезанная)}`) });
       return;
+    }
+
+    if (typeof запись["session_id"] === "string" && запись["session_id"] !== this.#сессия) {
+      // Идентификатор приходит асинхронно, уже после start().
+      this.#сессия = запись["session_id"];
+      this.опции.onSessionId?.(this.#сессия);
     }
 
     const вид = запись["type"];
-    if (typeof запись["session_id"] === "string") {
-      const прежняя = this.#сессия;
-      this.#сессия = запись["session_id"];
-      // Идентификатор приходит АСИНХРОННО, уже после start(). Если о нём
-      // не сообщить, вызывающий сохранит привязку до его появления, и
-      // после перезапуска панель покажет старую историю, разговаривая с
-      // новой сессией, которая о ней не знает.
-      if (прежняя !== this.#сессия) {
-        this.опции.onSessionId?.(this.#сессия);
-      }
-    }
-
     if (вид === "system" && запись["subtype"] === "init") {
-      this.#выдать("turn_started", "turn", {
+      this.#выдать("diagnostic", "stream", {
         text: `сессия ${String(запись["session_id"]).slice(0, 8)}, модель ${String(запись["model"])}`,
         raw: запись,
       });
-      return;
-    }
-
-    if (вид === "stream_event") {
+    } else if (вид === "stream_event") {
       this.#дельта(запись);
-      return;
-    }
-
-    if (вид === "assistant") {
+    } else if (вид === "assistant") {
       this.#блокиАссистента(запись);
-      return;
-    }
-
-    if (вид === "user") {
+    } else if (вид === "user") {
       this.#блокиПользователя(запись);
-      return;
-    }
-
-    if (вид === "result") {
+    } else if (вид === "result") {
       this.#занят = false;
       this.#ходИдёт = undefined;
       const ошибка = запись["is_error"] === true;
-      this.#выдать(ошибка ? "error" : "turn_completed", "turn", {
+      this.#выдать("turn_completed", "turn", {
         text: ошибка
-          ? `ход завершён с ошибкой: ${String(запись["stop_reason"] ?? "причина не указана")}`
+          ? `ход завершён с ошибкой: ${String(запись["stop_reason"] ?? запись["subtype"] ?? "причина не указана")}`
           : `ход завершён, реплик ${String(запись["num_turns"])}`,
         raw: запись,
+        ...(ошибка ? { failed: true } : {}),
       });
     }
   }
@@ -257,12 +232,9 @@ export class ClaudeAdapter implements Adapter {
     }
     if (событие["type"] !== "content_block_delta") return;
     const дельта = событие["delta"] as Record<string, unknown> | undefined;
-    if (!дельта) return;
-    if (дельта["type"] === "text_delta" && typeof дельта["text"] === "string") {
+    if (дельта?.["type"] === "text_delta" && typeof дельта["text"] === "string") {
       this.#выдать("text_delta", "stream", { text: дельта["text"] });
     }
-    // input_json_delta намеренно не порождает события: это формирование
-    // аргументов, а не выполнение. См. описание модуля.
   }
 
   #блокиАссистента(запись: Record<string, unknown>): void {
@@ -289,13 +261,8 @@ export class ClaudeAdapter implements Adapter {
       if (блок["type"] !== "tool_result") continue;
       const id = String(блок["tool_use_id"] ?? "");
       const содержимое = блок["content"];
-      // Сырой вывод, а не пересказ. Рецензент, лишённый права запускать
-      // что-либо, зависит от этого текста; пересказ разработчика здесь —
-      // именно тот механизм, которым в проект уже попал неверный вывод.
-      const текст =
-        typeof содержимое === "string"
-          ? содержимое
-          : JSON.stringify(содержимое ?? null);
+      // Сырой вывод, а не пересказ: рецензент без права запуска зависит от него.
+      const текст = typeof содержимое === "string" ? содержимое : JSON.stringify(содержимое ?? null);
       this.#выдать("tool_result", "turn", {
         tool: this.#вызовы.get(id) ?? "?",
         callId: id,
@@ -307,11 +274,8 @@ export class ClaudeAdapter implements Adapter {
   }
 
   #блоки(запись: Record<string, unknown>): Record<string, unknown>[] {
-    const сообщение = запись["message"] as Record<string, unknown> | undefined;
-    const содержимое = сообщение?.["content"];
-    return Array.isArray(содержимое)
-      ? (содержимое as Record<string, unknown>[])
-      : [];
+    const содержимое = (запись["message"] as Record<string, unknown> | undefined)?.["content"];
+    return Array.isArray(содержимое) ? (содержимое as Record<string, unknown>[]) : [];
   }
 
   #выдать(

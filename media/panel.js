@@ -1,30 +1,46 @@
 /**
  * Интерфейс комнаты.
  *
- * Два правила разметки, оба следуют из постановки.
+ * Живой прогон показал, что прежний интерфейс мешал понять суть: колонка
+ * действий занимала пол-панели, служебные сообщения подписывались «Вы», логи
+ * агентов шли красными репликами. Отсюда устройство:
  *
- * Состояния различимы. «Агент формирует вызов инструмента», «инструмент
- * выполняется», «результат получен» и «результат передан второму агенту» —
- * это четыре разных состояния, и показывать их одинаково значит врать о том,
- * что происходит.
- *
- * Поток отделён от законченного. Дельты дописываются в текущий пузырь и
- * никуда не передаются; законченная реплика становится отдельной записью.
- * Человек видит генерацию, агент получает только результат.
+ *   * беседа на всю ширину; действия агента за ход — одна свёрнутая строка
+ *     «Claude · 9 команд, 2 чтения» внутри беседы, подробности по клику;
+ *   * служебные сообщения — от «Панели», отдельным стилем;
+ *   * логи процессов — в свёрнутой «Диагностике» внизу;
+ *   * сверху — чей ход, сколько проверок, вердикт, и что удержано.
  */
 const vscode = acquireVsCodeApi();
+const { summarizeTools } = globalThis.PanelFormat;
 
-const беседа = document.getElementById("беседа");
-const действия = document.getElementById("действия");
-const ввод = document.getElementById("ввод");
-const адресат = document.getElementById("адресат");
+const $ = (id) => document.getElementById(id);
+const беседа = $("беседа");
+const ввод = $("ввод");
+const маршрут = $("маршрут");
 
-const ИМЕНА = { claude: "Claude", codex: "Codex", human: "Вы" };
+const ИМЕНА = { claude: "Claude", codex: "Codex", human: "Вы", system: "Панель" };
+const ЭТАПЫ = {
+  idle: "ожидание",
+  working: "Claude работает",
+  reviewing: "Codex проверяет",
+  held: "ждёт вашего решения",
+  accepted: "работа принята",
+  stopped: "остановлено",
+};
+const ВЕРДИКТЫ = { accepted: "вердикт: принято", remarks: "вердикт: есть замечания", missing: "вердикт не вынесен" };
+const ПОДСКАЗКИ = {
+  review: "Claude сделает, Codex проверит — по очереди, до вердикта",
+  both: "оба ответят независимо, друг другу ничего не передаётся",
+  claude: "только Claude, без проверки",
+  codex: "только Codex, без пересылки",
+};
+const ПРЕДЕЛ_ДИАГНОСТИКИ = 500;
 
-/** Открытые пузыри потока по агенту: куда дописывать дельты. */
+/** Идущий поток текста по агенту. */
 const потоки = new Map();
-/** Вызовы инструментов: callId -> элемент строки в списке действий. */
-const вызовы = new Map();
+/** Открытая группа действий по агенту: { узел, имена, вызовы }. */
+const группы = new Map();
 
 function элемент(тег, класс, текст) {
   const э = document.createElement(тег);
@@ -33,21 +49,38 @@ function элемент(тег, класс, текст) {
   return э;
 }
 
-function вниз(контейнер) {
-  контейнер.scrollTop = контейнер.scrollHeight;
+function вниз() {
+  беседа.scrollTop = беседа.scrollHeight;
 }
 
-function времяТекст(мс) {
-  const d = new Date(мс);
-  return d.toLocaleTimeString("ru-RU", { hour12: false });
-}
-
-function пузырь(агент) {
+function пузырь(агент, текст) {
   const п = элемент("article", `пузырь ${агент}`);
-  const шапка = элемент("div", "автор", ИМЕНА[агент] ?? агент);
-  п.append(шапка, элемент("div", "текст"));
+  п.append(элемент("div", "автор", ИМЕНА[агент] ?? агент), элемент("div", "текст", текст ?? ""));
   беседа.append(п);
   return п;
+}
+
+function уведомление(текст, класс = "") {
+  беседа.append(элемент("div", `уведомление ${класс}`.trim(), текст));
+}
+
+function группаДействий(агент) {
+  let г = группы.get(агент);
+  if (г) return г;
+  const узел = элемент("details", `действия ${агент}`);
+  const сводка = элемент("summary");
+  const список = элемент("div", "список");
+  узел.append(сводка, список);
+  беседа.append(узел);
+  г = { узел, сводка, список, имена: [], вызовы: new Map() };
+  группы.set(агент, г);
+  обновитьСводку(агент, г);
+  return г;
+}
+
+function обновитьСводку(агент, г) {
+  const итог = summarizeTools(г.имена) || "действия";
+  г.сводка.textContent = `${ИМЕНА[агент]} · ${итог}`;
 }
 
 function показатьСобытие(е) {
@@ -60,150 +93,160 @@ function показатьСобытие(е) {
         потоки.set(е.agent, п);
       }
       п.querySelector(".текст").textContent += е.text ?? "";
-      вниз(беседа);
+      вниз();
       return;
     }
     case "message": {
-      // Законченная реплика закрывает поток: иначе одна и та же мысль
-      // осталась бы на экране дважды — как поток и как результат.
+      if (е.agent === "system") {
+        уведомление(е.text ?? "");
+        вниз();
+        return;
+      }
       const открытый = потоки.get(е.agent);
       if (открытый) {
         открытый.classList.remove("идёт");
         открытый.querySelector(".текст").textContent = е.text ?? "";
         потоки.delete(е.agent);
       } else {
-        const п = пузырь(е.agent);
-        п.querySelector(".текст").textContent = е.text ?? "";
+        пузырь(е.agent, е.text);
       }
-      if (е.snapshot) {
-        const метка = элемент("div", "версия-метка", `версия ${е.snapshot}`);
-        (потоки.get(е.agent) ?? беседа.lastElementChild).append(метка);
-      }
-      вниз(беседа);
+      вниз();
       return;
     }
     case "tool_call": {
-      const строка = элемент("div", "действие сформирован");
-      строка.append(
-        элемент("span", "агент", ИМЕНА[е.agent] ?? е.agent),
-        элемент("span", "стрелка", "→"),
-        элемент("span", "имя", е.tool ?? "?"),
-        элемент("span", "состояние", "вызов сформирован"),
-        элемент("time", null, времяТекст(е.at)),
-      );
-      const подробности = элемент("pre", "аргументы", е.text ?? "");
-      строка.append(подробности);
-      действия.append(строка);
-      if (е.callId) вызовы.set(е.callId, строка);
-      вниз(действия);
+      const г = группаДействий(е.agent);
+      г.имена.push(е.tool ?? "?");
+      const вызов = элемент("details", "вызов сформирован");
+      const заголовок = элемент("summary");
+      заголовок.append(элемент("span", "имя", е.tool ?? "?"), элемент("span", "метка", "вызов сформирован"));
+      вызов.append(заголовок, элемент("pre", "аргументы", е.text ?? ""));
+      г.список.append(вызов);
+      if (е.callId) г.вызовы.set(е.callId, вызов);
+      обновитьСводку(е.agent, г);
+      вниз();
       return;
     }
     case "tool_running": {
-      const строка = е.callId ? вызовы.get(е.callId) : undefined;
-      if (строка) {
-        строка.className = "действие выполняется";
-        строка.querySelector(".состояние").textContent = "выполняется";
+      const вызов = группы.get(е.agent)?.вызовы.get(е.callId);
+      if (вызов) {
+        вызов.className = "вызов выполняется";
+        вызов.querySelector(".метка").textContent = "выполняется";
       }
       return;
     }
     case "tool_result": {
-      const строка = е.callId ? вызовы.get(е.callId) : undefined;
-      const цель = строка ?? элемент("div", "действие готов");
-      цель.className = "действие готов";
-      if (!строка) {
-        цель.append(
-          элемент("span", "агент", ИМЕНА[е.agent] ?? е.agent),
-          элемент("span", "стрелка", "→"),
-          элемент("span", "имя", е.tool ?? "?"),
-          элемент("span", "состояние", "результат"),
-          элемент("time", null, времяТекст(е.at)),
-        );
-        действия.append(цель);
-      } else {
-        цель.querySelector(".состояние").textContent = "результат получен";
+      const г = группаДействий(е.agent);
+      let вызов = г.вызовы.get(е.callId);
+      if (!вызов) {
+        г.имена.push(е.tool ?? "?");
+        вызов = элемент("details", "вызов");
+        const заголовок = элемент("summary");
+        заголовок.append(элемент("span", "имя", е.tool ?? "?"), элемент("span", "метка", ""));
+        вызов.append(заголовок);
+        г.список.append(вызов);
+        обновитьСводку(е.agent, г);
       }
+      вызов.className = "вызов готов";
+      вызов.querySelector(".метка").textContent = "результат получен";
       const вывод = элемент("pre", "вывод", е.text ?? "");
-      вывод.title = "сырой вывод инструмента, передаётся второму агенту как есть";
-      цель.append(вывод);
-      if (е.callId) вызовы.delete(е.callId);
-      вниз(действия);
+      вывод.title = "сырой вывод инструмента — передаётся рецензенту как есть";
+      вызов.append(вывод);
       return;
     }
     case "approval_requested":
+      return;
     case "approval_decided": {
-      const строка = элемент(
-        "div",
-        `действие ${е.kind === "approval_decided" ? "отказ" : "запрос"}`,
-      );
-      строка.append(
-        элемент("span", "агент", ИМЕНА[е.agent] ?? е.agent),
-        элемент("span", "имя", е.kind === "approval_decided" ? "отказано" : "просит одобрения"),
-        элемент("span", "состояние", е.text ?? ""),
-      );
-      действия.append(строка);
-      вниз(действия);
+      const г = группаДействий(е.agent);
+      г.список.append(элемент("div", "вызов отказ", е.text ?? "отказано"));
       return;
     }
-    case "turn_started":
-    case "turn_completed": {
-      const строка = элемент(
-        "div",
-        "действие служебное",
-        `${ИМЕНА[е.agent] ?? е.agent}: ${е.kind === "turn_started" ? "ход начат" : "ход завершён"}` +
-          (е.text ? ` — ${е.text}` : ""),
-      );
-      действия.append(строка);
-      вниз(действия);
+    case "turn_completed":
+      группы.delete(е.agent);
+      if (е.failed) уведомление(`${ИМЕНА[е.agent]}: ${е.text ?? "ход не удался"}`, "ошибка");
       return;
-    }
     case "error": {
-      const п = пузырь(е.agent);
-      п.classList.add("ошибка");
-      п.querySelector(".текст").textContent = е.text ?? "ошибка";
       потоки.delete(е.agent);
-      вниз(беседа);
+      группы.delete(е.agent);
+      const п = пузырь(е.agent, е.text ?? "ошибка");
+      п.classList.add("ошибка");
+      вниз();
       return;
     }
+    case "diagnostic": {
+      const строки = $("диагностика-строки");
+      const время = new Date(е.at).toLocaleTimeString("ru-RU", { hour12: false });
+      строки.textContent += `${время} ${ИМЕНА[е.agent] ?? е.agent}: ${е.text ?? ""}\n`;
+      const все = строки.textContent.split("\n");
+      if (все.length > ПРЕДЕЛ_ДИАГНОСТИКИ) строки.textContent = все.slice(-ПРЕДЕЛ_ДИАГНОСТИКИ).join("\n");
+      const счёт = $("диагностика-счёт");
+      счёт.textContent = String(Number(счёт.textContent) + 1);
+      return;
+    }
+    default:
+      return;
   }
 }
 
 function показатьСостояние(с) {
-  if (!с) return;
-  document.getElementById("состояние-claude").textContent =
-    `Claude: ${с.claudeBusy ? "работает" : "ждёт"}`;
-  document.getElementById("состояние-codex").textContent =
-    `Codex: ${с.codexBusy ? "проверяет" : "ждёт"}`;
-  document.getElementById("раунд").textContent = `раунд ${с.round ?? 0}`;
-  document.getElementById("версия").textContent = `версия ${с.snapshot ?? "—"}`;
+  $("этап").textContent = ЭТАПЫ[с.stage] ?? с.stage;
+  $("этап").dataset.этап = с.stage;
+  $("раунд").textContent = `проверок ${с.round} из ${с.maxRounds}`;
+
+  const вердикт = $("вердикт");
+  вердикт.hidden = !с.verdict;
+  вердикт.textContent = ВЕРДИКТЫ[с.verdict] ?? "";
+  вердикт.dataset.вердикт = с.verdict ?? "";
+
+  const очередь = $("очередь");
+  очередь.hidden = !с.queued;
+  очередь.textContent = `в очереди ${с.queued}`;
+
+  const задача = $("задача");
+  задача.hidden = !с.task;
+  задача.textContent = с.task ? `Задача: ${с.task}` : "";
+
+  const удержано = $("удержано");
+  удержано.hidden = !с.held;
+  $("удержано-причина").textContent = с.held?.reason ?? "";
+  $("отпустить").textContent = с.held ? `Отправить ${ИМЕНА[с.held.to]}` : "Отправить";
+
+  $("авто").checked = с.auto;
 }
 
 window.addEventListener("message", (событие) => {
-  const данные = событие.data;
-  if (данные?.type !== "event") return;
-  показатьСобытие(данные.событие);
-  показатьСостояние(данные.состояние);
+  const д = событие.data;
+  if (д?.type === "event") показатьСобытие(д.событие);
+  else if (д?.type === "state") показатьСостояние(д.состояние);
 });
 
 function отправить() {
   const текст = ввод.value.trim();
   if (!текст) return;
-  vscode.postMessage({ type: "send", text: текст, to: адресат.value });
+  vscode.postMessage({ type: "send", text: текст, route: маршрут.value });
   ввод.value = "";
 }
 
-document.getElementById("отправить").addEventListener("click", отправить);
+function показатьПодсказку() {
+  $("подсказка").textContent = ПОДСКАЗКИ[маршрут.value] ?? "";
+  vscode.setState({ ...(vscode.getState() ?? {}), маршрут: маршрут.value });
+}
+
+const сохранённый = vscode.getState()?.маршрут;
+if (сохранённый && ПОДСКАЗКИ[сохранённый]) маршрут.value = сохранённый;
+показатьПодсказку();
+
+маршрут.addEventListener("change", показатьПодсказку);
+$("отправить").addEventListener("click", отправить);
 ввод.addEventListener("keydown", (е) => {
   if (е.key === "Enter" && (е.ctrlKey || е.metaKey)) {
     е.preventDefault();
     отправить();
   }
 });
-document.getElementById("стоп").addEventListener("click", () =>
-  vscode.postMessage({ type: "stopAll" }),
-);
-document.getElementById("прервать").addEventListener("click", () =>
-  vscode.postMessage({ type: "interrupt" }),
-);
-document.getElementById("авто").addEventListener("change", (е) =>
-  vscode.postMessage({ type: "setAuto", on: е.target.checked }),
-);
+$("отпустить").addEventListener("click", () => vscode.postMessage({ type: "release" }));
+$("стоп").addEventListener("click", () => vscode.postMessage({ type: "stopAll" }));
+$("прервать").addEventListener("click", () => vscode.postMessage({ type: "interrupt" }));
+$("авто").addEventListener("change", (е) => vscode.postMessage({ type: "setAuto", on: е.target.checked }));
+
+// История и состояние приходят только после этого сигнала.
+vscode.postMessage({ type: "ready" });

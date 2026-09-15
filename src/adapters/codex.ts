@@ -1,42 +1,27 @@
 /**
  * Адаптер Codex: JSON-RPC поверх stdio через `codex app-server`.
  *
- * Протокол не угадан: схема выгружена командой
- * `codex app-server generate-json-schema --out DIR` (Codex 0.153.0) и формы
- * запросов взяты из неё.
+ * Формы сообщений взяты из схемы `codex app-server generate-json-schema`
+ * (Codex 0.153.0), а не угаданы:
+ *   ответ thread/start / resume — { thread: { id } }
+ *   turn/started                — { threadId, turn: { id, status } }
+ *   item/agentMessage/delta     — { delta, itemId, threadId, turnId }
+ *   item/completed              — { item: ThreadItem, threadId, turnId }
+ *   turn/completed              — { threadId, turn: { id, status, error? } }
+ *   TurnStatus = completed | interrupted | failed | inProgress
+ *   ThreadItem: agentMessage, commandExecution, fileChange, mcpToolCall, reasoning…
  *
- * Используемые методы клиента:
- *   initialize        { capabilities, clientInfo }      clientInfo обязателен
- *   thread/start      { cwd, sandbox, approvalPolicy, developerInstructions }
- *   thread/resume     { threadId, ... }                 threadId обязателен
- *   turn/start        { threadId, input: UserInput[] }   оба обязательны
- *   turn/interrupt    { threadId, turnId }
- *   thread/read       читает сохранённую историю БЕЗ возобновления и подписки
+ * # Разделение ролей
  *
- * Нотификации сервера, на которые реагируем:
- *   thread/started, turn/started, turn/completed,
- *   item/started, item/completed, process/outputDelta, process/exited
+ * **Запись файлов запрещена, и это проверяемо.** Ветка запускается с
+ * `sandbox: "read-only"` и `approvalPolicy: "never"`, а на любой запрос
+ * одобрения от сервера панель отвечает отказом.
  *
- * UserInput — размеченное объединение; текстовый вариант:
- *   { type: "text", text: "…" }
+ * **Запрет запуска команд технически НЕ обеспечен.** Read-only сам по себе
+ * выполнение не запрещает; инструкция рецензенту — просьба, а не гарантия.
  *
- * SandboxMode = read-only | workspace-write | danger-full-access
- * AskForApproval = untrusted | on-request | never | { granular: … }
- *
- * # Разделение ролей и что именно обеспечено технически
- *
- * **Запись файлов запрещена и это проверяемо.** Ветка запускается с
- * `sandbox: "read-only"` и `approvalPolicy: "never"`: повышение прав не
- * запрашивается, а запись блокирует сама песочница. Плюс клиент по умолчанию
- * ОТКАЗЫВАЕТ на любой незнакомый запрос одобрения — принцип «неизвестное не
- * разрешено».
- *
- * **Запрет запуска команд технически НЕ обеспечен.** Режим read-only сам по
- * себе выполнение команд не запрещает. Инструкция рецензенту в
- * `developerInstructions` — это просьба, а не ограничение. Пока не найден
- * ключ конфигурации, отключающий инструмент оболочки, это ограничение
- * остаётся незакрытым, и приёмка обязана это фиксировать, а не выдавать
- * просьбу за гарантию.
+ * Как и у адаптера Claude: stderr — диагностика, плановая остановка — не
+ * авария, обработчики error на процессе и stdin обязательны.
  */
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createInterface, Interface } from "node:readline";
@@ -48,23 +33,22 @@ import {
   PanelEvent,
   clamp,
   newEventId,
+  stripAnsi,
 } from "./types.js";
 
 export interface CodexOptions {
   readonly command: string;
+  readonly commandArgs?: readonly string[];
   readonly cwd: string;
-  /** Продолжить сохранённую ветку вместо новой. */
   readonly resumeThreadId?: string;
-  /** Роль рецензента, попадает в developerInstructions. */
   readonly reviewerInstructions?: string;
+  readonly onSessionId?: (id: string) => void;
 }
 
-/** Ответ на thread/start и thread/resume: объект thread, а не плоский id. */
 interface ОтветВетки {
-  readonly thread?: { readonly id?: string; readonly sessionId?: string };
+  readonly thread?: { readonly id?: string };
 }
 
-/** Виды элементов ThreadItem, которые панель показывает как инструменты. */
 const ИНСТРУМЕНТАЛЬНЫЕ = new Set([
   "commandExecution",
   "fileChange",
@@ -90,7 +74,8 @@ export class CodexAdapter implements Adapter {
   #занят = false;
   #следующийId = 1;
   readonly #ожидания = new Map<number, Ожидание>();
-  /** Решения по запросам одобрения — для журнала и проверки приёмки. */
+  readonly #останавливаемые = new WeakSet<object>();
+  readonly #отчитанные = new WeakSet<object>();
   readonly решения: ApprovalDecision[] = [];
 
   constructor(
@@ -108,7 +93,7 @@ export class CodexAdapter implements Adapter {
 
   async start(): Promise<void> {
     if (this.#процесс) throw new Error("адаптер Codex уже запущен");
-    const процесс = spawn(this.опции.command, ["app-server"], {
+    const процесс = spawn(this.опции.command, [...(this.опции.commandArgs ?? []), "app-server"], {
       cwd: this.опции.cwd,
       shell: process.platform === "win32",
       stdio: ["pipe", "pipe", "pipe"],
@@ -117,67 +102,85 @@ export class CodexAdapter implements Adapter {
 
     this.#строки = createInterface({ input: процесс.stdout });
     this.#строки.on("line", (строка) => this.#разобрать(строка));
-    процесс.stderr.on("data", (кусок: Buffer) => {
-      const текст = кусок.toString("utf8").trim();
-      if (текст) this.#выдать("error", "turn", { text: clamp(текст) });
+    createInterface({ input: процесс.stderr }).on("line", (строка) => {
+      const текст = stripAnsi(строка).trim();
+      if (текст) this.#выдать("diagnostic", "stream", { text: clamp(текст) });
     });
-    процесс.on("exit", (код, сигнал) => {
+    процесс.stdin.on("error", (беда) => {
+      this.#выдать("diagnostic", "stream", { text: `запись в Codex не удалась: ${беда.message}` });
+    });
+    процесс.on("error", (беда) => this.#конец(процесс, `Codex не запустился: ${беда.message}`));
+    процесс.on("exit", (код, сигнал) =>
+      this.#конец(процесс, `процесс Codex завершился неожиданно (код ${код}, сигнал ${сигнал}). Подробности — в диагностике.`),
+    );
+
+    try {
+      await this.#запрос("initialize", {
+        clientInfo: { name: "agent-panel", version: "0.1.0" },
+        capabilities: {},
+      });
+      this.#уведомить("initialized", {});
+      // Известная ветка (сохранённая или от прежнего процесса) продолжается,
+      // иначе создаётся новая с инструкцией рецензента.
+      const известная = this.#ветка ?? this.опции.resumeThreadId;
+      const общие = { cwd: this.опции.cwd, sandbox: "read-only", approvalPolicy: "never" };
+      const ответ = (await (известная
+        ? this.#запрос("thread/resume", { ...общие, threadId: известная })
+        : this.#запрос("thread/start", {
+            ...общие,
+            developerInstructions: this.опции.reviewerInstructions ?? ИНСТРУКЦИЯ_РЕЦЕНЗЕНТА,
+          }))) as ОтветВетки;
+      this.#установитьВетку(ответ.thread?.id ?? известная);
+      this.#выдать("diagnostic", "stream", {
+        text: `ветка ${String(this.#ветка).slice(0, 8)}, песочница read-only, одобрения never`,
+      });
+    } catch (беда) {
+      // Недоделанный запуск не должен оставлять живой процесс без ветки:
+      // следующая отправка решила бы, что всё готово.
+      await this.stop();
+      throw беда;
+    }
+  }
+
+  #конец(процесс: ChildProcessWithoutNullStreams, текстОшибки: string): void {
+    const текущий = this.#процесс === процесс;
+    if (текущий) {
+      this.#процесс = undefined;
       this.#занят = false;
       this.#ход = undefined;
-      this.#процесс = undefined;
-      // Ожидающие запросы надо отклонить, иначе вызывающий будет ждать
-      // ответа от мёртвого процесса до конца сессии панели.
-      const беда = new Error(
-        `процесс Codex завершился: код ${код}, сигнал ${сигнал}`,
-      );
+    }
+    const ожидаемо = this.#останавливаемые.has(процесс);
+    if (текущий || ожидаемо) {
+      const беда = new Error(ожидаемо ? "адаптер Codex остановлен" : текстОшибки);
       for (const [, о] of this.#ожидания) о.reject(беда);
       this.#ожидания.clear();
-      this.#выдать("error", "turn", { text: беда.message });
-    });
-
-    await this.#запрос("initialize", {
-      clientInfo: { name: "agent-panel", version: "0.1.0" },
-      capabilities: {},
-    });
-    this.#уведомить("initialized", {});
-
-    if (this.опции.resumeThreadId) {
-      const ответ = (await this.#запрос("thread/resume", {
-        threadId: this.опции.resumeThreadId,
-        cwd: this.опции.cwd,
-        sandbox: "read-only",
-        approvalPolicy: "never",
-      })) as ОтветВетки;
-      this.#ветка = ответ.thread?.id ?? this.опции.resumeThreadId;
-    } else {
-      const ответ = (await this.#запрос("thread/start", {
-        cwd: this.опции.cwd,
-        sandbox: "read-only",
-        approvalPolicy: "never",
-        developerInstructions:
-          this.опции.reviewerInstructions ?? ИНСТРУКЦИЯ_РЕЦЕНЗЕНТА,
-      })) as ОтветВетки;
-      this.#ветка = ответ.thread?.id;
     }
-    this.#выдать("turn_started", "turn", {
-      text: `ветка ${String(this.#ветка).slice(0, 8)}, песочница read-only, одобрения never`,
-    });
+    if (this.#отчитанные.has(процесс)) return;
+    this.#отчитанные.add(процесс);
+    if (ожидаемо) {
+      this.#выдать("diagnostic", "stream", { text: "процесс Codex остановлен" });
+    } else {
+      this.#выдать("error", "turn", { text: текстОшибки, failed: true });
+    }
+  }
+
+  #установитьВетку(id: string | undefined): void {
+    if (!id || id === this.#ветка) return;
+    this.#ветка = id;
+    this.опции.onSessionId?.(id);
   }
 
   async send(prompt: AgentPrompt): Promise<void> {
-    if (!this.#процесс) throw new Error("адаптер Codex не запущен");
+    if (!this.#процесс) await this.start();
     const ветка = this.#ветка;
     if (!ветка) throw new Error("ветка Codex не создана");
     this.#занят = true;
-    const текст = this.#оформить(prompt);
     try {
       await this.#запрос("turn/start", {
         threadId: ветка,
-        input: [{ type: "text", text: текст }],
+        input: [{ type: "text", text: this.#оформить(prompt) }],
       });
     } catch (беда) {
-      // Без этого отклонённый turn/start оставлял бы агента «занятым»
-      // навсегда, и очередь встала бы молча.
       this.#занят = false;
       throw беда;
     }
@@ -189,19 +192,14 @@ export class CodexAdapter implements Adapter {
         ? "[от человека]"
         : prompt.from === "claude"
           ? "[от разработчика Claude]"
-          : "[от Codex]";
-    const версия = prompt.snapshot
-      ? `\n[версия файлов: ${prompt.snapshot}]`
-      : "";
+          : "[от панели]";
+    const версия = prompt.snapshot ? `\n[версия файлов: ${prompt.snapshot}]` : "";
     return `${шапка}${версия}\n${prompt.text}`;
   }
 
   async interrupt(): Promise<void> {
     if (!this.#ветка || !this.#ход) return;
-    await this.#запрос("turn/interrupt", {
-      threadId: this.#ветка,
-      turnId: this.#ход,
-    });
+    await this.#запрос("turn/interrupt", { threadId: this.#ветка, turnId: this.#ход }).catch(() => undefined);
     this.#занят = false;
   }
 
@@ -211,11 +209,11 @@ export class CodexAdapter implements Adapter {
     const процесс = this.#процесс;
     this.#процесс = undefined;
     this.#занят = false;
-    for (const [, о] of this.#ожидания) {
-      о.reject(new Error("адаптер Codex остановлен"));
-    }
+    this.#ход = undefined;
+    for (const [, о] of this.#ожидания) о.reject(new Error("адаптер Codex остановлен"));
     this.#ожидания.clear();
     if (!процесс) return;
+    this.#останавливаемые.add(процесс);
     процесс.stdin.end();
     процесс.kill();
   }
@@ -229,17 +227,14 @@ export class CodexAdapter implements Adapter {
     const процесс = this.#процесс;
     if (!процесс) return Promise.reject(new Error("Codex не запущен"));
     const id = this.#следующийId++;
-    const тело = { jsonrpc: "2.0", id, method: метод, params: параметры };
     return new Promise<unknown>((resolve, reject) => {
       this.#ожидания.set(id, { resolve, reject });
-      процесс.stdin.write(`${JSON.stringify(тело)}\n`);
+      процесс.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method: метод, params: параметры })}\n`);
     });
   }
 
   #уведомить(метод: string, параметры: unknown): void {
-    this.#процесс?.stdin.write(
-      `${JSON.stringify({ jsonrpc: "2.0", method: метод, params: параметры })}\n`,
-    );
+    this.#процесс?.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: метод, params: параметры })}\n`);
   }
 
   #разобрать(строка: string): void {
@@ -249,50 +244,38 @@ export class CodexAdapter implements Adapter {
     try {
       запись = JSON.parse(обрезанная) as Record<string, unknown>;
     } catch {
-      this.#выдать("error", "turn", {
-        text: clamp(`строка вне протокола: ${обрезанная}`),
-      });
+      this.#выдать("diagnostic", "stream", { text: clamp(`строка вне протокола: ${stripAnsi(обрезанная)}`) });
       return;
     }
 
-    // Ответ на наш запрос.
     if (typeof запись["id"] === "number" && !("method" in запись)) {
       const ожидание = this.#ожидания.get(запись["id"]);
       this.#ожидания.delete(запись["id"]);
       if (!ожидание) return;
       if (запись["error"]) {
-        const е = запись["error"] as { message?: string };
-        ожидание.reject(new Error(е.message ?? "ошибка Codex"));
+        ожидание.reject(new Error((запись["error"] as { message?: string }).message ?? "ошибка Codex"));
       } else {
         ожидание.resolve(запись["result"]);
       }
       return;
     }
 
-    // Запрос СЕРВЕРА к нам. Незнакомое не разрешается: принцип
-    // «неизвестное запрещено» здесь заменяет доверие к настройкам.
+    // Запрос сервера к клиенту: неизвестное не разрешается.
     if ("method" in запись && "id" in запись) {
       this.#отказать(запись);
       return;
     }
-
     this.#нотификация(запись);
   }
 
   #отказать(запись: Record<string, unknown>): void {
     const метод = String(запись["method"]);
-    const причина =
-      `рецензенту запрещены изменения: запрос «${метод}» отклонён ` +
-      `панелью по умолчанию`;
+    const причина = `рецензенту запрещены изменения: запрос «${метод}» отклонён панелью`;
     this.решения.push({ allow: false, reason: причина });
     this.#выдать("approval_requested", "turn", { text: метод, raw: запись });
     this.#выдать("approval_decided", "turn", { text: причина });
     this.#процесс?.stdin.write(
-      `${JSON.stringify({
-        jsonrpc: "2.0",
-        id: запись["id"],
-        error: { code: -32000, message: причина },
-      })}\n`,
+      `${JSON.stringify({ jsonrpc: "2.0", id: запись["id"], error: { code: -32000, message: причина } })}\n`,
     );
   }
 
@@ -301,80 +284,62 @@ export class CodexAdapter implements Adapter {
     const п = (запись["params"] ?? {}) as Record<string, unknown>;
 
     switch (метод) {
-      case "thread/started": {
-        // По схеме приходит объект thread, а не плоское поле threadId.
-        // Прежняя версия читала threadId, ветка оставалась неизвестной, и
-        // первая же отправка падала с «ветка Codex не создана».
-        const ветка = п["thread"] as { id?: string } | undefined;
-        if (typeof ветка?.id === "string") this.#ветка = ветка.id;
+      case "thread/started":
+        this.#установитьВетку((п["thread"] as { id?: string } | undefined)?.id);
         return;
-      }
       case "turn/started": {
-        const ход = п["turn"] as { id?: string } | undefined;
-        this.#ход = typeof ход?.id === "string" ? ход.id : undefined;
+        const ход = (п["turn"] as { id?: string } | undefined)?.id;
+        this.#ход = typeof ход === "string" ? ход : undefined;
         this.#занят = true;
         this.#выдать("turn_started", "turn", {});
         return;
       }
-      case "turn/completed":
+      case "turn/completed": {
+        const ход = (п["turn"] ?? {}) as { status?: string; error?: { message?: string } };
         this.#занят = false;
         this.#ход = undefined;
-        this.#выдать("turn_completed", "turn", { raw: п });
+        const провал = ход.status === "failed" || ход.status === "interrupted";
+        this.#выдать("turn_completed", "turn", {
+          raw: п,
+          ...(провал
+            ? {
+                failed: true,
+                text: `ход завершён: ${ход.status}${ход.error?.message ? ` — ${ход.error.message}` : ""}`,
+              }
+            : {}),
+        });
         return;
+      }
       case "item/started":
         this.#элемент(п, false);
         return;
       case "item/completed":
         this.#элемент(п, true);
         return;
-      case "item/agentMessage/delta": {
-        const текст = this.#текстИз(п["delta"] ?? п["text"]);
-        if (текст) this.#выдать("text_delta", "stream", { text: текст });
-        return;
-      }
+      case "item/agentMessage/delta":
       case "item/reasoning/textDelta":
-      case "item/reasoning/summaryTextDelta": {
-        // Рассуждения показываем человеку, второму агенту не передаём.
-        const текст = this.#текстИз(п["delta"] ?? п["text"]);
-        if (текст) this.#выдать("text_delta", "stream", { text: текст });
-        return;
-      }
+      case "item/reasoning/summaryTextDelta":
       case "item/commandExecution/outputDelta":
       case "process/outputDelta": {
-        const текст = this.#текстИз(п["chunk"] ?? п["delta"] ?? п["output"]);
+        const текст = this.#текстИз(п["delta"] ?? п["chunk"] ?? п["text"] ?? п["output"]);
         if (текст) this.#выдать("text_delta", "stream", { text: текст });
         return;
       }
       case "process/exited":
-        this.#выдать("tool_result", "turn", {
-          tool: "process",
-          text: clamp(JSON.stringify(п)),
-          raw: п,
-        });
+        this.#выдать("tool_result", "turn", { tool: "process", text: clamp(JSON.stringify(п)), raw: п });
         return;
       default:
         return;
     }
   }
 
-  /**
-   * Элементы хода: сообщения агента, вызовы инструментов, рассуждения.
-   *
-   * Начало элемента и его завершение — разные состояния, и смешивать их
-   * нельзя: «сформировал вызов» не равно «инструмент выполнен».
-   */
   #элемент(п: Record<string, unknown>, завершён: boolean): void {
     const элемент = (п["item"] ?? п) as Record<string, unknown>;
-    const вид = String(элемент["type"] ?? элемент["itemType"] ?? "");
+    const вид = String(элемент["type"] ?? "");
     const текст = this.#текстИз(элемент["text"] ?? элемент["content"]);
 
-    // Имена типов взяты из схемы ThreadItem: agentMessage, commandExecution,
-    // fileChange, mcpToolCall, reasoning, functionCallOutput. Прежняя версия
-    // искала agent_message с подчёркиванием и отбрасывала законченный ответ.
     if (вид === "agentMessage") {
-      if (завершён && текст) {
-        this.#выдать("message", "turn", { text: clamp(текст) });
-      }
+      if (завершён && текст) this.#выдать("message", "turn", { text: clamp(текст) });
       return;
     }
     if (ИНСТРУМЕНТАЛЬНЫЕ.has(вид)) {
@@ -383,11 +348,6 @@ export class CodexAdapter implements Adapter {
         text: clamp(текст || JSON.stringify(элемент)),
         raw: элемент,
       });
-      return;
-    }
-    // Рассуждения показываются человеку, но второму агенту не передаются.
-    if (вид === "reasoning" && текст) {
-      this.#выдать("text_delta", "stream", { text: текст });
     }
   }
 
@@ -395,14 +355,7 @@ export class CodexAdapter implements Adapter {
     if (typeof значение === "string") return значение;
     if (Array.isArray(значение)) {
       return значение
-        .map((э) =>
-          typeof э === "string"
-            ? э
-            : typeof (э as { text?: unknown })?.text === "string"
-              ? String((э as { text: string }).text)
-              : "",
-        )
-        .filter(Boolean)
+        .map((э) => (typeof э === "string" ? э : typeof (э as { text?: unknown })?.text === "string" ? (э as { text: string }).text : ""))
         .join("");
     }
     return "";
@@ -428,16 +381,14 @@ export class CodexAdapter implements Adapter {
 export const ИНСТРУКЦИЯ_РЕЦЕНЗЕНТА = [
   "Ты рецензент в общей комнате с человеком и разработчиком Claude Code.",
   "",
-  "Твоя роль: проверять постановку, код и выводы. Файлы ты не изменяешь —",
-  "это запрещено технически, песочница read-only, и попытки будут отклонены",
-  "панелью. Команды не запускай.",
+  "Проверяй постановку, код и выводы. Файлы не изменяй — это запрещено",
+  "технически. Команды не запускай.",
   "",
   "Тебе передаются законченные реплики разработчика и СЫРОЙ вывод его",
-  "инструментов, а не его пересказ результатов. Опирайся на сырой вывод:",
-  "пересказ — именно тот механизм, которым в проект однажды попал неверный",
-  "вывод, принятый без проверки.",
+  "инструментов. Опирайся на сырой вывод, а не на пересказ.",
   "",
-  "Каждое замечание относится к версии файлов, указанной в шапке реплики.",
-  "Если разработчик продолжил правки, твои замечания относятся к прежнему",
-  "снимку, и это надо называть прямо.",
+  "Замечания относятся к версии файлов из шапки реплики.",
+  "",
+  "Каждую проверку заканчивай строкой «ВЕРДИКТ: ПРИНЯТО» или",
+  "«ВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ» — по ней панель решает, закончен ли цикл.",
 ].join("\n");

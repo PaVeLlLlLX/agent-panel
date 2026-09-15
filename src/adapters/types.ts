@@ -12,8 +12,12 @@
  * показывающая одно вместо другого, врёт о том, что происходит.
  */
 
-/** Кто произвёл событие. `human` нужен, чтобы журнал был полным. */
-export type AgentId = "claude" | "codex" | "human";
+/**
+ * Кто произвёл событие. `human` нужен, чтобы журнал был полным; `system` —
+ * служебные сообщения панели. Без него «Предел раундов достигнут» в живом
+ * прогоне показывался как реплика человека.
+ */
+export type AgentId = "claude" | "codex" | "human" | "system";
 
 /**
  * Видимость события.
@@ -45,7 +49,13 @@ export type EventKind =
   /** Решение по запросу одобрения, с причиной. */
   | "approval_decided"
   /** Сбой адаптера или агента. */
-  | "error";
+  | "error"
+  /**
+   * Служебный вывод процесса: логи stderr, запуск, плановая остановка.
+   * Не реплика беседы. В живом прогоне лог Codex показался красной
+   * репликой — отсюда отдельный вид.
+   */
+  | "diagnostic";
 
 export interface PanelEvent {
   readonly id: string;
@@ -72,6 +82,12 @@ export interface PanelEvent {
   readonly snapshot?: string;
   /** Необработанная запись протокола — для разбора расхождений. */
   readonly raw?: unknown;
+  /**
+   * Ожидаемый результат не будет получен: у turn_completed — ход провалился
+   * или прерван, у error — процесс агента умер. Координатор по этой отметке
+   * перестаёт ждать ответа.
+   */
+  readonly failed?: boolean;
 }
 
 /** Что панель просит агента сделать. */
@@ -98,7 +114,10 @@ export interface Adapter {
   readonly id: AgentId;
   /** Запустить процесс агента. Повторный вызов на запущенном — ошибка. */
   start(): Promise<void>;
-  /** Отправить ввод. Ход начинается или продолжается. */
+  /**
+   * Отправить ввод. Если процесс не запущен — запускает его: агенты
+   * поднимаются при первом сообщении, а не при открытии панели.
+   */
   send(prompt: AgentPrompt): Promise<void>;
   /** Прервать текущий ход, не убивая процесс. */
   interrupt(): Promise<void>;
@@ -119,6 +138,12 @@ export function clamp(text: string, max = MAX_TEXT): string {
   if (text.length <= max) return text;
   const отрезано = text.length - max;
   return `${text.slice(0, max)}\n… обрезано ${отрезано} символов`;
+}
+
+/** Цветовые коды терминала: в панели они видны как мусор вида `[2m…[0m`. */
+export function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
 }
 
 let счётчик = 0;

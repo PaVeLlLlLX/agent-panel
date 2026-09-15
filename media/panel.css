@@ -1,9 +1,10 @@
-/* Оформление комнаты. Цвета берутся из темы VS Code: панель должна
-   выглядеть частью редактора, а не отдельным сайтом. */
+/* Оформление комнаты. Цвета — из темы VS Code. Беседа на всю ширину:
+   в живом прогоне отдельная колонка действий заняла пол-панели. */
 
 :root {
-  --щель: 10px;
+  --щель: 8px;
   --рамка: var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  --тихий: var(--vscode-descriptionForeground, rgba(128, 128, 128, 0.9));
 }
 
 * { box-sizing: border-box; }
@@ -12,38 +13,67 @@ body {
   margin: 0;
   height: 100vh;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto 1fr auto auto;
   font-family: var(--vscode-font-family);
   font-size: var(--vscode-font-size);
   color: var(--vscode-foreground);
   background: var(--vscode-editor-background);
 }
 
-#шапка {
-  display: flex;
-  align-items: center;
-  gap: var(--щель);
-  padding: 8px 12px;
+/* --- состояние --- */
+
+#состояние {
   border-bottom: 1px solid var(--рамка);
-  flex-wrap: wrap;
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.ярлык { font-weight: 600; }
+.строка-состояния { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.распорка { flex: 1; }
 
 .значок {
   font-size: 0.85em;
-  padding: 2px 8px;
+  padding: 1px 8px;
   border: 1px solid var(--рамка);
   border-radius: 10px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+#этап[data-этап="working"] { border-color: var(--vscode-charts-green); }
+#этап[data-этап="reviewing"] { border-color: var(--vscode-charts-orange); }
+#этап[data-этап="held"] { border-color: var(--vscode-charts-yellow); }
+#этап[data-этап="accepted"] { border-color: var(--vscode-charts-green); background: color-mix(in srgb, var(--vscode-charts-green) 15%, transparent); }
+#этап[data-этап="stopped"] { color: var(--тихий); }
+#вердикт[data-вердикт="accepted"] { color: var(--vscode-charts-green); }
+#вердикт[data-вердикт="remarks"] { color: var(--vscode-charts-orange); }
+#вердикт[data-вердикт="missing"] { color: var(--vscode-charts-yellow); }
+
+.задача {
+  font-size: 0.9em;
+  color: var(--тихий);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.удержано {
+  display: flex;
+  align-items: center;
+  gap: var(--щель);
+  padding: 6px 8px;
+  border: 1px solid var(--vscode-charts-yellow);
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+.удержано span { flex: 1; }
 
 .переключатель { font-size: 0.85em; display: flex; align-items: center; gap: 4px; }
 
 button {
   font: inherit;
-  padding: 4px 10px;
+  padding: 3px 10px;
   border: 1px solid var(--рамка);
   border-radius: 4px;
   color: var(--vscode-button-secondaryForeground, inherit);
@@ -51,89 +81,74 @@ button {
   cursor: pointer;
 }
 button:hover { background: var(--vscode-toolbar-hoverBackground); }
-button.опасно {
-  color: var(--vscode-errorForeground);
-  border-color: var(--vscode-errorForeground);
+button.главная {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  border-color: transparent;
 }
+button.опасно { color: var(--vscode-errorForeground); }
 
-main {
-  display: grid;
-  grid-template-columns: 1fr minmax(260px, 38%);
-  min-height: 0;
-}
+/* --- беседа --- */
 
-#беседа, #действия {
+#беседа {
   overflow-y: auto;
-  padding: 12px;
+  padding: 10px;
   display: flex;
   flex-direction: column;
   gap: var(--щель);
+  min-height: 0;
 }
-#действия { border-left: 1px solid var(--рамка); }
-
-/* --- беседа --- */
 
 .пузырь {
   border: 1px solid var(--рамка);
   border-left-width: 3px;
   border-radius: 4px;
-  padding: 8px 10px;
-  max-width: 72ch;
+  padding: 6px 10px;
+  max-width: 80ch;
 }
 .пузырь.human { align-self: flex-end; border-left-color: var(--vscode-charts-blue); }
 .пузырь.claude { border-left-color: var(--vscode-charts-green); }
 .пузырь.codex { border-left-color: var(--vscode-charts-orange); }
 .пузырь.ошибка { border-left-color: var(--vscode-errorForeground); }
 
-.автор { font-size: 0.8em; opacity: 0.75; margin-bottom: 4px; }
+.автор { font-size: 0.8em; color: var(--тихий); margin-bottom: 2px; }
 .текст { white-space: pre-wrap; word-break: break-word; }
 
-/* Идущая генерация отличается от законченной реплики: иначе нельзя понять,
-   дописывает агент мысль или уже закончил. */
-.пузырь.идёт .текст::after {
-  content: "▌";
-  animation: мигание 1s steps(2) infinite;
-  opacity: 0.6;
-}
+.пузырь.идёт .текст::after { content: "▌"; animation: мигание 1s steps(2) infinite; opacity: 0.6; }
 @keyframes мигание { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .пузырь.идёт .текст::after { animation: none; } }
 
-.версия-метка {
-  font-size: 0.75em;
-  opacity: 0.6;
-  margin-top: 6px;
-  font-variant-numeric: tabular-nums;
-}
-
-/* --- действия --- */
-
-.действие {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px;
+.уведомление {
+  align-self: center;
   font-size: 0.85em;
-  padding: 6px 8px;
-  border: 1px solid var(--рамка);
-  border-radius: 4px;
+  color: var(--тихий);
+  text-align: center;
+  max-width: 70ch;
 }
-.действие .агент { font-weight: 600; }
-.действие .стрелка { opacity: 0.5; }
-.действие .имя { font-family: var(--vscode-editor-font-family); }
-.действие time { margin-left: auto; opacity: 0.55; font-variant-numeric: tabular-nums; }
+.уведомление::before { content: "Панель · "; font-weight: 600; }
+.уведомление.ошибка { color: var(--vscode-errorForeground); }
 
-/* Четыре состояния различаются цветом левой границы, а не только словом. */
-.действие.сформирован { border-left: 3px solid var(--vscode-charts-yellow); }
-.действие.выполняется { border-left: 3px solid var(--vscode-charts-blue); }
-.действие.готов { border-left: 3px solid var(--vscode-charts-green); }
-.действие.запрос { border-left: 3px solid var(--vscode-charts-orange); }
-.действие.отказ { border-left: 3px solid var(--vscode-errorForeground); }
-.действие.служебное { opacity: 0.65; border-style: dashed; }
+/* Действия за ход — одна строка, подробности по клику. */
+details.действия { font-size: 0.85em; color: var(--тихий); }
+details.действия > summary { cursor: pointer; }
+details.действия .список {
+  margin: 4px 0 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 
-.действие .состояние { opacity: 0.8; }
+.вызов { border-left: 3px solid var(--рамка); padding-left: 6px; }
+.вызов > summary { cursor: pointer; display: flex; gap: 8px; }
+.вызов .имя { font-family: var(--vscode-editor-font-family); color: var(--vscode-foreground); }
+.вызов .метка { color: var(--тихий); }
+.вызов.сформирован { border-left-color: var(--vscode-charts-yellow); }
+.вызов.выполняется { border-left-color: var(--vscode-charts-blue); }
+.вызов.готов { border-left-color: var(--vscode-charts-green); }
+.вызов.отказ { border-left-color: var(--vscode-errorForeground); color: var(--vscode-errorForeground); }
 
-.аргументы, .вывод {
-  flex-basis: 100%;
-  margin: 4px 0 0;
+.аргументы, .вывод, #диагностика-строки {
+  margin: 4px 0;
   padding: 6px;
   max-height: 14em;
   overflow: auto;
@@ -141,15 +156,25 @@ main {
   word-break: break-word;
   font-family: var(--vscode-editor-font-family);
   font-size: 0.95em;
-  background: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.12));
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
   border-radius: 3px;
 }
+
+/* --- диагностика --- */
+
+#диагностика {
+  border-top: 1px solid var(--рамка);
+  padding: 4px 10px;
+  font-size: 0.85em;
+  color: var(--тихий);
+}
+#диагностика > summary { cursor: pointer; }
 
 /* --- ввод --- */
 
 footer {
   border-top: 1px solid var(--рамка);
-  padding: 8px 12px;
+  padding: 8px 10px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -167,7 +192,7 @@ textarea {
 }
 
 .строка { display: flex; align-items: center; gap: var(--щель); }
-.строка label { font-size: 0.85em; display: flex; align-items: center; gap: 4px; }
+.подсказка { flex: 1; font-size: 0.8em; color: var(--тихий); }
 
 select {
   font: inherit;
@@ -178,7 +203,4 @@ select {
   padding: 3px 6px;
 }
 
-@media (max-width: 720px) {
-  main { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
-  #действия { border-left: none; border-top: 1px solid var(--рамка); max-height: 40vh; }
-}
+:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
