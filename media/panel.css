@@ -71,7 +71,8 @@ body {
 .разрешение.отклонено .итог { color: var(--vscode-errorForeground); }
 #вердикт[data-вердикт="accepted"] { color: var(--vscode-charts-green); }
 #вердикт[data-вердикт="remarks"] { color: var(--vscode-charts-orange); }
-#вердикт[data-вердикт="missing"] { color: var(--vscode-charts-yellow); }
+#вердикт[data-вердикт="missing"],
+#вердикт[data-вердикт="human"] { color: var(--vscode-charts-yellow); }
 
 .задача {
   font-size: 0.9em;

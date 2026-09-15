@@ -14,7 +14,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { parseVerdict } from "../out/verdict.js";
+import { VERDICT_REQUEST, parseVerdict } from "../out/verdict.js";
 
 test("последняя строка ВЕРДИКТ: ПРИНЯТО — принято", () => {
   assert.equal(
@@ -87,6 +87,30 @@ test("нераспознанное значение — вердикта нет"
 
 test("пустые строки в конце не мешают", () => {
   assert.equal(parseVerdict("Итог.\nВЕРДИКТ: ПРИНЯТО\n\n  \n"), "accepted");
+});
+
+test("ВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА — решение за человеком", () => {
+  // Живой прогон 16 сентября: рецензент написал «продолжать обмен не
+  // требуется», но выбрать мог только ЕСТЬ ЗАМЕЧАНИЯ — и панель пересылала
+  // согласия до предела проверок.
+  assert.equal(parseVerdict("Без новых исходников продолжать незачем.\nВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА"), "human");
+  assert.equal(parseVerdict("Итог.\n**ВЕРДИКТ: нужно решение человека.**"), "human");
+});
+
+test("просьба о решении человека в цитате — не решение", () => {
+  assert.equal(parseVerdict("Было так:\n> ВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА"), "missing");
+});
+
+test("просьба о вердикте называет все три исхода", () => {
+  assert.match(VERDICT_REQUEST, /ВЕРДИКТ: ПРИНЯТО/);
+  assert.match(VERDICT_REQUEST, /ВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ/);
+  assert.match(VERDICT_REQUEST, /ВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА/);
+});
+
+test("строка внутри блока кода, похожая на отметку разбора, — не вердикт", () => {
+  // Отметка строк кода не должна совпадать ни с одной возможной строкой ответа.
+  assert.equal(parseVerdict("```\nкод\n```"), "missing");
+  assert.equal(parseVerdict("```\n" + String.fromCharCode(0) + "код\n```"), "missing");
 });
 
 test("пустой и отсутствующий текст — вердикта нет", () => {

@@ -39,7 +39,7 @@
  * Сохранены прежние правила: передаётся законченное, сырой вывод идёт
  * целиком, материал копится по агенту, снимок версии закреплён за ходом.
  */
-import { Adapter, AgentId, AgentPrompt, ApprovalChoice, PanelEvent } from "./adapters/types.js";
+import { Adapter, AgentId, AgentPrompt, ApprovalChoice, MAX_TEXT, PanelEvent } from "./adapters/types.js";
 import { Journal } from "./journal.js";
 import { Snapshot, describeSnapshot, takeSnapshot } from "./snapshot.js";
 import { VERDICT_REQUEST, Verdict, parseVerdict } from "./verdict.js";
@@ -365,7 +365,7 @@ export class Coordinator {
     const отправка: Отправка = {
       to: "codex",
       prompt: {
-        text: `Задача человека:\n${задача}\n\nМатериал разработчика:\n${текст}\n\n${VERDICT_REQUEST}`,
+        text: `Задача человека:\n${задача}\n\nМатериал разработчика:\n${текст}\n\n${ПРО_УСЕЧЕНИЕ}\n\n${VERDICT_REQUEST}`,
         from: "claude",
         snapshot: describeSnapshot(снимок),
       },
@@ -403,20 +403,32 @@ export class Coordinator {
       return;
     }
 
+    // Замечания относятся к версии, которую рецензент проверял. Текущая
+    // снимается отдельно: разработчик работает уже с ней, и если дерево
+    // ушло вперёд, это надо сказать, а не подменить подпись.
+    const проверенный = this.#снимки.get("codex");
     const снимок = await this.#снять(this.опции.cwd);
     if (!this.#текущий(цикл)) return;
+    const сдвиг =
+      проверенный && проверенный.id !== снимок.id
+        ? `\n\nФайлы изменились после начала проверки: замечания относятся к версии ${describeSnapshot(проверенный)}, сейчас ${describeSnapshot(снимок)}.`
+        : "";
 
     const отправка: Отправка = {
       to: "claude",
       prompt: {
-        text: `Замечания рецензента:\n${текст}\n\nИсправьте или обоснуйте несогласие по каждому пункту.`,
+        text: `Замечания рецензента:\n${текст}${сдвиг}\n\nИсправьте или обоснуйте несогласие по каждому пункту.`,
         from: "codex",
-        snapshot: describeSnapshot(снимок),
+        snapshot: describeSnapshot(проверенный ?? снимок),
       },
       цель: { роль: "work", цикл },
       снимок,
     };
 
+    if (вердикт === "human") {
+      this.#удержать(отправка, "Рецензент просит вашего решения: обмен остановлен. Ответ Codex можно отправить Claude.");
+      return;
+    }
     if (вердикт === "missing") {
       this.#удержать(отправка, "Рецензент не вынес вердикт: решите, передавать ли его ответ разработчику.");
       return;
@@ -544,6 +556,15 @@ const ИМЕНА: Record<AgentId, string> = {
   human: "человека",
   system: "панели",
 };
+
+/**
+ * Выводы инструментов усечены до MAX_TEXT символов с пометкой в конце. Полный
+ * вывод без предела мог бы переполнить контекст рецензента, поэтому предел
+ * остаётся, но рецензент знает о нём и о том, где полный.
+ */
+const ПРО_УСЕЧЕНИЕ =
+  `Выводы инструментов длиннее ${MAX_TEXT} символов усечены: в конце такого вывода стоит ` +
+  "«… обрезано N символов». Полный вывод хранится в журнале панели — если он нужен, попросите человека.";
 
 /** Что копится для передачи. Поток, диагностика и рассуждения — нет. */
 const ПЕРЕДАВАЕМЫЕ = new Set<PanelEvent["kind"]>(["message", "tool_call", "tool_result"]);
