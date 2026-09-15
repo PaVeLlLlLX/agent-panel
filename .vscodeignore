@@ -1,0 +1,14 @@
+# В пакет расширения попадает только то, что нужно для работы:
+# out/ (скомпилированный код), media/ (интерфейс), package.json, README.
+# Исходники, тесты и фальшивые агенты пользователю не нужны.
+src/**
+test/**
+fixtures/**
+.vscode/**
+.gitignore
+.gitattributes
+tsconfig.json
+**/*.map
+**/*.ts
+node_modules/**
+*.vsix

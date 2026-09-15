@@ -65,11 +65,13 @@
   "scripts": {
     "build": "tsc -p .",
     "watch": "tsc -w -p .",
-    "test": "npm run build && node --test"
+    "test": "npm run build && node --test",
+    "package": "npm run build && vsce package --allow-missing-repository --skip-license -o agent-panel.vsix"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/vscode": "^1.90.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "@vscode/vsce": "^4.0.0"
   }
 }
