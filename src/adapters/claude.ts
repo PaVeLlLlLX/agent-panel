@@ -69,6 +69,8 @@ export interface ClaudeOptions {
   readonly settingSources?: string;
   /** Запуск через оболочку. По умолчанию на Windows — да: иначе не запустить claude.cmd. */
   readonly shell?: boolean;
+  /** Режим разрешений (--permission-mode); "default" или нет — спрашивать. */
+  readonly permissionMode?: string;
   /** Модель (--model); "" или нет — модель по умолчанию. */
   readonly model?: string;
   /** Уровень рассуждения (--effort); "" или нет — по умолчанию. */
@@ -106,6 +108,8 @@ function каталогClaude(модели: unknown): ModelOption[] {
       })),
   ];
 }
+
+const ПОДПИСЬ_БЕЗ_ВОПРОСОВ = "разрешено панелью: режим «без вопросов»";
 
 /** Запрос разрешения, на который человек ещё не ответил. */
 interface ОткрытыйЗапрос {
@@ -180,6 +184,9 @@ export class ClaudeAdapter implements Adapter {
   /** Выбор человека и выбор, с которым запущен текущий процесс. */
   #выбор: ModelChoice;
   #выборПроцесса: ModelChoice | undefined;
+  /** Режим разрешений человека и режим, с которым запущен текущий процесс. */
+  #режим: string;
+  #режимПроцесса: string | undefined;
 
   constructor(
     private readonly опции: ClaudeOptions,
@@ -187,6 +194,7 @@ export class ClaudeAdapter implements Adapter {
   ) {
     this.#сессия = опции.resumeSessionId;
     this.#выбор = { model: опции.model ?? "", effort: опции.effort ?? "" };
+    this.#режим = опции.permissionMode || "default";
   }
 
   get busy(): boolean {
@@ -214,6 +222,7 @@ export class ClaudeAdapter implements Adapter {
       ...(источники ? ["--setting-sources", источники] : []),
       ...(this.#выбор.model ? ["--model", this.#выбор.model] : []),
       ...(this.#выбор.effort ? ["--effort", this.#выбор.effort] : []),
+      ...(this.#режим !== "default" ? ["--permission-mode", this.#режим] : []),
       // Перезапуск после падения или прерывания продолжает ту же сессию.
       ...(this.#сессия ? ["--resume", this.#сессия] : []),
       ...(this.опции.extraArgs ?? []),
@@ -221,6 +230,7 @@ export class ClaudeAdapter implements Adapter {
     const процесс = запуститьПроцесс(this.опции.command, аргументы, this.опции.cwd, this.опции.shell);
     this.#процесс = процесс;
     this.#выборПроцесса = this.#выбор;
+    this.#режимПроцесса = this.#режим;
 
     this.#строки = createInterface({ input: процесс.stdout });
     this.#строки.on("line", (строка) => this.#разобрать(строка));
@@ -262,8 +272,13 @@ export class ClaudeAdapter implements Adapter {
   async send(prompt: AgentPrompt): Promise<void> {
     // Модель и уровень задаются флагами запуска: сменились — процесс
     // перезапускается между ходами, --resume сохраняет контекст сессии.
-    if (this.#процесс && !this.#занят && this.#выборПроцесса && !sameChoice(this.#выборПроцесса, this.#выбор)) {
-      this.#выдать("diagnostic", "stream", { text: "модель или уровень сменились — перезапуск с той же сессией" });
+    const сменилось =
+      this.#выборПроцесса !== undefined &&
+      (!sameChoice(this.#выборПроцесса, this.#выбор) || this.#режимПроцесса !== this.#режим);
+    if (this.#процесс && !this.#занят && сменилось) {
+      this.#выдать("diagnostic", "stream", {
+        text: "модель, уровень или режим разрешений сменились — перезапуск с той же сессией",
+      });
       await this.stop();
     }
     if (!this.#процесс) await this.start();
@@ -275,6 +290,18 @@ export class ClaudeAdapter implements Adapter {
     };
     this.#занят = true;
     this.#записать(процесс, запись);
+  }
+
+  /**
+   * Режим разрешений со следующего хода — флагом запуска. «Без вопросов»
+   * действует и сразу: открытые и новые запросы текущего процесса разрешает
+   * панель. Проба на Claude Code 2.1.220 показала, что setMode
+   * bypassPermissions в ответе на запрос повторных запросов не отключает.
+   */
+  setPermissionMode(режим: string): void {
+    this.#режим = режим || "default";
+    if (this.#режим !== "bypassPermissions") return;
+    for (const id of [...this.#запросы.keys()]) void this.#решить(id, "allow", ПОДПИСЬ_БЕЗ_ВОПРОСОВ);
   }
 
   setModel(выбор: ModelChoice): void {
@@ -336,6 +363,10 @@ export class ClaudeAdapter implements Adapter {
   }
 
   async answerApproval(id: string, выбор: ApprovalChoice): Promise<boolean> {
+    return this.#решить(id, выбор);
+  }
+
+  async #решить(id: string, выбор: ApprovalChoice, подпись?: string): Promise<boolean> {
     const запрос = this.#запросы.get(id);
     if (!запрос || запрос.процесс !== this.#процесс) return false;
     this.#запросы.delete(id);
@@ -358,11 +389,12 @@ export class ClaudeAdapter implements Adapter {
     this.#выдать("approval_decided", "turn", {
       callId: id,
       text:
-        выбор === "deny"
+        подпись ??
+        (выбор === "deny"
           ? "отклонено человеком"
           : наСессию
             ? `разрешено в этой сессии: ${подписиПравил(запрос.правила).join(", ")}`
-            : "разрешено",
+            : "разрешено"),
       raw: решение,
     });
     return true;
@@ -508,6 +540,8 @@ export class ClaudeAdapter implements Adapter {
       sessionRules: подписиПравил(правила),
       raw: запись,
     });
+    // Режим сменён на «без вопросов», а процесс ещё старый: разрешает панель.
+    if (this.#режим === "bypassPermissions") void this.#решить(id, "allow", ПОДПИСЬ_БЕЗ_ВОПРОСОВ);
   }
 
   #дельта(запись: Record<string, unknown>): void {

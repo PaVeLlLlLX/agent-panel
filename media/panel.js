@@ -154,6 +154,15 @@ function карточкаРазрешения(е, история) {
       сессия.addEventListener("click", () => ответить("allowSession"));
       кнопки.append(сессия);
     }
+    const безВопросов = элемент("button", "", "Больше не спрашивать");
+    безВопросов.title =
+      "Разрешить этот вызов и дальше не спрашивать в этой папке: до конца хода разрешает панель, " +
+      "со следующего хода Claude работает в режиме bypassPermissions. Вернуть — «Модели» → «Разрешения Claude»";
+    безВопросов.addEventListener("click", () => {
+      for (const к of кнопки.querySelectorAll("button")) к.disabled = true;
+      vscode.postMessage({ type: "setPermissionMode", mode: "bypassPermissions" });
+    });
+    кнопки.append(безВопросов);
     const отклонить = элемент("button", "опасно", "Отклонить");
     отклонить.title = "Не выполнять; Claude узнает, что отказал человек";
     отклонить.addEventListener("click", () => ответить("deny"));
@@ -324,6 +333,7 @@ window.addEventListener("message", (событие) => {
   if (д?.type === "event") показатьСобытие(д.событие, д.история === true);
   else if (д?.type === "state") показатьСостояние(д.состояние);
   else if (д?.type === "models") принятьМодели(д);
+  else if (д?.type === "permissions") принятьРежим(д.mode);
 });
 
 function отправить() {
@@ -353,6 +363,18 @@ const МОДЕЛИ = {
   codex: { options: undefined, choice: { model: "", effort: "" }, error: "" },
 };
 let спискиЗапрошены = false;
+const ПОДПИСИ_РЕЖИМОВ = { bypassPermissions: "без вопросов", default: "спрашивать" };
+let режимClaude = "bypassPermissions";
+
+function принятьРежим(режим) {
+  if (typeof режим !== "string") return;
+  режимClaude = режим;
+  const выбор = $("режим-claude");
+  // Режим из настройки, которого нет в переключателе (plan, acceptEdits…), показывается как есть.
+  if (![...выбор.options].some((о) => о.value === режим)) выбор.append(вариант(режим, режим));
+  выбор.value = режим;
+  показатьМодели();
+}
 
 function вариант(значение, подпись, пояснение = "") {
   const о = элемент("option", "", подпись);
@@ -369,7 +391,9 @@ function подписьМодели(агент) {
 }
 
 function показатьМодели() {
-  $("модели-сводка").textContent = `Claude: ${подписьМодели("claude")}; Codex: ${подписьМодели("codex")}`;
+  $("модели-сводка").textContent =
+    `Claude: ${подписьМодели("claude")}; Codex: ${подписьМодели("codex")}; ` +
+    `разрешения: ${ПОДПИСИ_РЕЖИМОВ[режимClaude] ?? режимClaude}`;
   const ошибки = ["claude", "codex"].filter((а) => МОДЕЛИ[а].error).map((а) => `${ИМЕНА[а]}: ${МОДЕЛИ[а].error}`);
   const ждём = спискиЗапрошены && ["claude", "codex"].some((а) => !МОДЕЛИ[а].options && !МОДЕЛИ[а].error);
   $("модели-состояние").textContent = ошибки.length
@@ -429,6 +453,12 @@ for (const агент of ["claude", "codex"]) {
     выбрать(агент, { model: МОДЕЛИ[агент].choice.model, effort: событие.target.value });
   });
 }
+
+$("режим-claude").addEventListener("change", (событие) => {
+  режимClaude = событие.target.value;
+  показатьМодели();
+  vscode.postMessage({ type: "setPermissionMode", mode: режимClaude });
+});
 
 $("модели-кнопка").addEventListener("click", () => {
   const панель = $("модели-панель");

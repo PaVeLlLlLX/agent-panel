@@ -369,6 +369,60 @@ test("Claude: тот же выбор не перезапускает проце�
   }
 });
 
+// --- Режим разрешений ----------------------------------------------------------
+
+test("Claude: режим разрешений передаётся при запуске; «спрашивать» — без флага", async () => {
+  for (const [режим, ожидается] of [["bypassPermissions", "bypassPermissions"], ["default", undefined]]) {
+    const с = собиратель();
+    const а = claude(с, { permissionMode: режим });
+    try {
+      await а.start();
+      await дождаться(() => запуски(с.события).length === 1, "запись запуска");
+      assert.equal(флаг(запуски(с.события)[0], "--permission-mode"), ожидается, режим);
+    } finally {
+      await а.stop();
+    }
+  }
+});
+
+test("Claude: «без вопросов» посреди хода разрешает открытый запрос сразу", async () => {
+  // Проба на Claude Code 2.1.220: setMode bypassPermissions в ответе на запрос
+  // не отключил следующий запрос в той же сессии. Поэтому до перезапуска
+  // разрешает панель, а флаг запуска действует со следующего хода.
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await запросРазрешения(с, а);
+    а.setPermissionMode("bypassPermissions");
+    await дождаться(() => найти(с.события, "turn_completed"), "конец хода");
+    const [ответ] = ответыПанели(с.события);
+    assert.equal(ответ.response.behavior, "allow");
+    assert.match(найти(с.события, "approval_decided").text, /без вопросов/);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: смена режима разрешений — перезапуск с флагом и той же сессией", async () => {
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await а.send({ text: "здравствуй", from: "human" });
+    await дождаться(() => концы(с.события) === 1, "первый ход");
+    а.setPermissionMode("bypassPermissions");
+    await а.send({ text: "НУЖНО-РАЗРЕШЕНИЕ", from: "human" });
+    await дождаться(() => концы(с.события) === 2, "второй ход");
+    const все = запуски(с.события);
+    assert.equal(все.length, 2);
+    assert.equal(флаг(все[1], "--permission-mode"), "bypassPermissions");
+    assert.equal(флаг(все[1], "--resume"), "fake-claude-session");
+    // Фальшивка режима не знает и спрашивает — панель отвечает сама, ход не стоит.
+    assert.equal(ответыПанели(с.события)[0].response.behavior, "allow");
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: плановая остановка не показывается как ошибка", async () => {
   const с = собиратель();
   const а = claude(с);

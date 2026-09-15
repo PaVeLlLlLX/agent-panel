@@ -182,6 +182,13 @@ test("модели: список по кнопке, выбор уходит ра
     итог.уровеньCodex = [...по("уровень-codex").options].map((о) => о.textContent)[0];
     итог.выборы = window.отправленное.filter((м) => м.type === "setModel");
     итог.сводка = по("модели-сводка").textContent;
+
+    послать({ type: "permissions", mode: "bypassPermissions" });
+    итог.режимДо = по("режим-claude").value;
+    по("режим-claude").value = "default";
+    по("режим-claude").dispatchEvent(new Event("change"));
+    итог.режимы = window.отправленное.filter((м) => м.type === "setPermissionMode");
+    итог.сводкаРежима = по("модели-сводка").textContent;
   `,
     { сИнтерфейсом: true },
   );
@@ -199,6 +206,9 @@ test("модели: список по кнопке, выбор уходит ра
   ]);
   assert.match(р.сводка, /Claude: Haiku/);
   assert.match(р.сводка, /Codex: по умолчанию/);
+  assert.equal(р.режимДо, "bypassPermissions", "режим из расширения должен отразиться в переключателе");
+  assert.deepEqual(р.режимы, [{ type: "setPermissionMode", mode: "default" }]);
+  assert.match(р.сводкаРежима, /спрашивать/);
 });
 
 test("карточка разрешения: кнопки, ответ уходит расширению, решение закрывает карточку", { skip: БЕЗ_БРАУЗЕРА }, () => {
@@ -227,14 +237,22 @@ test("карточка разрешения: кнопки, ответ уходи
 
     послать({ type: "event", история: true, событие: запрос("old-1") });
     итог.кнопкиИзЖурнала = document.querySelectorAll(".разрешение")[1].querySelectorAll("button").length;
+
+    послать({ type: "event", событие: запрос("perm-2") });
+    const карточки = document.querySelectorAll(".разрешение");
+    const безВопросов = [...карточки[карточки.length - 1].querySelectorAll("button")]
+      .find((к) => к.textContent === "Больше не спрашивать");
+    безВопросов.click();
+    итог.безВопросов = window.отправленное.filter((м) => м.type === "setPermissionMode");
   `,
     { сИнтерфейсом: true },
   );
-  assert.deepEqual(р.кнопки, ["Разрешить", "Разрешить в этой сессии", "Отклонить"]);
+  assert.deepEqual(р.кнопки, ["Разрешить", "Разрешить в этой сессии", "Больше не спрашивать", "Отклонить"]);
   assert.equal(р.этап, "ждёт разрешения");
   assert.deepEqual(р.отправлено, [{ type: "approval", id: "perm-1", choice: "allowSession" }]);
   assert.equal(р.отключены, true, "повторное нажатие отправило бы второй ответ");
   assert.equal(р.кнопкиПосле, 0);
   assert.match(р.надпись, /разрешено в этой сессии/);
   assert.equal(р.кнопкиИзЖурнала, 0, "на запрос прошлого запуска ответить нельзя");
+  assert.deepEqual(р.безВопросов, [{ type: "setPermissionMode", mode: "bypassPermissions" }]);
 });

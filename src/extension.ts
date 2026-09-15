@@ -29,6 +29,10 @@ type ВыбираемыйАгент = "claude" | "codex";
 const АГЕНТЫ: readonly ВыбираемыйАгент[] = ["claude", "codex"];
 const ИМЕНА_АГЕНТОВ: Record<ВыбираемыйАгент, string> = { claude: "Claude", codex: "Codex" };
 
+/** Режимы разрешений, которые принимает Claude Code 2.1.220, плюс default — не передавать флаг. */
+const РЕЖИМЫ = new Set(["default", "acceptEdits", "auto", "manual", "dontAsk", "plan", "bypassPermissions"]);
+const ПОДПИСИ_РЕЖИМОВ: Record<string, string> = { bypassPermissions: "без вопросов", default: "спрашивать" };
+
 type СообщениеМоделей = {
   type: "models";
   agent: ВыбираемыйАгент;
@@ -50,6 +54,9 @@ class Комната {
   readonly #каталоги: Partial<Record<ВыбираемыйАгент, readonly ModelOption[]>> = {};
   readonly #адаптеры: Record<ВыбираемыйАгент, Adapter>;
   #загрузкаМоделей: Promise<void> | undefined;
+  /** Режим разрешений Claude для папки; по умолчанию — из настройки. */
+  #режим: string;
+  readonly #ключРежима: string;
 
   constructor(контекст: vscode.ExtensionContext, cwd: string) {
     const настройки = vscode.workspace.getConfiguration("agentPanel");
@@ -61,6 +68,12 @@ class Комната {
       claude: normalizeChoice(undefined, сохранённые["claude"]),
       codex: normalizeChoice(undefined, сохранённые["codex"]),
     };
+    this.#ключРежима = `agentPanel.claudePermissions:${cwd}`;
+    const сохранённыйРежим = this.#память.get<string>(this.#ключРежима);
+    this.#режим =
+      сохранённыйРежим && РЕЖИМЫ.has(сохранённыйРежим)
+        ? сохранённыйРежим
+        : настройки.get<string>("claudePermissionMode", "bypassPermissions");
     this.#журнал = new Journal(join(контекст.globalStorageUri.fsPath, "agent-panel.sqlite"));
     this.#журнал.ensureRoom(this.#имя, cwd);
     const привязка = this.#журнал.binding(this.#имя);
@@ -75,7 +88,6 @@ class Комната {
     this.#панель.onDidDispose(() => void this.dispose());
 
     const принять = (событие: PanelEvent) => this.#координатор.handle(событие);
-    const режим = настройки.get<string>("claudePermissionMode", "default");
 
     const claude = new ClaudeAdapter(
       {
@@ -85,7 +97,7 @@ class Комната {
         effort: this.#выборы.claude.effort,
         settingSources: настройки.get<string>("claudeSettingSources", "project,local"),
         ...(привязка?.claudeSessionId ? { resumeSessionId: привязка.claudeSessionId } : {}),
-        ...(режим && режим !== "default" ? { extraArgs: ["--permission-mode", режим] } : {}),
+        permissionMode: this.#режим,
         onSessionId: (id) => {
           if (!this.#закрыта) this.#журнал.bindSessions(this.#имя, id, undefined);
         },
@@ -127,6 +139,7 @@ class Комната {
         }
         this.#отправитьВПанель({ type: "state", состояние: this.#координатор.state });
         for (const агент of АГЕНТЫ) this.#отправитьМодели(агент);
+        this.#отправитьВПанель({ type: "permissions", mode: this.#режим });
         return;
       case "send":
         if (!сообщение.text.trim() || !МАРШРУТЫ.has(сообщение.route as Route)) return;
@@ -144,6 +157,23 @@ class Комната {
       case "setAuto":
         this.#координатор.setAuto(сообщение.on);
         return;
+      case "setPermissionMode": {
+        if (!РЕЖИМЫ.has(сообщение.mode)) return;
+        // Адаптеру — всегда: «Больше не спрашивать» на карточке должна
+        // разрешить открытый запрос, даже если режим уже был выбран.
+        this.#адаптеры.claude.setPermissionMode?.(сообщение.mode);
+        if (сообщение.mode !== this.#режим) {
+          this.#режим = сообщение.mode;
+          await this.#память.update(this.#ключРежима, сообщение.mode);
+          this.#координатор.notice(
+            сообщение.mode === "bypassPermissions"
+              ? "Разрешения Claude: без вопросов. Открытые запросы разрешены сразу, со следующего хода Claude не спрашивает."
+              : `Разрешения Claude: ${ПОДПИСИ_РЕЖИМОВ[сообщение.mode] ?? сообщение.mode} — со следующего хода.`,
+          );
+        }
+        this.#отправитьВПанель({ type: "permissions", mode: this.#режим });
+        return;
+      }
       case "listModels":
         await this.#загрузитьМодели();
         return;
@@ -226,7 +256,8 @@ class Комната {
     сообщение:
       | { type: "event"; событие: PanelEvent; история?: boolean }
       | { type: "state"; состояние: RoomState }
-      | СообщениеМоделей,
+      | СообщениеМоделей
+      | { type: "permissions"; mode: string },
   ): void {
     if (this.#закрыта) return;
     void this.#панель.webview.postMessage(сообщение);
@@ -251,7 +282,8 @@ type ВходящееUI =
   | { type: "approval"; id: string; choice: string }
   | { type: "openLink"; href: string }
   | { type: "listModels" }
-  | { type: "setModel"; agent: string; model: unknown; effort: unknown };
+  | { type: "setModel"; agent: string; model: unknown; effort: unknown }
+  | { type: "setPermissionMode"; mode: string };
 
 /**
  * Разметка webview.
@@ -316,6 +348,13 @@ function разметка(webview: vscode.Webview, контекст: vscode.Exte
       <span>Codex</span>
       <select id="модель-codex" disabled aria-label="Модель Codex"></select>
       <select id="уровень-codex" disabled aria-label="Уровень рассуждения Codex" title="Уровень рассуждения: чем выше, тем дольше и дороже ход"></select>
+    </div>
+    <div class="модель">
+      <span>Разрешения Claude</span>
+      <select id="режим-claude" aria-label="Режим разрешений Claude" title="Без вопросов — Claude выполняет команды сам (bypassPermissions). Спрашивать — каждое действие, требующее согласия, приходит карточкой. Действует для этой папки">
+        <option value="bypassPermissions">без вопросов</option>
+        <option value="default">спрашивать</option>
+      </select>
     </div>
   </div>
   <textarea id="ввод" rows="3" placeholder="Сообщение… Ctrl+Enter отправляет"></textarea>

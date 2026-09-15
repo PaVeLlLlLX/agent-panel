@@ -169,6 +169,11 @@ export interface Adapter {
   listModels?(): Promise<readonly ModelOption[]>;
   /** Модель и уровень со следующего хода; идущий ход не меняется. */
   setModel?(choice: ModelChoice): void;
+  /**
+   * Режим разрешений агента. Флаг запуска действует со следующего хода; до
+   * перезапуска «без вопросов» исполняет сама панель.
+   */
+  setPermissionMode?(mode: string): void;
   /** Занят ли агент ходом прямо сейчас. */
   readonly busy: boolean;
   /** Идентификатор сессии агента, если известен: нужен для восстановления. */
