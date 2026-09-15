@@ -17,14 +17,24 @@
  * раундов остаётся ограничителем расходов.
  *
  * **Недоставленное удерживается, а не теряется.** Нет вердикта, достигнут
- * предел, выключены автораунды — пересылка не уходит, но и не пропадает:
- * человек видит её и отправляет сам.
+ * предел, выключены автораунды, отказы в разрешениях — пересылка не уходит,
+ * но и не пропадает: человек видит причину и решает сам.
  *
  * **Каждый ход знает, зачем он.** Цель хода (работа в цикле, проверка в цикле
- * или прямой вопрос) записывается при отправке и снимается при завершении.
- * Иначе ответ на мимоходный вопрос ушёл бы рецензенту как работа по задаче.
+ * или прямой вопрос) записывается ДО отправки и снимается при завершении.
+ * Регистрация после отправки проигрывала быстрому агенту: его ответ целиком
+ * успевал прийти раньше, чем завершалась отправка, и проверка засчитывалась
+ * как прямой вопрос.
  *
- * **Устаревшее не доставляется.** Новая задача отменяет пересылки прежней.
+ * **Каждое продолжение знает, к какому циклу оно относится.** Продолжение
+ * ждёт снимок версии; за это время могут прийти новая задача или остановка.
+ * Поэтому цикл и задача передаются продолжению неизменными, а после каждого
+ * ожидания проверяется, что цикл всё ещё текущий. Иначе Codex получал задачу
+ * B с материалом A, а остановленный цикл оживал.
+ *
+ * **Устаревшее не доставляется.** Новая задача, остановка и прерывание
+ * убирают из очереди пересылки прежнего цикла, а выгрузка очереди отбрасывает
+ * всё, что относится к нетекущему циклу.
  *
  * Сохранены прежние правила: передаётся законченное, сырой вывод идёт
  * целиком, материал копится по агенту, снимок версии закреплён за ходом.
@@ -36,13 +46,7 @@ import { VERDICT_REQUEST, Verdict, parseVerdict } from "./verdict.js";
 
 export type Route = "review" | "both" | "claude" | "codex";
 
-export type Stage =
-  | "idle"
-  | "working"
-  | "reviewing"
-  | "held"
-  | "accepted"
-  | "stopped";
+export type Stage = "idle" | "working" | "reviewing" | "held" | "accepted" | "stopped";
 
 export interface RoomState {
   readonly task: string | undefined;
@@ -70,6 +74,8 @@ export interface CoordinatorOptions {
   readonly maxAutoRounds: number;
   readonly onEvent: (событие: PanelEvent) => void;
   readonly onState?: (состояние: RoomState) => void;
+  /** Снимок версии файлов. Подменяется в тестах, чтобы воспроизводить гонки. */
+  readonly snapshot?: (cwd: string) => Promise<Snapshot>;
 }
 
 type Роль = "work" | "review" | "direct";
@@ -87,13 +93,15 @@ interface Отправка {
   readonly снимок: Snapshot | undefined;
 }
 
+type Удержанное = Отправка & { причина: string; действие: "send" | "retry" };
+
 export class Coordinator {
   #цикл = 0;
   #этап: Stage = "idle";
   #задача: string | undefined;
   #раунд = 0;
   #вердикт: Verdict | undefined;
-  #удержано: (Отправка & { причина: string; действие: "send" | "retry" }) | undefined;
+  #удержано: Удержанное | undefined;
   /** Последняя рабочая отправка Claude в цикле — для повтора после отказов. */
   #последняяРабота: Отправка | undefined;
   #автоматика = true;
@@ -102,13 +110,16 @@ export class Coordinator {
   readonly #накопители = new Map<AgentId, PanelEvent[]>();
   readonly #цели = new Map<AgentId, Цель[]>();
   readonly #очередь: Отправка[] = [];
+  readonly #снять: (cwd: string) => Promise<Snapshot>;
 
   constructor(
     private readonly claude: Adapter,
     private readonly codex: Adapter,
     private readonly journal: Journal,
     private readonly опции: CoordinatorOptions,
-  ) {}
+  ) {
+    this.#снять = опции.snapshot ?? takeSnapshot;
+  }
 
   get round(): number {
     return this.#раунд;
@@ -142,9 +153,7 @@ export class Coordinator {
       агент === "claude" || агент === "codex"
         ? (this.#снимки.get(агент) ?? this.#снимокКомнаты)
         : this.#снимокКомнаты;
-    const сПометкой: PanelEvent = снимок
-      ? { ...событие, snapshot: снимок.id }
-      : событие;
+    const сПометкой: PanelEvent = снимок ? { ...событие, snapshot: снимок.id } : событие;
     this.journal.append(this.опции.room, сПометкой);
     this.опции.onEvent(сПометкой);
 
@@ -166,7 +175,12 @@ export class Coordinator {
   }
 
   async fromHuman(текст: string, маршрут: Route): Promise<void> {
-    this.#снимокКомнаты = await takeSnapshot(this.опции.cwd);
+    // Новая задача регистрируется ДО ожидания снимка: иначе продолжение
+    // прежнего цикла, ждущее тот же снимок, успело бы отправить устаревшее.
+    const цикл = маршрут === "review" ? this.#начатьЦикл(текст) : undefined;
+    this.#обновить();
+
+    this.#снимокКомнаты = await this.#снять(this.опции.cwd);
     this.handle({
       id: `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       agent: "human",
@@ -180,20 +194,18 @@ export class Coordinator {
       from: "human",
       snapshot: describeSnapshot(this.#снимокКомнаты),
     };
-    const прямо: Цель = { роль: "direct", цикл: undefined };
 
-    if (маршрут === "review") {
-      this.#начатьЦикл(текст);
+    if (цикл !== undefined) {
+      if (!this.#текущий(цикл)) return;
       await this.#отправить({
         to: "claude",
         prompt,
-        цель: { роль: "work", цикл: this.#цикл },
+        цель: { роль: "work", цикл },
         снимок: this.#снимокКомнаты,
       });
     } else {
-      for (const кому of маршрут === "both"
-        ? (["claude", "codex"] as const)
-        : [маршрут]) {
+      const прямо: Цель = { роль: "direct", цикл: undefined };
+      for (const кому of маршрут === "both" ? (["claude", "codex"] as const) : [маршрут as AgentId]) {
         await this.#отправить({ to: кому, prompt, цель: прямо, снимок: this.#снимокКомнаты });
       }
     }
@@ -205,6 +217,10 @@ export class Coordinator {
     const у = this.#удержано;
     if (!у) return;
     this.#удержано = undefined;
+    if (у.цель.цикл !== undefined && у.цель.цикл !== this.#цикл) {
+      this.#обновить();
+      return;
+    }
     if (у.цель.роль === "review") this.#раунд += 1;
     this.#этап = у.цель.роль === "review" ? "reviewing" : "working";
     await this.#отправить(у);
@@ -232,39 +248,55 @@ export class Coordinator {
 
   // -------------------------------------------------------------------------
 
-  #начатьЦикл(задача: string): void {
-    const устаревшие = this.#очередь.filter((о) => о.цель.цикл !== undefined);
-    if (устаревшие.length > 0) {
-      for (const о of устаревшие) this.#очередь.splice(this.#очередь.indexOf(о), 1);
-      this.#сообщить(
-        `Новая задача: не доставлено устаревших пересылок прежней — ${устаревшие.length}.`,
-      );
+  /** Цикл текущий и не остановлен: только тогда продолжение имеет право действовать. */
+  #текущий(цикл: number): boolean {
+    return цикл === this.#цикл && this.#этап !== "stopped";
+  }
+
+  #начатьЦикл(задача: string): number {
+    const устаревшие = this.#убратьПересылкиЦиклов();
+    if (устаревшие > 0) {
+      this.#сообщить(`Новая задача: не доставлено устаревших пересылок прежней — ${устаревшие}.`);
     }
-    if (this.#удержано?.цель.цикл !== undefined) this.#удержано = undefined;
     this.#цикл += 1;
+    this.#удержано = undefined;
+    this.#последняяРабота = undefined;
     this.#задача = задача;
     this.#раунд = 0;
     this.#вердикт = undefined;
     this.#этап = "working";
+    return this.#цикл;
   }
 
   #сброситьОжидание(этап: Stage): void {
+    this.#убратьПересылкиЦиклов();
     this.#цикл += 1; // всё, что принадлежало прежнему циклу, теперь чужое
     this.#цели.clear();
     this.#удержано = undefined;
     this.#этап = этап;
   }
 
+  /** Убрать из очереди всё, что относится к циклам; прямые сообщения человека остаются. */
+  #убратьПересылкиЦиклов(): number {
+    let убрано = 0;
+    for (let i = this.#очередь.length - 1; i >= 0; i -= 1) {
+      if (this.#очередь[i]?.цель.цикл !== undefined) {
+        this.#очередь.splice(i, 1);
+        убрано += 1;
+      }
+    }
+    return убрано;
+  }
+
   async #ходЗакончен(агент: AgentId, провал: boolean, отказы: readonly string[]): Promise<void> {
     const цель = this.#цели.get(агент)?.shift() ?? { роль: "direct", цикл: undefined };
     const материал = this.#забрать(агент);
-    const текущий = цель.цикл !== undefined && цель.цикл === this.#цикл;
+    const цикл = цель.цикл;
+    const текущий = цикл !== undefined && this.#текущий(цикл);
 
     if (текущий && провал) {
       this.#этап = "stopped";
-      this.#сообщить(
-        `Ход ${ИМЕНА[агент]} завершился с ошибкой — цикл рецензии остановлен.`,
-      );
+      this.#сообщить(`Ход ${ИМЕНА[агент]} завершился с ошибкой — цикл рецензии остановлен.`);
     } else if (текущий && цель.роль === "work" && отказы.length > 0) {
       // Отказы — дело человека, а не рецензента: в живом прогоне три раунда
       // проверки ушли на спор о причинах блокировки.
@@ -278,44 +310,42 @@ export class Coordinator {
         );
       }
     } else if (текущий && цель.роль === "work") {
-      await this.#послеРаботы(материал);
+      await this.#послеРаботы(материал, цикл, this.#задача ?? "");
     } else if (текущий && цель.роль === "review") {
-      await this.#послеПроверки(материал);
-    }
-
-    else if (отказы.length > 0) {
-      this.#сообщить(
-        `${ИМЕНА[агент]} получил отказы в разрешениях (${отказы.length}): ${отказы.join("; ")}.`,
-      );
+      await this.#послеПроверки(материал, цикл);
+    } else if (отказы.length > 0) {
+      this.#сообщить(`${ИМЕНА[агент]} получил отказы в разрешениях (${отказы.length}): ${отказы.join("; ")}.`);
     }
 
     await this.#выгрузитьОчередь();
     this.#обновить();
   }
 
-  async #послеРаботы(материал: PanelEvent[]): Promise<void> {
+  async #послеРаботы(материал: PanelEvent[], цикл: number, задача: string): Promise<void> {
     const текст = собрать(материал, true);
     if (!текст) {
       this.#этап = "stopped";
       this.#сообщить("Claude не выдал законченной реплики — проверять нечего.");
       return;
     }
-    const снимок = await takeSnapshot(this.опции.cwd);
+    const снимок = await this.#снять(this.опции.cwd);
+    if (!this.#текущий(цикл)) return;
+
     const отправка: Отправка = {
       to: "codex",
       prompt: {
-        text: `Задача человека:\n${this.#задача ?? ""}\n\nМатериал разработчика:\n${текст}\n\n${VERDICT_REQUEST}`,
+        text: `Задача человека:\n${задача}\n\nМатериал разработчика:\n${текст}\n\n${VERDICT_REQUEST}`,
         from: "claude",
         snapshot: describeSnapshot(снимок),
       },
-      цель: { роль: "review", цикл: this.#цикл },
+      цель: { роль: "review", цикл },
       снимок,
     };
 
     if (this.#раунд >= this.опции.maxAutoRounds) {
       this.#удержать(
         отправка,
-        `Предел раундов (${this.опции.maxAutoRounds}) достигнут: работа Claude не проверена рецензентом.`,
+        `Предел проверок (${this.опции.maxAutoRounds}) достигнут: работа Claude не проверена рецензентом.`,
       );
       return;
     }
@@ -328,20 +358,23 @@ export class Coordinator {
     await this.#отправить(отправка);
   }
 
-  async #послеПроверки(материал: PanelEvent[]): Promise<void> {
-    const реплики = материал
+  async #послеПроверки(материал: PanelEvent[], цикл: number): Promise<void> {
+    const текст = материал
       .filter((е) => е.kind === "message" && е.text)
-      .map((е) => е.text as string);
-    const текст = реплики.join("\n\n");
-    this.#вердикт = parseVerdict(текст);
+      .map((е) => е.text as string)
+      .join("\n\n");
+    const вердикт = parseVerdict(текст);
+    this.#вердикт = вердикт;
 
-    if (this.#вердикт === "accepted") {
+    if (вердикт === "accepted") {
       this.#этап = "accepted";
       this.#сообщить("Рецензент принял работу. Цикл завершён.");
       return;
     }
 
-    const снимок = await takeSnapshot(this.опции.cwd);
+    const снимок = await this.#снять(this.опции.cwd);
+    if (!this.#текущий(цикл)) return;
+
     const отправка: Отправка = {
       to: "claude",
       prompt: {
@@ -349,15 +382,12 @@ export class Coordinator {
         from: "codex",
         snapshot: describeSnapshot(снимок),
       },
-      цель: { роль: "work", цикл: this.#цикл },
+      цель: { роль: "work", цикл },
       снимок,
     };
 
-    if (this.#вердикт === "missing") {
-      this.#удержать(
-        отправка,
-        "Рецензент не вынес вердикт: решите, передавать ли его ответ разработчику.",
-      );
+    if (вердикт === "missing") {
+      this.#удержать(отправка, "Рецензент не вынес вердикт: решите, передавать ли его ответ разработчику.");
       return;
     }
     if (!this.#автоматика) {
@@ -375,9 +405,7 @@ export class Coordinator {
   }
 
   async #агентУпал(агент: AgentId): Promise<void> {
-    const ждали = (this.#цели.get(агент) ?? []).some(
-      (ц) => ц.цикл !== undefined && ц.цикл === this.#цикл,
-    );
+    const ждали = (this.#цели.get(агент) ?? []).some((ц) => ц.цикл !== undefined && this.#текущий(ц.цикл));
     this.#цели.delete(агент);
     this.#накопители.delete(агент);
     if (ждали) {
@@ -410,12 +438,20 @@ export class Coordinator {
     if (о.снимок) this.#снимки.set(о.to, о.снимок);
     if (о.to === "claude" && о.цель.роль === "work") this.#последняяРабота = о;
     this.#накопители.set(о.to, []);
+
+    // Цель регистрируется ДО отправки: быстрый агент может завершить ход,
+    // пока отправка ещё не вернула управление.
+    const цели = this.#цели.get(о.to) ?? [];
+    const цель = { ...о.цель };
+    цели.push(цель);
+    this.#цели.set(о.to, цели);
+
     try {
       await адаптер.send(о.prompt);
-      const цели = this.#цели.get(о.to) ?? [];
-      цели.push(о.цель);
-      this.#цели.set(о.to, цели);
     } catch (беда) {
+      const список = this.#цели.get(о.to);
+      const i = список?.indexOf(цель) ?? -1;
+      if (список && i >= 0) список.splice(i, 1);
       this.handle({
         id: `x${Date.now().toString(36)}`,
         agent: о.to,
@@ -424,7 +460,7 @@ export class Coordinator {
         at: Date.now(),
         text: `не удалось отправить: ${(беда as Error).message}`,
       });
-      if (о.цель.цикл === this.#цикл) {
+      if (о.цель.цикл !== undefined && о.цель.цикл === this.#цикл) {
         this.#этап = "stopped";
         this.#сообщить(`Отправка ${ИМЕНА[о.to]} не удалась — цикл остановлен.`);
       }
@@ -434,8 +470,17 @@ export class Coordinator {
   async #выгрузитьОчередь(): Promise<void> {
     for (let i = 0; i < this.#очередь.length; ) {
       const о = this.#очередь[i];
-      const адаптер = о?.to === "claude" ? this.claude : this.codex;
-      if (!о || адаптер.busy) {
+      if (!о) {
+        i += 1;
+        continue;
+      }
+      // Пересылка нетекущего цикла устарела: отбросить, а не доставить.
+      if (о.цель.цикл !== undefined && !this.#текущий(о.цель.цикл)) {
+        this.#очередь.splice(i, 1);
+        continue;
+      }
+      const адаптер = о.to === "claude" ? this.claude : this.codex;
+      if (адаптер.busy) {
         i += 1;
         continue;
       }
