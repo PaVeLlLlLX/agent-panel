@@ -5,29 +5,43 @@
   "version": "0.1.0",
   "private": true,
   "publisher": "local",
-  "engines": { "vscode": "^1.90.0", "node": ">=22.5.0" },
-  "categories": ["Other"],
+  "engines": {
+    "vscode": "^1.90.0",
+    "node": ">=22.5.0"
+  },
+  "categories": [
+    "Other"
+  ],
   "main": "./out/extension.js",
   "activationEvents": [],
   "contributes": {
     "commands": [
-      { "command": "agentPanel.open", "title": "Agent Panel: открыть комнату" },
-      { "command": "agentPanel.stopAll", "title": "Agent Panel: остановить обоих" }
+      {
+        "command": "agentPanel.open",
+        "title": "Agent Panel: открыть комнату"
+      },
+      {
+        "command": "agentPanel.stopAll",
+        "title": "Agent Panel: остановить обоих"
+      }
     ],
     "configuration": {
       "title": "Agent Panel",
       "properties": {
         "agentPanel.claudeCommand": {
-          "type": "string", "default": "claude",
+          "type": "string",
+          "default": "claude",
           "description": "Исполняемый файл Claude Code."
         },
         "agentPanel.codexCommand": {
-          "type": "string", "default": "codex",
+          "type": "string",
+          "default": "codex",
           "description": "Исполняемый файл Codex."
         },
         "agentPanel.maxAutoRounds": {
-          "type": "number", "default": 3,
-          "description": "Предел автоматических раундов рецензирования. 0 отключает автоматику."
+          "type": "number",
+          "default": 3,
+          "description": "Сколько раз Codex может проверить работу Claude по одной задаче. Когда предел достигнут, непроверенная работа ждёт вашего решения. 0 — каждую передачу подтверждаете вы."
         },
         "agentPanel.claudeSettingSources": {
           "type": "string",
@@ -36,13 +50,14 @@
         },
         "agentPanel.claudePermissionMode": {
           "type": "string",
-          "enum": ["default", "acceptEdits", "plan", "bypassPermissions"],
+          "enum": [
+            "default",
+            "acceptEdits",
+            "plan",
+            "bypassPermissions"
+          ],
           "default": "default",
           "description": "Режим разрешений Claude. Панель пока НЕ показывает запросы одобрения, поэтому при значении default действия, требующие согласования, будут отклонены. Это осознанный выбор: молча принимать правки за вас нельзя."
-        },
-        "agentPanel.reviewerReadOnly": {
-          "type": "boolean", "default": true,
-          "description": "Отказывать рецензенту в записи файлов и запуске команд. Выключать не следует: разделение ролей держится на этом."
         }
       }
     }

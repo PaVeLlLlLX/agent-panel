@@ -230,14 +230,17 @@ test("нулевой предел: работа разработчика уде�
   журнал.close();
 });
 
-test("выключенные автораунды удерживают пересылку", async () => {
+test("выключенная автопересылка удерживает передачу", async () => {
+  // Слово одно на всю панель: переключатель называется «автопересылка»,
+  // и причина удержания должна говорить тем же словом.
   const { к, codex, журнал } = комната();
   к.setAuto(false);
   await к.fromHuman("задача", "review");
   ход(к, "claude", "готово");
   await дождаться(() => к.state.stage === "held", "удержание");
   assert.equal(codex.полученное.length, 0);
-  assert.match(к.state.held.reason, /автораунд/i);
+  assert.match(к.state.held.reason, /автопересылк/i);
+  assert.doesNotMatch(к.state.held.reason, /раунд/i);
   журнал.close();
 });
 
