@@ -14,6 +14,9 @@ body {
   height: 100vh;
   display: grid;
   grid-template-rows: auto 1fr auto auto;
+  /* Без явной колонки её ширину задаёт содержимое: строка задачи с логом
+     растянула панель в 28 раз шире окна. */
+  grid-template-columns: minmax(0, 1fr);
   font-family: var(--vscode-font-family);
   font-size: var(--vscode-font-size);
   color: var(--vscode-foreground);
@@ -67,7 +70,13 @@ body {
   border-radius: 4px;
   font-size: 0.9em;
 }
-.удержано span { flex: 1; }
+.удержано span {
+  flex: 1;
+  min-width: 0;
+  max-height: 6em;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
 
 .переключатель { font-size: 0.85em; display: flex; align-items: center; gap: 4px; }
 
