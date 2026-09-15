@@ -19,7 +19,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -217,6 +217,126 @@ test("Claude: несуществующая команда — ошибка с о
       "ошибка запуска",
     );
     assert.equal(а.busy, false);
+  } finally {
+    await а.stop();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Жизненный цикл процессов
+//
+// Найдено рецензентом. На Windows процесс запускается через cmd.exe
+// (shell:true), и kill() убивает оболочку, а не агента с его командами.
+// Следующее сообщение поднимало второго Claude на ту же сессию, пока первый
+// ещё работал.
+// ---------------------------------------------------------------------------
+
+function жив(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test("Claude: остановка убивает агента и его команды, и ждёт их завершения", async () => {
+  const с = собиратель();
+  const а = claude(с);
+  const файл = join(каталог(), "pids.json");
+  let pids;
+  try {
+    await а.send({ text: `ДОЛГАЯ-КОМАНДА ${файл}`, from: "human" });
+    await дождаться(() => {
+      try {
+        pids = JSON.parse(readFileSync(файл, "utf8"));
+        return true;
+      } catch {
+        return false;
+      }
+    }, "запуск долгой команды");
+    assert.ok(жив(pids.внук), "долгая команда должна работать до остановки");
+
+    await а.stop();
+    assert.equal(жив(pids.агент), false, "после stop() агент не должен быть жив");
+    assert.equal(жив(pids.внук), false, "после stop() его команда не должна быть жива");
+  } finally {
+    await а.stop();
+    if (pids && жив(pids.внук)) process.kill(pids.внук);
+  }
+});
+
+// На Windows этот сценарий не проверяется, и это измерено, а не предположено.
+// Если процесс перестал читать ввод, короткая запись в его канал проходит
+// УСПЕШНО: ни ошибки записи, ни события error, процесс жив (опыт с
+// fs.closeSync(0), 310 мс). Ошибка EPIPE приходит лишь после переполнения
+// буфера канала — в опыте с непрерывной записью около 60 секунд. Одно
+// сообщение агенту буфер не переполняет, поэтому детерминированной проверки
+// на Windows нет. Обработка ошибки в адаптере при этом та же и срабатывает,
+// когда система ошибку сообщает; на Windows от зависшего агента спасает
+// кнопка «Остановить», которая теперь снимает всё дерево процессов.
+const КАНАЛ_НЕ_ПРОВЕРЯЕМ =
+  process.platform === "win32" &&
+  "на Windows запись в канал, который процесс перестал читать, проходит без ошибки до переполнения буфера (измерено)";
+
+test("Claude: сломанный канал при живом процессе — ошибка, а не вечное ожидание", { skip: КАНАЛ_НЕ_ПРОВЕРЯЕМ }, async () => {
+  // Запуск без оболочки намеренно: через cmd.exe поломка канала не видна
+  // вовсе — оболочка держит свою копию канала открытой.
+  const с = собиратель();
+  const а = new ClaudeAdapter(
+    {
+      command: process.execPath,
+      commandArgs: [ФАЛЬШИВЫЙ_CLAUDE, "--close-stdin"],
+      cwd: каталог(),
+      shell: false,
+    },
+    с.sink,
+  );
+  try {
+    try {
+      await а.send({ text: "здравствуй", from: "human" });
+    } catch {
+      // отказ отправки допустим
+    }
+    await дождаться(() => ошибки(с.события).some((е) => е.failed === true), "ошибка канала");
+    assert.equal(а.busy, false, "ответа не будет — агент не может оставаться занятым");
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Codex: немедленный перезапуск после остановки работает", async () => {
+  // Сценарий рецензента: поздний exit старого процесса отклонял запросы
+  // нового и убивал его запуск.
+  const с = собиратель();
+  const а = codex(с);
+  try {
+    for (let i = 1; i <= 3; i += 1) {
+      await а.send({ text: `здравствуй ${i}`, from: "human" });
+      await дождаться(
+        () => с.события.filter((е) => е.kind === "turn_completed").length === i,
+        `ход ${i}`,
+      );
+      await а.stop();
+    }
+    assert.deepEqual(ошибки(с.события), []);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Codex: второе сообщение во время запуска не теряется", async () => {
+  const с = собиратель();
+  const а = codex(с);
+  try {
+    const первое = а.send({ text: "первое", from: "human" });
+    const второе = а.send({ text: "второе", from: "human" });
+    await Promise.all([первое, второе]);
+    await дождаться(
+      () => с.события.filter((е) => е.kind === "turn_completed").length === 2,
+      "оба хода",
+    );
+    assert.deepEqual(ошибки(с.события), []);
   } finally {
     await а.stop();
   }

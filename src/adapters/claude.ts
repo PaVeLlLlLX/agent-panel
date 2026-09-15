@@ -10,30 +10,29 @@
  * репликами, на каждую приходит свой `result`.
  *
  * Вывод: system/init, stream_event (text_delta / input_json_delta), assistant
- * (text / tool_use), user (tool_result), result (is_error, num_turns).
+ * (text / tool_use), user (tool_result), result (is_error, num_turns,
+ * permission_denials).
  *
- * Решения, за которые заплачено живым прогоном:
+ * Решения, за которые заплачено живыми прогонами:
  *
  * **`--setting-sources project,local`.** Без него дочерняя сессия загружает
  * пользовательский settings.json со всеми хуками, и Stop-хук приходит в неё
- * как реплика: в тестовом прогоне панель записала две заметки в хранилище
- * владельца. Проверено запуском: с флагом событий хуков ноль, вход по
- * подписке работает. `--bare` не годится — он не читает OAuth.
+ * как реплика. `--bare` не годится — он не читает OAuth.
  *
  * **stderr — диагностика, а не ошибка.** Служебные логи показывались красной
  * репликой с цветовыми кодами.
  *
- * **Плановая остановка — не авария.** Закрытие комнаты порождало «процесс
- * завершился: SIGTERM» как ошибку.
+ * **Остановка — всем деревом и с подтверждением.** См. process.ts.
  *
- * **Обработчики error на процессе и stdin обязательны.** Без них ненайденная
- * команда или запись в умерший процесс роняют хост расширений целиком.
+ * **Ошибка записи в stdin — отказ канала.** Прежде она уходила только в
+ * диагностику, send() завершался успешно, агент оставался «занятым» навсегда.
  *
  * input_json_delta не показывается как «инструмент выполняется»: это
  * формирование аргументов, а не выполнение.
  */
-import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, Interface } from "node:readline";
+import { запуститьПроцесс, остановитьДерево } from "./process.js";
 import {
   Adapter,
   AgentPrompt,
@@ -53,13 +52,14 @@ export interface ClaudeOptions {
   readonly extraArgs?: readonly string[];
   /** Источники настроек. По умолчанию без пользовательских; "" — флаг не передаётся. */
   readonly settingSources?: string;
+  /** Запуск через оболочку. По умолчанию на Windows — да: иначе не запустить claude.cmd. */
+  readonly shell?: boolean;
   readonly onSessionId?: (id: string) => void;
 }
 
 /**
  * Отказы в разрешениях из result: `{ tool_name, tool_use_id, tool_input }`.
- * Форма снята с настоящего result живого прогона. Команда показывается
- * как есть — человеку нужно видеть, что именно отклонено.
+ * Форма снята с настоящего result живого прогона.
  */
 function разобратьОтказы(значение: unknown): string[] {
   if (!Array.isArray(значение)) return [];
@@ -120,11 +120,7 @@ export class ClaudeAdapter implements Adapter {
       ...(this.#сессия ? ["--resume", this.#сессия] : []),
       ...(this.опции.extraArgs ?? []),
     ];
-    const процесс = spawn(this.опции.command, аргументы, {
-      cwd: this.опции.cwd,
-      shell: process.platform === "win32",
-      stdio: ["pipe", "pipe", "pipe"],
-    }) as ChildProcessWithoutNullStreams;
+    const процесс = запуститьПроцесс(this.опции.command, аргументы, this.опции.cwd, this.опции.shell);
     this.#процесс = процесс;
 
     this.#строки = createInterface({ input: процесс.stdout });
@@ -133,12 +129,13 @@ export class ClaudeAdapter implements Adapter {
       const текст = stripAnsi(строка).trim();
       if (текст) this.#выдать("diagnostic", "stream", { text: clamp(текст) });
     });
-    процесс.stdin.on("error", (беда) => {
-      this.#выдать("diagnostic", "stream", { text: `запись в Claude не удалась: ${беда.message}` });
-    });
+    процесс.stdin.on("error", (беда) => this.#сбойКанала(процесс, беда));
     процесс.on("error", (беда) => this.#конец(процесс, `Claude не запустился: ${беда.message}`));
     процесс.on("exit", (код, сигнал) =>
-      this.#конец(процесс, `процесс Claude завершился неожиданно (код ${код}, сигнал ${сигнал}). Подробности — в диагностике.`),
+      this.#конец(
+        процесс,
+        `процесс Claude завершился неожиданно (код ${код}, сигнал ${сигнал}). Подробности — в диагностике.`,
+      ),
     );
   }
 
@@ -156,6 +153,12 @@ export class ClaudeAdapter implements Adapter {
     }
   }
 
+  /** Канал сломан при живом процессе: ответа не будет — это конец процесса. */
+  #сбойКанала(процесс: ChildProcessWithoutNullStreams, беда: Error): void {
+    this.#конец(процесс, `канал связи с Claude сломан: ${беда.message}`);
+    void остановитьДерево(процесс);
+  }
+
   async send(prompt: AgentPrompt): Promise<void> {
     if (!this.#процесс) await this.start();
     const процесс = this.#процесс;
@@ -165,7 +168,9 @@ export class ClaudeAdapter implements Adapter {
       message: { role: "user", content: [{ type: "text", text: this.#оформить(prompt) }] },
     };
     this.#занят = true;
-    процесс.stdin.write(`${JSON.stringify(запись)}\n`);
+    процесс.stdin.write(`${JSON.stringify(запись)}\n`, (беда) => {
+      if (беда) this.#сбойКанала(процесс, беда);
+    });
   }
 
   /** Кто прислал реплику — часть сообщения: указание человека и замечание рецензента весят по-разному. */
@@ -196,8 +201,7 @@ export class ClaudeAdapter implements Adapter {
     this.#занят = false;
     if (!процесс) return;
     this.#останавливаемые.add(процесс);
-    процесс.stdin.end();
-    процесс.kill();
+    await остановитьДерево(процесс);
   }
 
   #разобрать(строка: string): void {

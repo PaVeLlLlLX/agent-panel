@@ -9,7 +9,6 @@
  *   item/completed              — { item: ThreadItem, threadId, turnId }
  *   turn/completed              — { threadId, turn: { id, status, error? } }
  *   TurnStatus = completed | interrupted | failed | inProgress
- *   ThreadItem: agentMessage, commandExecution, fileChange, mcpToolCall, reasoning…
  *
  * # Разделение ролей
  *
@@ -20,11 +19,25 @@
  * **Запрет запуска команд технически НЕ обеспечен.** Read-only сам по себе
  * выполнение не запрещает; инструкция рецензенту — просьба, а не гарантия.
  *
- * Как и у адаптера Claude: stderr — диагностика, плановая остановка — не
- * авария, обработчики error на процессе и stdin обязательны.
+ * # Жизненный цикл процесса
+ *
+ * Найдено рецензентом и воспроизведено тестами:
+ *
+ * **Ожидания запросов принадлежат процессу, а не адаптеру.** Поздний exit
+ * старого процесса отклонял запросы только что запущенного нового и убивал
+ * его запуск.
+ *
+ * **Отправки ждут общей готовности.** Второе сообщение, пришедшее во время
+ * запуска, видело процесс, но не ветку, и терялось с «ветка не создана».
+ *
+ * **Ошибка записи — отказ канала**, а не строка диагностики: иначе запрос
+ * остаётся в ожидании навсегда.
+ *
+ * **Остановка — всем деревом и с подтверждением.** См. process.ts.
  */
-import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, Interface } from "node:readline";
+import { запуститьПроцесс, остановитьДерево } from "./process.js";
 import {
   Adapter,
   AgentPrompt,
@@ -42,6 +55,7 @@ export interface CodexOptions {
   readonly cwd: string;
   readonly resumeThreadId?: string;
   readonly reviewerInstructions?: string;
+  readonly shell?: boolean;
   readonly onSessionId?: (id: string) => void;
 }
 
@@ -64,18 +78,24 @@ interface Ожидание {
   readonly reject: (ошибка: Error) => void;
 }
 
+/** Всё, что принадлежит одному запущенному процессу. */
+interface Контекст {
+  readonly процесс: ChildProcessWithoutNullStreams;
+  readonly строки: Interface;
+  readonly ожидания: Map<number, Ожидание>;
+  остановлен: boolean;
+  отчитан: boolean;
+}
+
 export class CodexAdapter implements Adapter {
   readonly id = "codex" as const;
 
-  #процесс: ChildProcessWithoutNullStreams | undefined;
-  #строки: Interface | undefined;
+  #к: Контекст | undefined;
+  #запуск: Promise<void> | undefined;
   #ветка: string | undefined;
   #ход: string | undefined;
   #занят = false;
   #следующийId = 1;
-  readonly #ожидания = new Map<number, Ожидание>();
-  readonly #останавливаемые = new WeakSet<object>();
-  readonly #отчитанные = new WeakSet<object>();
   readonly решения: ApprovalDecision[] = [];
 
   constructor(
@@ -92,41 +112,45 @@ export class CodexAdapter implements Adapter {
   }
 
   async start(): Promise<void> {
-    if (this.#процесс) throw new Error("адаптер Codex уже запущен");
-    const процесс = spawn(this.опции.command, [...(this.опции.commandArgs ?? []), "app-server"], {
-      cwd: this.опции.cwd,
-      shell: process.platform === "win32",
-      stdio: ["pipe", "pipe", "pipe"],
-    }) as ChildProcessWithoutNullStreams;
-    this.#процесс = процесс;
+    if (this.#к) throw new Error("адаптер Codex уже запущен");
+    const процесс = запуститьПроцесс(
+      this.опции.command,
+      [...(this.опции.commandArgs ?? []), "app-server"],
+      this.опции.cwd,
+      this.опции.shell,
+    );
+    const к: Контекст = {
+      процесс,
+      строки: createInterface({ input: процесс.stdout }),
+      ожидания: new Map(),
+      остановлен: false,
+      отчитан: false,
+    };
+    this.#к = к;
 
-    this.#строки = createInterface({ input: процесс.stdout });
-    this.#строки.on("line", (строка) => this.#разобрать(строка));
+    к.строки.on("line", (строка) => this.#разобрать(к, строка));
     createInterface({ input: процесс.stderr }).on("line", (строка) => {
       const текст = stripAnsi(строка).trim();
       if (текст) this.#выдать("diagnostic", "stream", { text: clamp(текст) });
     });
-    процесс.stdin.on("error", (беда) => {
-      this.#выдать("diagnostic", "stream", { text: `запись в Codex не удалась: ${беда.message}` });
-    });
-    процесс.on("error", (беда) => this.#конец(процесс, `Codex не запустился: ${беда.message}`));
+    процесс.stdin.on("error", (беда) => this.#сбойКанала(к, беда));
+    процесс.on("error", (беда) => this.#конец(к, `Codex не запустился: ${беда.message}`));
     процесс.on("exit", (код, сигнал) =>
-      this.#конец(процесс, `процесс Codex завершился неожиданно (код ${код}, сигнал ${сигнал}). Подробности — в диагностике.`),
+      this.#конец(к, `процесс Codex завершился неожиданно (код ${код}, сигнал ${сигнал}). Подробности — в диагностике.`),
     );
 
     try {
-      await this.#запрос("initialize", {
+      await this.#запрос(к, "initialize", {
         clientInfo: { name: "agent-panel", version: "0.1.0" },
         capabilities: {},
       });
-      this.#уведомить("initialized", {});
-      // Известная ветка (сохранённая или от прежнего процесса) продолжается,
-      // иначе создаётся новая с инструкцией рецензента.
+      this.#уведомить(к, "initialized", {});
+      // Известная ветка продолжается, иначе создаётся новая с инструкцией.
       const известная = this.#ветка ?? this.опции.resumeThreadId;
       const общие = { cwd: this.опции.cwd, sandbox: "read-only", approvalPolicy: "never" };
       const ответ = (await (известная
-        ? this.#запрос("thread/resume", { ...общие, threadId: известная })
-        : this.#запрос("thread/start", {
+        ? this.#запрос(к, "thread/resume", { ...общие, threadId: известная })
+        : this.#запрос(к, "thread/start", {
             ...общие,
             developerInstructions: this.опции.reviewerInstructions ?? ИНСТРУКЦИЯ_РЕЦЕНЗЕНТА,
           }))) as ОтветВетки;
@@ -135,33 +159,34 @@ export class CodexAdapter implements Adapter {
         text: `ветка ${String(this.#ветка).slice(0, 8)}, песочница read-only, одобрения never`,
       });
     } catch (беда) {
-      // Недоделанный запуск не должен оставлять живой процесс без ветки:
-      // следующая отправка решила бы, что всё готово.
-      await this.stop();
+      // Останавливать только СВОЙ процесс: к этому моменту мог быть запущен новый.
+      if (this.#к === к) await this.stop();
       throw беда;
     }
   }
 
-  #конец(процесс: ChildProcessWithoutNullStreams, текстОшибки: string): void {
-    const текущий = this.#процесс === процесс;
-    if (текущий) {
-      this.#процесс = undefined;
+  #конец(к: Контекст, текстОшибки: string): void {
+    if (this.#к === к) {
+      this.#к = undefined;
+      this.#запуск = undefined;
       this.#занят = false;
       this.#ход = undefined;
     }
-    const ожидаемо = this.#останавливаемые.has(процесс);
-    if (текущий || ожидаемо) {
-      const беда = new Error(ожидаемо ? "адаптер Codex остановлен" : текстОшибки);
-      for (const [, о] of this.#ожидания) о.reject(беда);
-      this.#ожидания.clear();
-    }
-    if (this.#отчитанные.has(процесс)) return;
-    this.#отчитанные.add(процесс);
-    if (ожидаемо) {
+    const беда = new Error(к.остановлен ? "адаптер Codex остановлен" : текстОшибки);
+    for (const [, о] of к.ожидания) о.reject(беда);
+    к.ожидания.clear();
+    if (к.отчитан) return;
+    к.отчитан = true;
+    if (к.остановлен) {
       this.#выдать("diagnostic", "stream", { text: "процесс Codex остановлен" });
     } else {
       this.#выдать("error", "turn", { text: текстОшибки, failed: true });
     }
+  }
+
+  #сбойКанала(к: Контекст, беда: Error): void {
+    this.#конец(к, `канал связи с Codex сломан: ${беда.message}`);
+    void остановитьДерево(к.процесс);
   }
 
   #установитьВетку(id: string | undefined): void {
@@ -171,12 +196,16 @@ export class CodexAdapter implements Adapter {
   }
 
   async send(prompt: AgentPrompt): Promise<void> {
-    if (!this.#процесс) await this.start();
+    // Проверка и запуск — синхронно до первого ожидания: второе сообщение,
+    // пришедшее во время запуска, ждёт того же запуска, а не теряется.
+    if (!this.#к) this.#запуск = this.start();
+    await this.#запуск;
+    const к = this.#к;
     const ветка = this.#ветка;
-    if (!ветка) throw new Error("ветка Codex не создана");
+    if (!к || !ветка) throw new Error("ветка Codex не создана");
     this.#занят = true;
     try {
-      await this.#запрос("turn/start", {
+      await this.#запрос(к, "turn/start", {
         threadId: ветка,
         input: [{ type: "text", text: this.#оформить(prompt) }],
       });
@@ -198,46 +227,60 @@ export class CodexAdapter implements Adapter {
   }
 
   async interrupt(): Promise<void> {
-    if (!this.#ветка || !this.#ход) return;
-    await this.#запрос("turn/interrupt", { threadId: this.#ветка, turnId: this.#ход }).catch(() => undefined);
-    this.#занят = false;
+    const к = this.#к;
+    if (!к) return;
+    if (this.#ветка && this.#ход) {
+      await this.#запрос(к, "turn/interrupt", { threadId: this.#ветка, turnId: this.#ход }).catch(() => undefined);
+      this.#занят = false;
+      return;
+    }
+    // Ход запускается, но его идентификатор ещё не пришёл: прервать нечего
+    // адресно. Останавливается процесс; следующая отправка продолжит ветку.
+    if (this.#занят) await this.stop();
   }
 
   async stop(): Promise<void> {
-    this.#строки?.close();
-    this.#строки = undefined;
-    const процесс = this.#процесс;
-    this.#процесс = undefined;
+    const к = this.#к;
+    this.#к = undefined;
+    this.#запуск = undefined;
     this.#занят = false;
     this.#ход = undefined;
-    for (const [, о] of this.#ожидания) о.reject(new Error("адаптер Codex остановлен"));
-    this.#ожидания.clear();
-    if (!процесс) return;
-    this.#останавливаемые.add(процесс);
-    процесс.stdin.end();
-    процесс.kill();
+    if (!к) return;
+    к.остановлен = true;
+    for (const [, о] of к.ожидания) о.reject(new Error("адаптер Codex остановлен"));
+    к.ожидания.clear();
+    к.строки.close();
+    await остановитьДерево(к.процесс);
   }
 
   /** Прочитать сохранённую историю ветки без возобновления и подписки. */
   async readThread(threadId: string): Promise<unknown> {
-    return this.#запрос("thread/read", { threadId, includeTurns: true });
+    const к = this.#к;
+    if (!к) throw new Error("Codex не запущен");
+    return this.#запрос(к, "thread/read", { threadId, includeTurns: true });
   }
 
-  #запрос(метод: string, параметры: unknown): Promise<unknown> {
-    const процесс = this.#процесс;
-    if (!процесс) return Promise.reject(new Error("Codex не запущен"));
+  #запрос(к: Контекст, метод: string, параметры: unknown): Promise<unknown> {
+    if (к.остановлен || this.#к !== к) return Promise.reject(new Error("Codex не запущен"));
     const id = this.#следующийId++;
     return new Promise<unknown>((resolve, reject) => {
-      this.#ожидания.set(id, { resolve, reject });
-      процесс.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method: метод, params: параметры })}\n`);
+      к.ожидания.set(id, { resolve, reject });
+      к.процесс.stdin.write(
+        `${JSON.stringify({ jsonrpc: "2.0", id, method: метод, params: параметры })}\n`,
+        (беда) => {
+          if (беда) this.#сбойКанала(к, беда);
+        },
+      );
     });
   }
 
-  #уведомить(метод: string, параметры: unknown): void {
-    this.#процесс?.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: метод, params: параметры })}\n`);
+  #уведомить(к: Контекст, метод: string, параметры: unknown): void {
+    к.процесс.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: метод, params: параметры })}\n`, (беда) => {
+      if (беда) this.#сбойКанала(к, беда);
+    });
   }
 
-  #разобрать(строка: string): void {
+  #разобрать(к: Контекст, строка: string): void {
     const обрезанная = строка.trim();
     if (!обрезанная) return;
     let запись: Record<string, unknown>;
@@ -249,8 +292,8 @@ export class CodexAdapter implements Adapter {
     }
 
     if (typeof запись["id"] === "number" && !("method" in запись)) {
-      const ожидание = this.#ожидания.get(запись["id"]);
-      this.#ожидания.delete(запись["id"]);
+      const ожидание = к.ожидания.get(запись["id"]);
+      к.ожидания.delete(запись["id"]);
       if (!ожидание) return;
       if (запись["error"]) {
         ожидание.reject(new Error((запись["error"] as { message?: string }).message ?? "ошибка Codex"));
@@ -260,22 +303,29 @@ export class CodexAdapter implements Adapter {
       return;
     }
 
+    // Строки остановленного или заменённого процесса не должны менять
+    // состояние текущего.
+    if (this.#к !== к) return;
+
     // Запрос сервера к клиенту: неизвестное не разрешается.
     if ("method" in запись && "id" in запись) {
-      this.#отказать(запись);
+      this.#отказать(к, запись);
       return;
     }
     this.#нотификация(запись);
   }
 
-  #отказать(запись: Record<string, unknown>): void {
+  #отказать(к: Контекст, запись: Record<string, unknown>): void {
     const метод = String(запись["method"]);
     const причина = `рецензенту запрещены изменения: запрос «${метод}» отклонён панелью`;
     this.решения.push({ allow: false, reason: причина });
     this.#выдать("approval_requested", "turn", { text: метод, raw: запись });
     this.#выдать("approval_decided", "turn", { text: причина });
-    this.#процесс?.stdin.write(
+    к.процесс.stdin.write(
       `${JSON.stringify({ jsonrpc: "2.0", id: запись["id"], error: { code: -32000, message: причина } })}\n`,
+      (беда) => {
+        if (беда) this.#сбойКанала(к, беда);
+      },
     );
   }
 

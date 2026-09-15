@@ -14,9 +14,18 @@
  * В system/init добавлено поле argv — его нет у настоящего Claude, но оно
  * позволяет проверить, с какими флагами адаптер запускает процесс.
  */
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const argv = process.argv.slice(2);
+
+// --close-stdin: закрыть свой stdin сразу, но продолжать жить. Так
+// воспроизводится сломанный канал при живом процессе.
+if (argv.includes("--close-stdin")) {
+  process.stdin.destroy();
+  setInterval(() => {}, 1000);
+}
 const СЕССИЯ = "fake-claude-session";
 const записать = (о) => process.stdout.write(`${JSON.stringify(о)}\n`);
 
@@ -32,6 +41,7 @@ process.stderr.write(
   model: "fake",
   tools: [],
   argv,
+  pid: process.pid,
 });
 
 const строки = createInterface({ input: process.stdin });
@@ -45,6 +55,17 @@ const строки = createInterface({ input: process.stdin });
   if (запись.type !== "user") return;
   const текст = (запись.message?.content ?? []).map((б) => б.text ?? "").join("");
 
+  // ДОЛГАЯ-КОМАНДА <путь>: как настоящий Claude, выполняющий инструмент, —
+  // запускает долгий дочерний процесс, пишет его pid в файл и хода не
+  // завершает. Проверяет, что остановка убивает всё дерево.
+  const долгая = /ДОЛГАЯ-КОМАНДА (\S+)/.exec(текст);
+  if (долгая) {
+    const внук = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+    });
+    writeFileSync(долгая[1], JSON.stringify({ агент: process.pid, внук: внук.pid }));
+    return;
+  }
   if (текст.includes("УПАСТЬ")) {
     process.exit(3);
   }
