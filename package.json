@@ -63,7 +63,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p .",
+    "build": "tsc -p . && node scripts/vendor.mjs",
     "watch": "tsc -w -p .",
     "test": "npm run build && node --test",
     "package": "npm run build && vsce package --allow-missing-repository --skip-license -o agent-panel.vsix"
@@ -71,7 +71,10 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/vscode": "^1.90.0",
-    "typescript": "^5.6.0",
-    "@vscode/vsce": "^4.0.0"
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "katex": "^0.18.7",
+    "markdown-it": "^15.0.2",
+    "typescript": "^5.6.0"
   }
 }

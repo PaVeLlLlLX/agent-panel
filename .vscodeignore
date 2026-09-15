@@ -5,6 +5,9 @@ src/**
 test/**
 fixtures/**
 docs/**
+scripts/**
+# Входит в сборку media/vendor/markdown.js; отдельно не загружается.
+media/markdown.js
 .vscode/**
 .gitignore
 .gitattributes

@@ -46,7 +46,9 @@ function открыть(проверка, { сИнтерфейсом = false } =
     setState: () => {},
   });
 </script>
+<link rel="stylesheet" href="${медиа("vendor/katex/katex.min.css")}">
 <script src="${медиа("format.js")}"></script>
+<script src="${медиа("vendor/markdown.js")}"></script>
 <script src="${медиа("panel.js")}"></script>`
     : "";
 
@@ -122,6 +124,28 @@ test("длинная задача, причина и лог не расширя�
   assert.ok(client > 0 && client <= ШИРИНА, `ширина окна не измерена: ${client}`);
   assert.ok(scroll <= client, `документ шире окна: ${scroll} > ${client}`);
   assert.ok(button <= client, `кнопка «Отправить» за краем: ${button} > ${client}`);
+});
+
+test("реплика агента — Markdown с формулой, реплика человека — текст, ссылка — через расширение", { skip: БЕЗ_БРАУЗЕРА }, () => {
+  const р = открыть(
+    `
+    const реплика = (agent, text) => ({ id: agent + text.length, agent, kind: "message", visibility: "turn", at: Date.now(), text });
+    послать({ type: "event", событие: реплика("claude", "**жирно** и $x^2$\\n\\n[док](https://example.com/a)") });
+    послать({ type: "event", событие: реплика("human", "**не разметка** $x$") });
+    итог.сборкаЕсть = typeof window.PanelMarkdown?.render === "function";
+    итог.жирный = !!document.querySelector(".пузырь.claude .текст strong");
+    итог.формула = !!document.querySelector(".пузырь.claude .katex");
+    итог.человек = document.querySelector(".пузырь.human .текст").innerHTML;
+    document.querySelector(".пузырь.claude a").click();
+    итог.ссылки = window.отправленное.filter((м) => м.type === "openLink");
+  `,
+    { сИнтерфейсом: true },
+  );
+  assert.equal(р.сборкаЕсть, true, "media/vendor/markdown.js не собран или не загрузился");
+  assert.equal(р.жирный, true);
+  assert.equal(р.формула, true);
+  assert.equal(р.человек, "**не разметка** $x$");
+  assert.deepEqual(р.ссылки, [{ type: "openLink", href: "https://example.com/a" }]);
 });
 
 test("карточка разрешения: кнопки, ответ уходит расширению, решение закрывает карточку", { skip: БЕЗ_БРАУЗЕРА }, () => {

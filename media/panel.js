@@ -54,11 +54,47 @@ function вниз() {
   беседа.scrollTop = беседа.scrollHeight;
 }
 
-function пузырь(агент, текст) {
+/**
+ * Markdown и формулы — только у реплик агентов: вставленные человеком логи
+ * не должны превращаться в разметку. Нет сборки — просто текст.
+ */
+const отрисовкаMarkdown = globalThis.PanelMarkdown?.render;
+/** Исходный текст пузыря: поток приходит кусками, отрисовывается целиком. */
+const исходники = new WeakMap();
+
+function отрисовать(п) {
+  const узел = п.querySelector(".текст");
+  const текст = исходники.get(п) ?? "";
+  if (отрисовкаMarkdown && п.dataset.разметка === "да") {
+    узел.innerHTML = отрисовкаMarkdown(текст);
+    узел.classList.add("разметка");
+  } else {
+    узел.textContent = текст;
+  }
+}
+
+function пузырь(агент, текст, какРазметка = агент === "claude" || агент === "codex") {
   const п = элемент("article", `пузырь ${агент}`);
-  п.append(элемент("div", "автор", ИМЕНА[агент] ?? агент), элемент("div", "текст", текст ?? ""));
+  п.append(элемент("div", "автор", ИМЕНА[агент] ?? агент), элемент("div", "текст"));
+  if (какРазметка) п.dataset.разметка = "да";
+  исходники.set(п, текст ?? "");
+  отрисовать(п);
   беседа.append(п);
   return п;
+}
+
+/** Во время потока разметка пересобирается не чаще раза в 80 мс, а не на каждый кусок. */
+const ждутОтрисовки = new Set();
+let таймерОтрисовки = 0;
+function отрисоватьПозже(п) {
+  ждутОтрисовки.add(п);
+  if (таймерОтрисовки) return;
+  таймерОтрисовки = setTimeout(() => {
+    таймерОтрисовки = 0;
+    for (const у of ждутОтрисовки) отрисовать(у);
+    ждутОтрисовки.clear();
+    вниз();
+  }, 80);
 }
 
 function уведомление(текст, класс = "") {
@@ -134,8 +170,8 @@ function показатьСобытие(е, история = false) {
         п.classList.add("идёт");
         потоки.set(е.agent, п);
       }
-      п.querySelector(".текст").textContent += е.text ?? "";
-      вниз();
+      исходники.set(п, (исходники.get(п) ?? "") + (е.text ?? ""));
+      отрисоватьПозже(п);
       return;
     }
     case "message": {
@@ -147,7 +183,9 @@ function показатьСобытие(е, история = false) {
       const открытый = потоки.get(е.agent);
       if (открытый) {
         открытый.classList.remove("идёт");
-        открытый.querySelector(".текст").textContent = е.text ?? "";
+        исходники.set(открытый, е.text ?? "");
+        ждутОтрисовки.delete(открытый);
+        отрисовать(открытый);
         потоки.delete(е.agent);
       } else {
         пузырь(е.agent, е.text);
@@ -222,7 +260,7 @@ function показатьСобытие(е, история = false) {
     case "error": {
       потоки.delete(е.agent);
       группы.delete(е.agent);
-      const п = пузырь(е.agent, е.text ?? "ошибка");
+      const п = пузырь(е.agent, е.text ?? "ошибка", false);
       п.classList.add("ошибка");
       вниз();
       return;
@@ -299,6 +337,13 @@ if (сохранённый && ПОДСКАЗКИ[сохранённый]) мар
 показатьПодсказку();
 
 маршрут.addEventListener("change", показатьПодсказку);
+// Webview сам по ссылкам не переходит: адрес открывает расширение.
+беседа.addEventListener("click", (событие) => {
+  const ссылка = событие.target.closest?.(".разметка a[href]");
+  if (!ссылка) return;
+  событие.preventDefault();
+  vscode.postMessage({ type: "openLink", href: ссылка.getAttribute("href") });
+});
 $("отправить").addEventListener("click", отправить);
 ввод.addEventListener("keydown", (е) => {
   if (е.key === "Enter" && (е.ctrlKey || е.metaKey)) {

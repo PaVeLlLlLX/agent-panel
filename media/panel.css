@@ -143,6 +143,38 @@ button.опасно { color: var(--vscode-errorForeground); }
 .автор { font-size: 0.8em; color: var(--тихий); margin-bottom: 2px; }
 .текст { white-space: pre-wrap; word-break: break-word; }
 
+/* Реплика агента в Markdown: переносы задаёт разметка, а не исходные строки. */
+.текст.разметка { white-space: normal; word-break: normal; overflow-wrap: anywhere; }
+.разметка > :first-child { margin-top: 0; }
+.разметка > :last-child { margin-bottom: 0; }
+.разметка p, .разметка ul, .разметка ol, .разметка pre, .разметка table, .разметка blockquote { margin: 0.45em 0; }
+.разметка ul, .разметка ol { padding-left: 1.4em; }
+.разметка h1, .разметка h2, .разметка h3, .разметка h4 { margin: 0.7em 0 0.3em; line-height: 1.25; }
+.разметка h1 { font-size: 1.3em; }
+.разметка h2 { font-size: 1.18em; }
+.разметка h3, .разметка h4 { font-size: 1.05em; }
+.разметка a { color: var(--vscode-textLink-foreground); }
+.разметка code {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.95em;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
+}
+.разметка pre {
+  padding: 6px 8px;
+  overflow-x: auto;
+  white-space: pre;
+  border-radius: 3px;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
+}
+.разметка pre code { padding: 0; background: none; }
+.разметка blockquote { margin-left: 0; padding-left: 8px; border-left: 3px solid var(--рамка); color: var(--тихий); }
+.разметка table { display: block; overflow-x: auto; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.разметка th, .разметка td { padding: 2px 8px; border: 1px solid var(--рамка); }
+.разметка hr { border: none; border-top: 1px solid var(--рамка); }
+.разметка .формула { overflow-x: auto; overflow-y: hidden; }
+
 .пузырь.идёт .текст::after { content: "▌"; animation: мигание 1s steps(2) infinite; opacity: 0.6; }
 @keyframes мигание { 50% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .пузырь.идёт .текст::after { animation: none; } }

@@ -111,6 +111,17 @@ class Комната {
       case "setAuto":
         this.#координатор.setAuto(сообщение.on);
         return;
+      case "openLink": {
+        // Webview сам по ссылкам не переходит; открываются только веб-адреса и почта.
+        let адрес: vscode.Uri;
+        try {
+          адрес = vscode.Uri.parse(сообщение.href, true);
+        } catch {
+          return;
+        }
+        if (["http", "https", "mailto"].includes(адрес.scheme)) await vscode.env.openExternal(адрес);
+        return;
+      }
       case "approval":
         if (!ВЫБОРЫ.has(сообщение.choice as ApprovalChoice)) return;
         await this.#координатор.answerApproval(сообщение.id, сообщение.choice as ApprovalChoice);
@@ -139,8 +150,17 @@ type ВходящееUI =
   | { type: "stopAll" }
   | { type: "interrupt" }
   | { type: "setAuto"; on: boolean }
-  | { type: "approval"; id: string; choice: string };
+  | { type: "approval"; id: string; choice: string }
+  | { type: "openLink"; href: string };
 
+/**
+ * Разметка webview.
+ *
+ * style-src допускает 'unsafe-inline' ради KaTeX: высоту дробей и индексов
+ * он задаёт атрибутами style, без них формулы разваливаются. Сырой HTML из
+ * реплик агентов в страницу не попадает (markdown-it с html: false), а
+ * скрипты по-прежнему только с nonce.
+ */
 function разметка(webview: vscode.Webview, контекст: vscode.ExtensionContext): string {
   const ресурс = (имя: string) =>
     webview.asWebviewUri(vscode.Uri.joinPath(контекст.extensionUri, "media", имя));
@@ -150,7 +170,8 @@ function разметка(webview: vscode.Webview, контекст: vscode.Exte
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
+      content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
+<link rel="stylesheet" href="${ресурс("vendor/katex/katex.min.css")}">
 <link rel="stylesheet" href="${ресурс("panel.css")}">
 <title>Общая комната</title>
 </head>
@@ -193,6 +214,7 @@ function разметка(webview: vscode.Webview, контекст: vscode.Exte
   </div>
 </footer>
 <script nonce="${nonce}" src="${ресурс("format.js")}"></script>
+<script nonce="${nonce}" src="${ресурс("vendor/markdown.js")}"></script>
 <script nonce="${nonce}" src="${ресурс("panel.js")}"></script>
 </body>
 </html>`;
