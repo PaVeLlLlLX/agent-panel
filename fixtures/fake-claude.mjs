@@ -64,6 +64,27 @@ const строки = createInterface({ input: process.stdin });
     продолжить?.(запись.response);
     return;
   }
+  // initialize: список моделей в форме, снятой пробой с Claude Code 2.1.220.
+  if (запись.type === "control_request" && запись.request?.subtype === "initialize") {
+    const уровни = ["low", "medium", "high", "xhigh", "max"];
+    записать({
+      type: "control_response",
+      response: {
+        subtype: "success",
+        request_id: запись.request_id,
+        response: {
+          commands: [],
+          models: [
+            { value: "default", resolvedModel: "claude-sonnet-5", displayName: "Default (recommended)", description: "Sonnet 5 · Efficient for routine tasks", supportsEffort: true, supportedEffortLevels: уровни },
+            { value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet", description: "Sonnet 5 · Efficient for routine tasks", supportsEffort: true, supportedEffortLevels: уровни },
+            { value: "opus", resolvedModel: "claude-opus-5", displayName: "Opus", description: "Opus 5 · Best for everyday, complex tasks", supportsEffort: true, supportedEffortLevels: уровни },
+            { value: "haiku", resolvedModel: "claude-haiku-4-5-20251001", displayName: "Haiku", description: "Haiku 4.5 · Fastest for quick answers" },
+          ],
+        },
+      },
+    });
+    return;
+  }
   if (запись.type !== "user") return;
   const текст = (запись.message?.content ?? []).map((б) => б.text ?? "").join("");
 

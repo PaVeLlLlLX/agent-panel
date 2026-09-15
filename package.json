@@ -53,6 +53,9 @@
           "enum": [
             "default",
             "acceptEdits",
+            "auto",
+            "manual",
+            "dontAsk",
             "plan",
             "bypassPermissions"
           ],

@@ -318,6 +318,7 @@ window.addEventListener("message", (событие) => {
   const д = событие.data;
   if (д?.type === "event") показатьСобытие(д.событие, д.история === true);
   else if (д?.type === "state") показатьСостояние(д.состояние);
+  else if (д?.type === "models") принятьМодели(д);
 });
 
 function отправить() {
@@ -337,6 +338,104 @@ if (сохранённый && ПОДСКАЗКИ[сохранённый]) мар
 показатьПодсказку();
 
 маршрут.addEventListener("change", показатьПодсказку);
+
+// --- Модель и уровень рассуждения ------------------------------------------
+// Список запрашивается по кнопке, а не при открытии: каждый поднимает
+// короткий процесс агента, а агенты в панели запускаются по делу.
+
+const МОДЕЛИ = {
+  claude: { options: undefined, choice: { model: "", effort: "" }, error: "" },
+  codex: { options: undefined, choice: { model: "", effort: "" }, error: "" },
+};
+let спискиЗапрошены = false;
+
+function вариант(значение, подпись, пояснение = "") {
+  const о = элемент("option", "", подпись);
+  о.value = значение;
+  if (пояснение) о.title = пояснение;
+  return о;
+}
+
+function подписьМодели(агент) {
+  const { options, choice } = МОДЕЛИ[агент];
+  const выбранная = options?.find((о) => о.id === choice.model);
+  const имя = choice.model ? (выбранная?.label ?? choice.model) : "по умолчанию";
+  return choice.effort ? `${имя} · ${choice.effort}` : имя;
+}
+
+function показатьМодели() {
+  $("модели-сводка").textContent = `Claude: ${подписьМодели("claude")}; Codex: ${подписьМодели("codex")}`;
+  const ошибки = ["claude", "codex"].filter((а) => МОДЕЛИ[а].error).map((а) => `${ИМЕНА[а]}: ${МОДЕЛИ[а].error}`);
+  const ждём = спискиЗапрошены && ["claude", "codex"].some((а) => !МОДЕЛИ[а].options && !МОДЕЛИ[а].error);
+  $("модели-состояние").textContent = ошибки.length
+    ? `Список не получен — ${ошибки.join("; ")}. Откройте ещё раз, чтобы повторить.`
+    : ждём
+      ? "загружаю список моделей…"
+      : "";
+
+  for (const агент of ["claude", "codex"]) {
+    const { options, choice } = МОДЕЛИ[агент];
+    const модель = $(`модель-${агент}`);
+    const уровень = $(`уровень-${агент}`);
+    if (!options) {
+      модель.disabled = true;
+      уровень.disabled = true;
+      continue;
+    }
+    модель.replaceChildren(...options.map((о) => вариант(о.id, о.label, о.description)));
+    модель.value = choice.model;
+    модель.disabled = false;
+    const выбранная = options.find((о) => о.id === choice.model);
+    const уровни = выбранная?.efforts ?? [];
+    уровень.replaceChildren(
+      вариант("", выбранная?.defaultEffort ? `по умолчанию (${выбранная.defaultEffort})` : "по умолчанию"),
+      ...уровни.map((у) => вариант(у, у)),
+    );
+    уровень.value = choice.effort;
+    уровень.disabled = уровни.length === 0;
+  }
+}
+
+function выбрать(агент, выбор) {
+  МОДЕЛИ[агент].choice = выбор;
+  показатьМодели();
+  vscode.postMessage({ type: "setModel", agent: агент, model: выбор.model, effort: выбор.effort });
+}
+
+function принятьМодели(д) {
+  const м = МОДЕЛИ[д.agent];
+  if (!м) return;
+  if (д.options) м.options = д.options;
+  if (д.choice) м.choice = д.choice;
+  м.error = д.error ?? "";
+  if (д.error) спискиЗапрошены = false;
+  показатьМодели();
+}
+
+for (const агент of ["claude", "codex"]) {
+  $(`модель-${агент}`).addEventListener("change", (событие) => {
+    const м = МОДЕЛИ[агент];
+    const модель = событие.target.value;
+    const уровни = м.options?.find((о) => о.id === модель)?.efforts ?? [];
+    // Уровень, которого у новой модели нет, сбрасывается, а не уходит агенту.
+    выбрать(агент, { model: модель, effort: уровни.includes(м.choice.effort) ? м.choice.effort : "" });
+  });
+  $(`уровень-${агент}`).addEventListener("change", (событие) => {
+    выбрать(агент, { model: МОДЕЛИ[агент].choice.model, effort: событие.target.value });
+  });
+}
+
+$("модели-кнопка").addEventListener("click", () => {
+  const панель = $("модели-панель");
+  панель.hidden = !панель.hidden;
+  $("модели-кнопка").setAttribute("aria-expanded", String(!панель.hidden));
+  if (!панель.hidden && !спискиЗапрошены) {
+    спискиЗапрошены = true;
+    vscode.postMessage({ type: "listModels" });
+  }
+  показатьМодели();
+});
+показатьМодели();
 // Webview сам по ссылкам не переходит: адрес открывает расширение.
 беседа.addEventListener("click", (событие) => {
   const ссылка = событие.target.closest?.(".разметка a[href]");

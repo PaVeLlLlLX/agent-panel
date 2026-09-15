@@ -293,6 +293,82 @@ test("Claude: необслуживаемый запрос агента полу�
   }
 });
 
+// --- Модель и уровень рассуждения ---------------------------------------------
+
+const запуски = (события) => события.filter((е) => е.raw?.argv).map((е) => е.raw.argv);
+const флаг = (argv, имя) => {
+  const i = argv.indexOf(имя);
+  return i >= 0 ? argv[i + 1] : undefined;
+};
+const концы = (события) => события.filter((е) => е.kind === "turn_completed").length;
+
+test("Claude: список моделей — из ответа initialize, без рабочей сессии", async () => {
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    const каталог = await а.listModels();
+    assert.deepEqual(каталог.map((м) => м.id), ["", "sonnet", "opus", "haiku"]);
+    assert.equal(каталог[0].label, "по умолчанию (Sonnet 5)");
+    assert.deepEqual(каталог[0].efforts, ["low", "medium", "high", "xhigh", "max"]);
+    assert.equal(каталог.find((м) => м.id === "opus").label, "Opus");
+    assert.deepEqual(каталог.find((м) => м.id === "haiku").efforts, [], "у Haiku нет уровней");
+    assert.deepEqual(запуски(с.события), [], "список моделей не должен поднимать рабочую сессию");
+    assert.equal(а.busy, false);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: выбранные модель и уровень передаются при запуске", async () => {
+  const с = собиратель();
+  const а = claude(с, { model: "opus", effort: "high" });
+  try {
+    await а.send({ text: "здравствуй", from: "human" });
+    await дождаться(() => концы(с.события) === 1, "конец хода");
+    const [argv] = запуски(с.события);
+    assert.equal(флаг(argv, "--model"), "opus");
+    assert.equal(флаг(argv, "--effort"), "high");
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: смена модели между ходами — перезапуск с той же сессией", async () => {
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await а.send({ text: "здравствуй", from: "human" });
+    await дождаться(() => концы(с.события) === 1, "первый ход");
+    assert.equal(флаг(запуски(с.события)[0], "--model"), undefined, "без выбора флаг не передаётся");
+
+    а.setModel({ model: "haiku", effort: "" });
+    await а.send({ text: "здравствуй", from: "human" });
+    await дождаться(() => концы(с.события) === 2, "второй ход");
+    const все = запуски(с.события);
+    assert.equal(все.length, 2);
+    assert.equal(флаг(все[1], "--model"), "haiku");
+    assert.equal(флаг(все[1], "--effort"), undefined);
+    assert.equal(флаг(все[1], "--resume"), "fake-claude-session", "контекст сессии не должен теряться");
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: тот же выбор не перезапускает процесс", async () => {
+  const с = собиратель();
+  const а = claude(с, { model: "opus", effort: "" });
+  try {
+    await а.send({ text: "здравствуй", from: "human" });
+    await дождаться(() => концы(с.события) === 1, "первый ход");
+    а.setModel({ model: "opus", effort: "" });
+    await а.send({ text: "здравствуй", from: "human" });
+    await дождаться(() => концы(с.события) === 2, "второй ход");
+    assert.equal(запуски(с.события).length, 1);
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: плановая остановка не показывается как ошибка", async () => {
   const с = собиратель();
   const а = claude(с);
@@ -447,6 +523,65 @@ test("Claude: сломанный канал при живом процессе �
     }
     await дождаться(() => ошибки(с.события).some((е) => е.failed === true), "ошибка канала");
     assert.equal(а.busy, false, "ответа не будет — агент не может оставаться занятым");
+  } finally {
+    await а.stop();
+  }
+});
+
+const ПРЕФИКС_ХОДА = "ПАРАМЕТРЫ-ХОДА ";
+/** Модель и уровень каждого turn/start: фальшивка пишет их в stderr. */
+const параметрыХодов = (события) =>
+  события
+    .filter((е) => е.kind === "diagnostic" && (е.text ?? "").startsWith(ПРЕФИКС_ХОДА))
+    .map((е) => JSON.parse(е.text.slice(ПРЕФИКС_ХОДА.length)));
+
+test("Codex: список моделей — из model/list, скрытые пропущены, по умолчанию первой", async () => {
+  const с = собиратель();
+  const а = codex(с);
+  try {
+    const каталог = await а.listModels();
+    assert.deepEqual(каталог.map((м) => м.id), ["", "gpt-sol", "gpt-luna"]);
+    assert.equal(каталог[0].label, "по умолчанию (GPT-Sol)");
+    assert.deepEqual(каталог[0].efforts, ["low", "medium", "high", "ultra"]);
+    assert.equal(каталог[0].defaultEffort, "low");
+    assert.equal(каталог.find((м) => м.id === "gpt-luna").defaultEffort, "medium");
+    assert.equal(а.sessionId, undefined, "список моделей не должен создавать ветку");
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Codex: модель и уровень уходят в turn/start; без выбора не передаются", async () => {
+  const с = собиратель();
+  const а = codex(с);
+  try {
+    await а.send({ text: "здравствуй", from: "human" });
+    await дождаться(() => концы(с.события) === 1, "первый ход");
+    а.setModel({ model: "gpt-luna", effort: "high" });
+    await а.send({ text: "здравствуй", from: "human" });
+    await дождаться(() => концы(с.события) === 2, "второй ход");
+    const [первый, второй] = параметрыХодов(с.события);
+    assert.deepEqual(первый, {});
+    assert.deepEqual(второй, { model: "gpt-luna", effort: "high" });
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Codex: возврат к «по умолчанию» передаёт модель по умолчанию явно", async () => {
+  // Модель, переданная в turn/start, остаётся у ветки: промолчать значило бы
+  // оставить прежнюю.
+  const с = собиратель();
+  const а = codex(с);
+  try {
+    await а.listModels();
+    а.setModel({ model: "gpt-luna", effort: "high" });
+    await а.send({ text: "здравствуй", from: "human" });
+    await дождаться(() => концы(с.события) === 1, "первый ход");
+    а.setModel({ model: "", effort: "" });
+    await а.send({ text: "здравствуй", from: "human" });
+    await дождаться(() => концы(с.события) === 2, "второй ход");
+    assert.deepEqual(параметрыХодов(с.события)[1], { model: "gpt-sol", effort: "low" });
   } finally {
     await а.stop();
   }

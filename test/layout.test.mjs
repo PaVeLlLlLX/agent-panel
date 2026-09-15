@@ -148,6 +148,59 @@ test("реплика агента — Markdown с формулой, реплик
   assert.deepEqual(р.ссылки, [{ type: "openLink", href: "https://example.com/a" }]);
 });
 
+test("модели: список по кнопке, выбор уходит расширению, уровни — от выбранной модели", { skip: БЕЗ_БРАУЗЕРА }, () => {
+  const р = открыть(
+    `
+    const списки = () => window.отправленное.filter((м) => м.type === "listModels").length;
+    итог.доКнопки = списки();
+    по("модели-кнопка").click();
+    итог.панельОткрыта = !по("модели-панель").hidden;
+    по("модели-кнопка").click();
+    по("модели-кнопка").click();
+    итог.запросовСписка = списки();
+
+    послать({ type: "models", agent: "claude", choice: { model: "", effort: "" }, options: [
+      { id: "", label: "по умолчанию (Sonnet 5)", description: "", efforts: ["low", "high"] },
+      { id: "opus", label: "Opus", description: "Opus 5", efforts: ["low", "high", "max"] },
+      { id: "haiku", label: "Haiku", description: "Haiku 4.5", efforts: [] },
+    ] });
+    послать({ type: "models", agent: "codex", choice: { model: "", effort: "" }, options: [
+      { id: "", label: "по умолчанию (GPT-Sol)", description: "", efforts: ["low", "high"], defaultEffort: "low" },
+    ] });
+
+    const модель = по("модель-claude");
+    const уровень = по("уровень-claude");
+    итог.модели = [...модель.options].map((о) => о.textContent);
+    модель.value = "opus";
+    модель.dispatchEvent(new Event("change"));
+    итог.уровни = [...уровень.options].map((о) => о.value);
+    уровень.value = "max";
+    уровень.dispatchEvent(new Event("change"));
+    модель.value = "haiku";
+    модель.dispatchEvent(new Event("change"));
+    итог.уровеньВыключен = уровень.disabled;
+    итог.уровеньCodex = [...по("уровень-codex").options].map((о) => о.textContent)[0];
+    итог.выборы = window.отправленное.filter((м) => м.type === "setModel");
+    итог.сводка = по("модели-сводка").textContent;
+  `,
+    { сИнтерфейсом: true },
+  );
+  assert.equal(р.доКнопки, 0, "список моделей не должен запрашиваться при открытии панели");
+  assert.equal(р.панельОткрыта, true);
+  assert.equal(р.запросовСписка, 1, "повторное открытие не должно заново поднимать агентов");
+  assert.deepEqual(р.модели, ["по умолчанию (Sonnet 5)", "Opus", "Haiku"]);
+  assert.deepEqual(р.уровни, ["", "low", "high", "max"]);
+  assert.equal(р.уровеньВыключен, true, "у модели без уровней выбирать нечего");
+  assert.equal(р.уровеньCodex, "по умолчанию (low)");
+  assert.deepEqual(р.выборы, [
+    { type: "setModel", agent: "claude", model: "opus", effort: "" },
+    { type: "setModel", agent: "claude", model: "opus", effort: "max" },
+    { type: "setModel", agent: "claude", model: "haiku", effort: "" },
+  ]);
+  assert.match(р.сводка, /Claude: Haiku/);
+  assert.match(р.сводка, /Codex: по умолчанию/);
+});
+
 test("карточка разрешения: кнопки, ответ уходит расширению, решение закрывает карточку", { skip: БЕЗ_БРАУЗЕРА }, () => {
   const р = открыть(
     `

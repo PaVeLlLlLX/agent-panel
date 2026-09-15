@@ -60,9 +60,29 @@ const строки = createInterface({ input: process.stdin });
     case "thread/resume":
       ответ({ thread: { id: з.params.threadId } });
       return;
+    case "model/list": {
+      // Форма из схемы ModelListResponse (Codex 0.153.0); скрытая модель — чтобы
+      // проверить, что панель её не показывает.
+      const модель = (id, имя, поУмолчанию, уровень, уровни, скрыта = false) => ({
+        id, model: id, displayName: имя, description: `${имя} description`, hidden: скрыта,
+        isDefault: поУмолчанию, defaultReasoningEffort: уровень,
+        supportedReasoningEfforts: уровни.map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort })),
+      });
+      ответ({
+        data: [
+          модель("gpt-sol", "GPT-Sol", true, "low", ["low", "medium", "high", "ultra"]),
+          модель("gpt-luna", "GPT-Luna", false, "medium", ["low", "medium", "high"]),
+          модель("gpt-hidden", "GPT-Hidden", false, "medium", ["low"], true),
+        ],
+        nextCursor: null,
+      });
+      return;
+    }
     case "turn/start": {
       номерХода += 1;
       const turnId = `turn-${номерХода}`;
+      // Модель и уровень хода — в stderr: тест читает их из диагностики.
+      process.stderr.write(`ПАРАМЕТРЫ-ХОДА ${JSON.stringify({ model: з.params.model, effort: з.params.effort })}\n`);
       ответ({ turn: { id: turnId, status: "inProgress" } });
       const текст = (з.params.input ?? []).map((в) => в.text ?? "").join("");
       уведомить("turn/started", { threadId: ВЕТКА, turn: { id: turnId, status: "inProgress" } });

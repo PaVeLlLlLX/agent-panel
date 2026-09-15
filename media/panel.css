@@ -253,6 +253,14 @@ textarea {
 }
 
 .строка { display: flex; align-items: center; gap: var(--щель); }
+
+/* Модель и уровень рассуждения: скрыто, пока не нужно. */
+.модели { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; font-size: 0.9em; }
+.модели .подсказка { flex-basis: 100%; }
+.модели .подсказка:empty { display: none; }
+.модель { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.модель select { max-width: 15em; min-width: 0; }
+#модели-кнопка[aria-expanded="true"] { border-color: var(--vscode-focusBorder); }
 .подсказка { flex: 1; font-size: 0.8em; color: var(--тихий); }
 
 select {

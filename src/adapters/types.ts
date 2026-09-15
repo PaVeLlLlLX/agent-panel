@@ -106,6 +106,26 @@ export interface PanelEvent {
  */
 export type ApprovalChoice = "allow" | "allowSession" | "deny";
 
+/**
+ * Модель, которую может выбрать человек. Список берётся у самого агента, а не
+ * зашивается в код: модели меняются с версиями CLI. id "" — модель агента по
+ * умолчанию; efforts пуст — уровня рассуждения у модели нет.
+ */
+export interface ModelOption {
+  readonly id: string;
+  readonly label: string;
+  readonly description: string;
+  readonly efforts: readonly string[];
+  /** Уровень, который агент берёт, если не выбран никакой. */
+  readonly defaultEffort?: string;
+}
+
+/** Выбор человека: модель и уровень рассуждения; "" — по умолчанию. */
+export interface ModelChoice {
+  readonly model: string;
+  readonly effort: string;
+}
+
 /** Что панель просит агента сделать. */
 export interface AgentPrompt {
   readonly text: string;
@@ -145,6 +165,10 @@ export interface Adapter {
    * Нет метода — агент разрешений у человека не спрашивает.
    */
   answerApproval?(id: string, choice: ApprovalChoice): Promise<boolean>;
+  /** Модели агента. Поднимает отдельный короткий процесс: рабочая сессия не создаётся. */
+  listModels?(): Promise<readonly ModelOption[]>;
+  /** Модель и уровень со следующего хода; идущий ход не меняется. */
+  setModel?(choice: ModelChoice): void;
   /** Занят ли агент ходом прямо сейчас. */
   readonly busy: boolean;
   /** Идентификатор сессии агента, если известен: нужен для восстановления. */

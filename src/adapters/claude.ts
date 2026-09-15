@@ -43,12 +43,15 @@
  */
 import { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, Interface } from "node:readline";
+import { sameChoice } from "../models.js";
 import { запуститьПроцесс, остановитьДерево } from "./process.js";
 import {
   Adapter,
   AgentPrompt,
   ApprovalChoice,
   EventSink,
+  ModelChoice,
+  ModelOption,
   PanelEvent,
   clamp,
   newEventId,
@@ -66,7 +69,42 @@ export interface ClaudeOptions {
   readonly settingSources?: string;
   /** Запуск через оболочку. По умолчанию на Windows — да: иначе не запустить claude.cmd. */
   readonly shell?: boolean;
+  /** Модель (--model); "" или нет — модель по умолчанию. */
+  readonly model?: string;
+  /** Уровень рассуждения (--effort); "" или нет — по умолчанию. */
+  readonly effort?: string;
   readonly onSessionId?: (id: string) => void;
+}
+
+/**
+ * Каталог моделей из ответа initialize — форма снята пробой с Claude Code
+ * 2.1.220: `models[] { value, displayName, description, supportsEffort,
+ * supportedEffortLevels }`. Вариант "default" становится пунктом «по умолчанию».
+ */
+function каталогClaude(модели: unknown): ModelOption[] {
+  const список = (Array.isArray(модели) ? модели : []) as Record<string, unknown>[];
+  const уровни = (м: Record<string, unknown>): string[] =>
+    м["supportsEffort"] === true && Array.isArray(м["supportedEffortLevels"])
+      ? (м["supportedEffortLevels"] as unknown[]).map(String)
+      : [];
+  const поУмолчанию = список.find((м) => м["value"] === "default");
+  const имяУмолчания = поУмолчанию ? String(поУмолчанию["description"] ?? "").split(" · ")[0] : "";
+  return [
+    {
+      id: "",
+      label: имяУмолчания ? `по умолчанию (${имяУмолчания})` : "по умолчанию",
+      description: String(поУмолчанию?.["description"] ?? ""),
+      efforts: поУмолчанию ? уровни(поУмолчанию) : [],
+    },
+    ...список
+      .filter((м) => typeof м["value"] === "string" && м["value"] !== "default")
+      .map((м) => ({
+        id: String(м["value"]),
+        label: String(м["displayName"] ?? м["value"]),
+        description: String(м["description"] ?? ""),
+        efforts: уровни(м),
+      })),
+  ];
 }
 
 /** Запрос разрешения, на который человек ещё не ответил. */
@@ -139,12 +177,16 @@ export class ClaudeAdapter implements Adapter {
   readonly #отклонённыеЧеловеком = new Set<string>();
   readonly #останавливаемые = new WeakSet<object>();
   readonly #отчитанные = new WeakSet<object>();
+  /** Выбор человека и выбор, с которым запущен текущий процесс. */
+  #выбор: ModelChoice;
+  #выборПроцесса: ModelChoice | undefined;
 
   constructor(
     private readonly опции: ClaudeOptions,
     private readonly sink: EventSink,
   ) {
     this.#сессия = опции.resumeSessionId;
+    this.#выбор = { model: опции.model ?? "", effort: опции.effort ?? "" };
   }
 
   get busy(): boolean {
@@ -170,12 +212,15 @@ export class ClaudeAdapter implements Adapter {
       "--permission-prompt-tool",
       "stdio",
       ...(источники ? ["--setting-sources", источники] : []),
+      ...(this.#выбор.model ? ["--model", this.#выбор.model] : []),
+      ...(this.#выбор.effort ? ["--effort", this.#выбор.effort] : []),
       // Перезапуск после падения или прерывания продолжает ту же сессию.
       ...(this.#сессия ? ["--resume", this.#сессия] : []),
       ...(this.опции.extraArgs ?? []),
     ];
     const процесс = запуститьПроцесс(this.опции.command, аргументы, this.опции.cwd, this.опции.shell);
     this.#процесс = процесс;
+    this.#выборПроцесса = this.#выбор;
 
     this.#строки = createInterface({ input: процесс.stdout });
     this.#строки.on("line", (строка) => this.#разобрать(строка));
@@ -215,6 +260,12 @@ export class ClaudeAdapter implements Adapter {
   }
 
   async send(prompt: AgentPrompt): Promise<void> {
+    // Модель и уровень задаются флагами запуска: сменились — процесс
+    // перезапускается между ходами, --resume сохраняет контекст сессии.
+    if (this.#процесс && !this.#занят && this.#выборПроцесса && !sameChoice(this.#выборПроцесса, this.#выбор)) {
+      this.#выдать("diagnostic", "stream", { text: "модель или уровень сменились — перезапуск с той же сессией" });
+      await this.stop();
+    }
     if (!this.#процесс) await this.start();
     const процесс = this.#процесс;
     if (!процесс) throw new Error("адаптер Claude не запущен");
@@ -224,6 +275,64 @@ export class ClaudeAdapter implements Adapter {
     };
     this.#занят = true;
     this.#записать(процесс, запись);
+  }
+
+  setModel(выбор: ModelChoice): void {
+    this.#выбор = { model: выбор.model, effort: выбор.effort };
+  }
+
+  /**
+   * Список моделей — из ответа на initialize отдельного короткого процесса:
+   * рабочая сессия от этого не поднимается, модель не вызывается.
+   */
+  async listModels(): Promise<readonly ModelOption[]> {
+    const источники = this.опции.settingSources ?? "project,local";
+    const процесс = запуститьПроцесс(
+      this.опции.command,
+      [
+        ...(this.опции.commandArgs ?? []),
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        ...(источники ? ["--setting-sources", источники] : []),
+      ],
+      this.опции.cwd,
+      this.опции.shell,
+    );
+    процесс.stderr.resume();
+    процесс.stdin.on("error", () => undefined);
+    const строки = createInterface({ input: процесс.stdout });
+    let таймер: NodeJS.Timeout | undefined;
+    try {
+      const ответ = await new Promise<Record<string, unknown>>((resolve, reject) => {
+        таймер = setTimeout(() => reject(new Error("Claude не прислал список моделей за 30 с")), 30_000);
+        процесс.on("error", reject);
+        процесс.on("exit", (код) => reject(new Error(`Claude завершился, не прислав список моделей (код ${код})`)));
+        строки.on("line", (строка) => {
+          let запись: Record<string, unknown>;
+          try {
+            запись = JSON.parse(строка) as Record<string, unknown>;
+          } catch {
+            return;
+          }
+          const отклик = запись["response"] as Record<string, unknown> | undefined;
+          if (запись["type"] !== "control_response" || отклик?.["request_id"] !== "models") return;
+          if (отклик["subtype"] === "success") resolve((отклик["response"] ?? {}) as Record<string, unknown>);
+          else reject(new Error(`Claude не отдал список моделей: ${String(отклик["error"] ?? "без причины")}`));
+        });
+        процесс.stdin.write(
+          `${JSON.stringify({ type: "control_request", request_id: "models", request: { subtype: "initialize" } })}\n`,
+        );
+      });
+      return каталогClaude(ответ["models"]);
+    } finally {
+      clearTimeout(таймер);
+      строки.close();
+      await остановитьДерево(процесс);
+    }
   }
 
   async answerApproval(id: string, выбор: ApprovalChoice): Promise<boolean> {

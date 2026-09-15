@@ -43,6 +43,8 @@ import {
   AgentPrompt,
   ApprovalDecision,
   EventSink,
+  ModelChoice,
+  ModelOption,
   PanelEvent,
   clamp,
   newEventId,
@@ -55,6 +57,10 @@ export interface CodexOptions {
   readonly cwd: string;
   readonly resumeThreadId?: string;
   readonly reviewerInstructions?: string;
+  /** Модель хода; "" или нет — по умолчанию. */
+  readonly model?: string;
+  /** Уровень рассуждения хода; "" или нет — по умолчанию. */
+  readonly effort?: string;
   readonly shell?: boolean;
   readonly onSessionId?: (id: string) => void;
 }
@@ -72,6 +78,36 @@ const ИНСТРУМЕНТАЛЬНЫЕ = new Set([
   "webSearch",
   "collabAgentToolCall",
 ]);
+
+/**
+ * Каталог из model/list — поля из схемы Model (Codex 0.153.0): `model,
+ * displayName, description, hidden, isDefault, defaultReasoningEffort,
+ * supportedReasoningEfforts[].reasoningEffort`. Скрытые не показываются.
+ */
+function каталогCodex(модели: readonly Record<string, unknown>[]): {
+  список: ModelOption[];
+  поУмолчанию: string | undefined;
+} {
+  const видимые = модели.filter((м) => м["hidden"] !== true && typeof (м["model"] ?? м["id"]) === "string");
+  const умолчание = видимые.find((м) => м["isDefault"] === true) ?? видимые[0];
+  const вариант = (м: Record<string, unknown>): Omit<ModelOption, "id" | "label"> => ({
+    description: String(м["description"] ?? ""),
+    efforts: (Array.isArray(м["supportedReasoningEfforts"]) ? (м["supportedReasoningEfforts"] as { reasoningEffort?: unknown }[]) : [])
+      .map((у) => String(у.reasoningEffort ?? ""))
+      .filter(Boolean),
+    ...(typeof м["defaultReasoningEffort"] === "string" ? { defaultEffort: м["defaultReasoningEffort"] } : {}),
+  });
+  const имя = (м: Record<string, unknown>) => String(м["displayName"] ?? м["model"] ?? м["id"]);
+  return {
+    список: [
+      умолчание
+        ? { id: "", label: `по умолчанию (${имя(умолчание)})`, ...вариант(умолчание) }
+        : { id: "", label: "по умолчанию", description: "", efforts: [] },
+      ...видимые.map((м) => ({ id: String(м["model"] ?? м["id"]), label: имя(м), ...вариант(м) })),
+    ],
+    поУмолчанию: умолчание ? String(умолчание["model"] ?? умолчание["id"]) : undefined,
+  };
+}
 
 interface Ожидание {
   readonly resolve: (значение: unknown) => void;
@@ -97,11 +133,19 @@ export class CodexAdapter implements Adapter {
   #занят = false;
   #следующийId = 1;
   readonly решения: ApprovalDecision[] = [];
+  #выбор: ModelChoice;
+  /** Выбор хоть раз передавался: модель остаётся у ветки, и умолчание надо назвать явно. */
+  #выборМенялся: boolean;
+  #каталог: readonly ModelOption[] | undefined;
+  #модельПоУмолчанию: string | undefined;
 
   constructor(
     private readonly опции: CodexOptions,
     private readonly sink: EventSink,
-  ) {}
+  ) {
+    this.#выбор = { model: опции.model ?? "", effort: опции.effort ?? "" };
+    this.#выборМенялся = Boolean(опции.model || опции.effort);
+  }
 
   get busy(): boolean {
     return this.#занят;
@@ -207,11 +251,98 @@ export class CodexAdapter implements Adapter {
     try {
       await this.#запрос(к, "turn/start", {
         threadId: ветка,
+        ...this.#параметрыМодели(),
         input: [{ type: "text", text: this.#оформить(prompt) }],
       });
     } catch (беда) {
       this.#занят = false;
       throw беда;
+    }
+  }
+
+  setModel(выбор: ModelChoice): void {
+    this.#выбор = { model: выбор.model, effort: выбор.effort };
+    if (выбор.model || выбор.effort) this.#выборМенялся = true;
+  }
+
+  /**
+   * model и effort для turn/start. Переданная модель остаётся у ветки, поэтому
+   * возврат к «по умолчанию» называет модель и её уровень явно — по каталогу.
+   */
+  #параметрыМодели(): { model?: string; effort?: string } {
+    if (!this.#выборМенялся) return {};
+    const модель = this.#выбор.model || this.#модельПоУмолчанию;
+    const уровень = this.#выбор.effort || this.#каталог?.find((о) => о.id === this.#выбор.model)?.defaultEffort;
+    return { ...(модель ? { model: модель } : {}), ...(уровень ? { effort: уровень } : {}) };
+  }
+
+  /** Модели из model/list отдельного короткого процесса: ветка не создаётся. */
+  async listModels(): Promise<readonly ModelOption[]> {
+    const процесс = запуститьПроцесс(
+      this.опции.command,
+      [...(this.опции.commandArgs ?? []), "app-server"],
+      this.опции.cwd,
+      this.опции.shell,
+    );
+    процесс.stderr.resume();
+    процесс.stdin.on("error", () => undefined);
+    const строки = createInterface({ input: процесс.stdout });
+    const ожидания = new Map<number, Ожидание>();
+    let следующий = 1;
+    let таймер: NodeJS.Timeout | undefined;
+    const написать = (запись: unknown) => процесс.stdin.write(`${JSON.stringify(запись)}\n`);
+    строки.on("line", (строка) => {
+      let запись: Record<string, unknown>;
+      try {
+        запись = JSON.parse(строка) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      if (typeof запись["id"] !== "number" || "method" in запись) return;
+      const ожидание = ожидания.get(запись["id"]);
+      ожидания.delete(запись["id"]);
+      if (!ожидание) return;
+      if (запись["error"]) ожидание.reject(new Error((запись["error"] as { message?: string }).message ?? "ошибка Codex"));
+      else ожидание.resolve(запись["result"]);
+    });
+    const запрос = (метод: string, параметры: unknown) =>
+      new Promise<unknown>((resolve, reject) => {
+        const id = следующий++;
+        ожидания.set(id, { resolve, reject });
+        написать({ jsonrpc: "2.0", id, method: метод, params: параметры });
+      });
+    const провал = new Promise<never>((_, reject) => {
+      таймер = setTimeout(() => reject(new Error("Codex не прислал список моделей за 30 с")), 30_000);
+      процесс.on("error", reject);
+      процесс.on("exit", (код) => reject(new Error(`Codex завершился, не прислав список моделей (код ${код})`)));
+    });
+    // Выход процесса после ответа — штатный: отказ провала никто не ждёт.
+    провал.catch(() => undefined);
+    const работа = (async () => {
+      await запрос("initialize", { clientInfo: { name: "agent-panel", version: "0.1.0" }, capabilities: {} });
+      написать({ jsonrpc: "2.0", method: "initialized", params: {} });
+      const все: Record<string, unknown>[] = [];
+      let курсор: unknown;
+      for (let страница = 0; страница < 10; страница += 1) {
+        const ответ = (await запрос("model/list", курсор ? { cursor: курсор } : {})) as
+          | { data?: unknown; nextCursor?: unknown }
+          | undefined;
+        if (Array.isArray(ответ?.data)) все.push(...(ответ.data as Record<string, unknown>[]));
+        курсор = ответ?.nextCursor;
+        if (!курсор) break;
+      }
+      return все;
+    })();
+    работа.catch(() => undefined);
+    try {
+      const { список, поУмолчанию } = каталогCodex(await Promise.race([работа, провал]));
+      this.#каталог = список;
+      this.#модельПоУмолчанию = поУмолчанию;
+      return список;
+    } finally {
+      clearTimeout(таймер);
+      строки.close();
+      await остановитьДерево(процесс);
     }
   }
 

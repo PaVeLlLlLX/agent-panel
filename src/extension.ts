@@ -15,14 +15,27 @@ import * as vscode from "vscode";
 import { join } from "node:path";
 import { ClaudeAdapter } from "./adapters/claude.js";
 import { CodexAdapter } from "./adapters/codex.js";
-import { ApprovalChoice, PanelEvent, stripAnsi } from "./adapters/types.js";
+import { Adapter, ApprovalChoice, ModelChoice, ModelOption, PanelEvent, stripAnsi } from "./adapters/types.js";
 import { Coordinator, RoomState, Route } from "./coordinator.js";
 import { Journal } from "./journal.js";
+import { describeChoice, normalizeChoice, sameChoice } from "./models.js";
 
 let комната: Комната | undefined;
 
 const МАРШРУТЫ = new Set<Route>(["review", "both", "claude", "codex"]);
 const ВЫБОРЫ = new Set<ApprovalChoice>(["allow", "allowSession", "deny"]);
+
+type ВыбираемыйАгент = "claude" | "codex";
+const АГЕНТЫ: readonly ВыбираемыйАгент[] = ["claude", "codex"];
+const ИМЕНА_АГЕНТОВ: Record<ВыбираемыйАгент, string> = { claude: "Claude", codex: "Codex" };
+
+type СообщениеМоделей = {
+  type: "models";
+  agent: ВыбираемыйАгент;
+  choice: ModelChoice;
+  options?: readonly ModelOption[];
+  error?: string;
+};
 
 class Комната {
   readonly #панель: vscode.WebviewPanel;
@@ -30,10 +43,24 @@ class Комната {
   readonly #координатор: Coordinator;
   readonly #имя: string;
   #закрыта = false;
+  /** Выбор моделей хранится для папки: другая папка — другая задача. */
+  readonly #память: vscode.Memento;
+  readonly #ключМоделей: string;
+  readonly #выборы: Record<ВыбираемыйАгент, ModelChoice>;
+  readonly #каталоги: Partial<Record<ВыбираемыйАгент, readonly ModelOption[]>> = {};
+  readonly #адаптеры: Record<ВыбираемыйАгент, Adapter>;
+  #загрузкаМоделей: Promise<void> | undefined;
 
   constructor(контекст: vscode.ExtensionContext, cwd: string) {
     const настройки = vscode.workspace.getConfiguration("agentPanel");
     this.#имя = `room:${cwd}`;
+    this.#память = контекст.workspaceState;
+    this.#ключМоделей = `agentPanel.models:${cwd}`;
+    const сохранённые = this.#память.get<Record<string, unknown>>(this.#ключМоделей) ?? {};
+    this.#выборы = {
+      claude: normalizeChoice(undefined, сохранённые["claude"]),
+      codex: normalizeChoice(undefined, сохранённые["codex"]),
+    };
     this.#журнал = new Journal(join(контекст.globalStorageUri.fsPath, "agent-panel.sqlite"));
     this.#журнал.ensureRoom(this.#имя, cwd);
     const привязка = this.#журнал.binding(this.#имя);
@@ -54,6 +81,8 @@ class Комната {
       {
         command: настройки.get<string>("claudeCommand", "claude"),
         cwd,
+        model: this.#выборы.claude.model,
+        effort: this.#выборы.claude.effort,
         settingSources: настройки.get<string>("claudeSettingSources", "project,local"),
         ...(привязка?.claudeSessionId ? { resumeSessionId: привязка.claudeSessionId } : {}),
         ...(режим && режим !== "default" ? { extraArgs: ["--permission-mode", режим] } : {}),
@@ -67,6 +96,8 @@ class Комната {
       {
         command: настройки.get<string>("codexCommand", "codex"),
         cwd,
+        model: this.#выборы.codex.model,
+        effort: this.#выборы.codex.effort,
         ...(привязка?.codexThreadId ? { resumeThreadId: привязка.codexThreadId } : {}),
         onSessionId: (id) => {
           if (!this.#закрыта) this.#журнал.bindSessions(this.#имя, undefined, id);
@@ -75,6 +106,7 @@ class Комната {
       принять,
     );
 
+    this.#адаптеры = { claude, codex };
     this.#координатор = new Coordinator(claude, codex, this.#журнал, {
       room: this.#имя,
       cwd,
@@ -94,6 +126,7 @@ class Комната {
           this.#отправитьВПанель({ type: "event", событие: чистое, история: true });
         }
         this.#отправитьВПанель({ type: "state", состояние: this.#координатор.state });
+        for (const агент of АГЕНТЫ) this.#отправитьМодели(агент);
         return;
       case "send":
         if (!сообщение.text.trim() || !МАРШРУТЫ.has(сообщение.route as Route)) return;
@@ -111,6 +144,22 @@ class Комната {
       case "setAuto":
         this.#координатор.setAuto(сообщение.on);
         return;
+      case "listModels":
+        await this.#загрузитьМодели();
+        return;
+      case "setModel": {
+        const агент = сообщение.agent as ВыбираемыйАгент;
+        if (!АГЕНТЫ.includes(агент)) return;
+        const выбор = normalizeChoice(this.#каталоги[агент], сообщение);
+        if (!sameChoice(выбор, this.#выборы[агент])) {
+          await this.#применитьВыбор(агент, выбор);
+          this.#координатор.notice(
+            `${ИМЕНА_АГЕНТОВ[агент]}: ${describeChoice(this.#каталоги[агент], выбор)} — со следующего хода.`,
+          );
+        }
+        this.#отправитьМодели(агент);
+        return;
+      }
       case "openLink": {
         // Webview сам по ссылкам не переходит; открываются только веб-адреса и почта.
         let адрес: vscode.Uri;
@@ -129,7 +178,56 @@ class Комната {
     }
   }
 
-  #отправитьВПанель(сообщение: { type: "event"; событие: PanelEvent; история?: boolean } | { type: "state"; состояние: RoomState }): void {
+  /**
+   * Списки моделей — по запросу человека, один раз за открытие комнаты: каждый
+   * поднимает короткий процесс агента. Неудача не запоминается — можно повторить.
+   */
+  #загрузитьМодели(): Promise<void> {
+    this.#загрузкаМоделей ??= Promise.all(
+      АГЕНТЫ.map(async (агент) => {
+        try {
+          const каталог = (await this.#адаптеры[агент].listModels?.()) ?? [];
+          this.#каталоги[агент] = каталог;
+          const допустимый = normalizeChoice(каталог, this.#выборы[агент]);
+          if (!sameChoice(допустимый, this.#выборы[агент])) {
+            await this.#применитьВыбор(агент, допустимый);
+            this.#координатор.notice(
+              `${ИМЕНА_АГЕНТОВ[агент]}: сохранённая модель больше недоступна — со следующего хода по умолчанию.`,
+            );
+          }
+          this.#отправитьМодели(агент);
+        } catch (беда) {
+          this.#загрузкаМоделей = undefined;
+          this.#отправитьМодели(агент, (беда as Error).message);
+        }
+      }),
+    ).then(() => undefined);
+    return this.#загрузкаМоделей;
+  }
+
+  async #применитьВыбор(агент: ВыбираемыйАгент, выбор: ModelChoice): Promise<void> {
+    this.#выборы[агент] = выбор;
+    this.#адаптеры[агент].setModel?.(выбор);
+    await this.#память.update(this.#ключМоделей, this.#выборы);
+  }
+
+  #отправитьМодели(агент: ВыбираемыйАгент, ошибка?: string): void {
+    const каталог = this.#каталоги[агент];
+    this.#отправитьВПанель({
+      type: "models",
+      agent: агент,
+      choice: this.#выборы[агент],
+      ...(каталог ? { options: каталог } : {}),
+      ...(ошибка ? { error: ошибка } : {}),
+    });
+  }
+
+  #отправитьВПанель(
+    сообщение:
+      | { type: "event"; событие: PanelEvent; история?: boolean }
+      | { type: "state"; состояние: RoomState }
+      | СообщениеМоделей,
+  ): void {
     if (this.#закрыта) return;
     void this.#панель.webview.postMessage(сообщение);
   }
@@ -151,7 +249,9 @@ type ВходящееUI =
   | { type: "interrupt" }
   | { type: "setAuto"; on: boolean }
   | { type: "approval"; id: string; choice: string }
-  | { type: "openLink"; href: string };
+  | { type: "openLink"; href: string }
+  | { type: "listModels" }
+  | { type: "setModel"; agent: string; model: unknown; effort: unknown };
 
 /**
  * Разметка webview.
@@ -201,6 +301,23 @@ function разметка(webview: vscode.Webview, контекст: vscode.Exte
   <pre id="диагностика-строки"></pre>
 </details>
 <footer>
+  <div class="строка">
+    <button id="модели-кнопка" aria-expanded="false" aria-controls="модели-панель" title="Модель и уровень рассуждения каждого агента. Меняются со следующего хода">Модели</button>
+    <span id="модели-сводка" class="подсказка"></span>
+  </div>
+  <div id="модели-панель" class="модели" hidden>
+    <span id="модели-состояние" class="подсказка"></span>
+    <div class="модель">
+      <span>Claude</span>
+      <select id="модель-claude" disabled aria-label="Модель Claude"></select>
+      <select id="уровень-claude" disabled aria-label="Уровень рассуждения Claude" title="Уровень рассуждения: чем выше, тем дольше и дороже ход"></select>
+    </div>
+    <div class="модель">
+      <span>Codex</span>
+      <select id="модель-codex" disabled aria-label="Модель Codex"></select>
+      <select id="уровень-codex" disabled aria-label="Уровень рассуждения Codex" title="Уровень рассуждения: чем выше, тем дольше и дороже ход"></select>
+    </div>
+  </div>
   <textarea id="ввод" rows="3" placeholder="Сообщение… Ctrl+Enter отправляет"></textarea>
   <div class="строка">
     <select id="маршрут" title="Как отправить">
