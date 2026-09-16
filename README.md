@@ -21,7 +21,7 @@
 F5 и второго окна.
 
 ```
-cd C:\Users\21435\source\agent-panel
+cd путь/к/agent-panel
 npm install
 npm run package
 code --install-extension agent-panel.vsix --force
@@ -320,7 +320,7 @@ npm test
 см. «Ограничения».
 
 Отладка с точками останова: открыть в VS Code папку `agent-panel` и нажать
-F5. Откроется второе окно «Extension Development Host» с папкой Trading. Если
+F5. Откроется второе окно «Extension Development Host» с этой же папкой. Если
 расширение уже установлено из `.vsix`, во втором окне работает версия из
 исходников.
 
