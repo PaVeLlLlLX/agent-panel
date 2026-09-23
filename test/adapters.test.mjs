@@ -792,3 +792,27 @@ test("Codex: несуществующая команда — отправка о
     await а.stop();
   }
 });
+
+const ПРЕФИКС_ВЕТКИ = "ПАРАМЕТРЫ-ВЕТКИ ";
+const параметрыВетки = (события) =>
+  события
+    .filter((е) => е.kind === "diagnostic" && (е.text ?? "").startsWith(ПРЕФИКС_ВЕТКИ))
+    .map((е) => JSON.parse(е.text.slice(ПРЕФИКС_ВЕТКИ.length)));
+
+test("Codex: при возобновлении ветки роль рецензента задаётся заново", async () => {
+  // Ветка владельца заведена в приложении Codex с ролью разработчика. При
+  // возобновлении панель обязана вернуть роль рецензента: thread/resume
+  // принимает developerInstructions наравне с thread/start (схема 0.153.0).
+  const с = собиратель();
+  const а = codex(с, { resumeThreadId: "чужая-ветка" });
+  try {
+    await а.start();
+    await дождаться(() => параметрыВетки(с.события).length === 1, "параметры возобновления");
+    const п = параметрыВетки(с.события)[0];
+    assert.equal(п.resume, true);
+    assert.equal(п.sandbox, "read-only");
+    assert.match(п.developerInstructions, /рецензент/i, "без инструкции ветка сохранит прежнюю роль");
+  } finally {
+    await а.stop();
+  }
+});

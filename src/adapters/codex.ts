@@ -189,15 +189,21 @@ export class CodexAdapter implements Adapter {
         capabilities: {},
       });
       this.#уведомить(к, "initialized", {});
-      // Известная ветка продолжается, иначе создаётся новая с инструкцией.
+      // Известная ветка продолжается, иначе создаётся новая.
+      // Роль задаётся в обоих случаях: ветка, заведённая в приложении Codex,
+      // помнит свою прежнюю роль разработчика, а в панели он рецензент.
+      // thread/resume принимает developerInstructions наравне с thread/start
+      // (схема app-server 0.153.0).
       const известная = this.#ветка ?? this.опции.resumeThreadId;
-      const общие = { cwd: this.опции.cwd, sandbox: "read-only", approvalPolicy: "never" };
+      const общие = {
+        cwd: this.опции.cwd,
+        sandbox: "read-only",
+        approvalPolicy: "never",
+        developerInstructions: this.опции.reviewerInstructions ?? ИНСТРУКЦИЯ_РЕЦЕНЗЕНТА,
+      };
       const ответ = (await (известная
         ? this.#запрос(к, "thread/resume", { ...общие, threadId: известная })
-        : this.#запрос(к, "thread/start", {
-            ...общие,
-            developerInstructions: this.опции.reviewerInstructions ?? ИНСТРУКЦИЯ_РЕЦЕНЗЕНТА,
-          }))) as ОтветВетки;
+        : this.#запрос(к, "thread/start", общие))) as ОтветВетки;
       this.#установитьВетку(ответ.thread?.id ?? известная);
       this.#выдать("diagnostic", "stream", {
         text: `ветка ${String(this.#ветка).slice(0, 8)}, песочница read-only, одобрения never`,

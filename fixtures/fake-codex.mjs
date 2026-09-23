@@ -58,6 +58,13 @@ const строки = createInterface({ input: process.stdin });
       уведомить("thread/started", { thread: { id: ВЕТКА } });
       return;
     case "thread/resume":
+      // Параметры возобновления — в stderr: тест читает их из диагностики.
+      process.stderr.write(`ПАРАМЕТРЫ-ВЕТКИ ${JSON.stringify({
+        resume: true,
+        sandbox: з.params.sandbox,
+        developerInstructions: String(з.params.developerInstructions ?? "").slice(0, 60),
+      })}
+`);
       ответ({ thread: { id: з.params.threadId } });
       return;
     case "model/list": {
