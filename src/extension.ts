@@ -3,7 +3,8 @@
  *
  * Панель владеет обеими сессиями: подписка на поток уже открытой вкладки по
  * идентификатору не гарантирована, а у истории должен быть один управляющий
- * процесс. Сессия Codex, открытая владельцем в терминале, не подхватывается.
+ * процесс. Ветку чата Codex владельца панель может продолжить: для этого её
+ * идентификатор ставится в привязку комнаты, а чат закрывается в приложении.
  *
  * Агенты запускаются при первом сообщении, а не при открытии: в живом прогоне
  * сессия Claude создавалась просто оттого, что панель открыли в другой папке.
@@ -19,6 +20,7 @@ import { Adapter, ApprovalChoice, ModelChoice, ModelOption, PanelEvent, stripAns
 import { Coordinator, RoomState, Route } from "./coordinator.js";
 import { Journal } from "./journal.js";
 import { describeChoice, normalizeChoice, sameChoice } from "./models.js";
+import { resolveCodexCommand } from "./codexBinary.js";
 
 let комната: Комната | undefined;
 
@@ -104,9 +106,15 @@ class Комната {
       },
       принять,
     );
+    // Тот же codex, что в чате владельца: у CLI из npm может не быть модели его ветки.
+    const запускCodex = resolveCodexCommand(
+      настройки.get<string>("codexCommand", "codex"),
+      vscode.extensions.getExtension("openai.chatgpt")?.extensionPath,
+    );
     const codex = new CodexAdapter(
       {
-        command: настройки.get<string>("codexCommand", "codex"),
+        command: запускCodex.command,
+        ...(запускCodex.shell !== undefined ? { shell: запускCodex.shell } : {}),
         cwd,
         model: this.#выборы.codex.model,
         effort: this.#выборы.codex.effort,

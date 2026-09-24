@@ -36,7 +36,7 @@
         "agentPanel.codexCommand": {
           "type": "string",
           "default": "codex",
-          "description": "Исполняемый файл Codex."
+          "description": "Исполняемый файл Codex. Значение codex означает: взять codex из расширения ChatGPT для VS Code (тот же, что в вашем чате Codex, с теми же моделями), а если его нет — из PATH. Явный путь важнее."
         },
         "agentPanel.maxAutoRounds": {
           "type": "number",
