@@ -141,6 +141,7 @@ class Комната {
       cwd,
       maxAutoRounds: настройки.get<number>("maxAutoRounds", 3),
       evidenceBudget: настройки.get<number>("reviewEvidenceChars", 240_000),
+      taskTokenLimit: настройки.get<number>("taskTokenLimit", 0),
       ...(командаПамяти
         ? { memory: (текст: string, каталог: string) => runMemorySearch(командаПамяти, каталог, текст) }
         : {}),
@@ -355,6 +356,7 @@ function разметка(webview: vscode.Webview, контекст: vscode.Exte
   </div>
   <div id="задача" class="задача" hidden></div>
   <div id="дорожка" class="дорожка" hidden aria-label="Дорожка цикла"></div>
+  <div id="расход" class="расход" hidden title="Токены агентов с начала текущей задачи и последние сведения о лимитах"></div>
 </header>
 <main id="беседа" aria-label="Беседа"></main>
 <div class="якорь-низа"><button id="к-последнему" class="пилюля" hidden title="Прокрутить к последнему сообщению">↓ К последнему</button></div>

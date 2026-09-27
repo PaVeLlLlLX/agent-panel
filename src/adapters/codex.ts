@@ -48,6 +48,8 @@ import {
   PanelEvent,
   clamp,
   clampKeepingFull,
+  LimitInfo,
+  TurnUsage,
   newEventId,
   stripAnsi,
 } from "./types.js";
@@ -125,6 +127,42 @@ interface Контекст {
 }
 
 export class CodexAdapter implements Adapter {
+  /**
+   * Расход хода. app-server шлёт накопительный итог по ветке (total) и итог
+   * последнего запроса модели (last); ход — разность итогов до и после. Для
+   * первого хода возобновлённой ветки итога «до» нет — тогда last.
+   */
+  #последнийИтог: TurnUsage | undefined;
+  #итогДоХода: TurnUsage | undefined;
+  #расходХода: TurnUsage | undefined;
+  #лимит: LimitInfo | undefined;
+
+  #учестьРасход(сведения: unknown): void {
+    const с = (сведения ?? {}) as Record<string, unknown>;
+    const разобрать = (о: unknown): TurnUsage | undefined => {
+      const з = о as Record<string, unknown> | undefined;
+      if (!з || typeof з["inputTokens"] !== "number") return undefined;
+      return {
+        input: з["inputTokens"] as number,
+        cached: typeof з["cachedInputTokens"] === "number" ? (з["cachedInputTokens"] as number) : 0,
+        output: typeof з["outputTokens"] === "number" ? (з["outputTokens"] as number) : 0,
+      };
+    };
+    const итог = разобрать(с["total"]);
+    const последний = разобрать(с["last"]);
+    const до = this.#итогДоХода;
+    if (итог && до) {
+      this.#расходХода = {
+        input: итог.input - до.input,
+        cached: итог.cached - до.cached,
+        output: итог.output - до.output,
+      };
+    } else if (последний) {
+      this.#расходХода = последний;
+    }
+    if (итог) this.#последнийИтог = итог;
+  }
+
   readonly id = "codex" as const;
 
   #к: Контекст | undefined;
@@ -482,12 +520,33 @@ export class CodexAdapter implements Adapter {
         this.#выдать("turn_started", "turn", {});
         return;
       }
+      case "thread/tokenUsage/updated": {
+        this.#учестьРасход(п["tokenUsage"]);
+        return;
+      }
+      case "account/rateLimits/updated": {
+        const окно = ((п["rateLimits"] ?? {}) as Record<string, unknown>)["primary"] as Record<string, unknown> | undefined;
+        if (окно && typeof окно["usedPercent"] === "number") {
+          const минут = окно["windowDurationMins"];
+          this.#лимит = {
+            percent: окно["usedPercent"],
+            window: минут === 10080 ? "week" : минут === 300 ? "five_hour" : `${String(минут)} min`,
+            ...(typeof окно["resetsAt"] === "number" ? { resetsAt: окно["resetsAt"] * 1000 } : {}),
+          };
+        }
+        return;
+      }
       case "turn/completed": {
         const ход = (п["turn"] ?? {}) as { status?: string; error?: { message?: string } };
         this.#занят = false;
         this.#ход = undefined;
         const провал = ход.status === "failed" || ход.status === "interrupted";
+        const расход = this.#расходХода;
+        this.#расходХода = undefined;
+        this.#итогДоХода = this.#последнийИтог;
         this.#выдать("turn_completed", "turn", {
+          ...(расход ? { usage: расход } : {}),
+          ...(this.#лимит ? { limit: this.#лимит } : {}),
           raw: п,
           ...(провал
             ? {

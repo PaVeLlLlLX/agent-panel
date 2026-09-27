@@ -81,6 +81,10 @@ export interface PanelEvent {
    * (у Claude — parent_tool_use_id). Нет — действие самого агента.
    */
   readonly parentCallId?: string;
+  /** У turn_completed: токены хода. */
+  readonly usage?: TurnUsage;
+  /** У turn_completed: последнее сведение о лимите агента. */
+  readonly limit?: LimitInfo;
   /** Ход, в который вошло событие. */
   readonly turnId?: string;
   /**
@@ -198,6 +202,31 @@ export interface Adapter {
 }
 
 export type EventSink = (event: PanelEvent) => void;
+
+/** Токены хода: весь вход (вместе с кешем), из него — из кеша, и выход. */
+export interface TurnUsage {
+  readonly input: number;
+  readonly cached: number;
+  readonly output: number;
+}
+
+export const NO_USAGE: TurnUsage = { input: 0, cached: 0, output: 0 };
+
+export function addUsage(а: TurnUsage, б: TurnUsage): TurnUsage {
+  return { input: а.input + б.input, cached: а.cached + б.cached, output: а.output + б.output };
+}
+
+/**
+ * Последнее сведение о лимите агента. Claude сообщает только статус окна
+ * (rate_limit_event), Codex — долю использованного окна (account/rateLimits/updated).
+ */
+export interface LimitInfo {
+  readonly status?: string;
+  readonly percent?: number;
+  readonly window?: string;
+  /** Миллисекунды epoch. */
+  readonly resetsAt?: number;
+}
 
 /** Предел длины текста события. Сырые выводы инструментов бывают огромными. */
 export const MAX_TEXT = 64_000;

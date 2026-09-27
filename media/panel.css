@@ -236,6 +236,7 @@ svg { flex-shrink: 0; }
   overflow-x: auto;
 }
 .шаг { display: inline-flex; align-items: center; flex-shrink: 0; }
+.расход { font-size: 0.82em; color: var(--тихий); padding: 0 4px; font-variant-numeric: tabular-nums; }
 .шаг-связь { width: 20px; height: 2px; background: var(--нить-основа); }
 .шаг-связь.пустая { background: var(--линия); }
 .шаг-узел { position: relative; width: 10px; height: 10px; border-radius: 50%; background: var(--тихий); }

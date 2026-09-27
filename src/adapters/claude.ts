@@ -55,6 +55,10 @@ import {
   PanelEvent,
   clamp,
   clampKeepingFull,
+  addUsage,
+  LimitInfo,
+  NO_USAGE,
+  TurnUsage,
   newEventId,
   stripAnsi,
 } from "./types.js";
@@ -196,6 +200,18 @@ function родительИз(запись: Record<string, unknown>): { parentCa
   return typeof id === "string" && id ? { parentCallId: id } : {};
 }
 
+/** Токены одного result: вход = без кеша + чтение кеша + запись кеша. */
+function расходClaude(usage: unknown): TurnUsage {
+  const у = (usage ?? {}) as Record<string, unknown>;
+  const число = (ключ: string) => (typeof у[ключ] === "number" ? (у[ключ] as number) : 0);
+  const изКеша = число("cache_read_input_tokens");
+  return {
+    input: число("input_tokens") + изКеша + число("cache_creation_input_tokens"),
+    cached: изКеша,
+    output: число("output_tokens"),
+  };
+}
+
 export class ClaudeAdapter implements Adapter {
   readonly id = "claude" as const;
 
@@ -222,6 +238,9 @@ export class ClaudeAdapter implements Adapter {
   #ходДержится = false;
   #отложенныеОтказы: string[] = [];
   #срокПродолжения: NodeJS.Timeout | undefined;
+  /** Расход хода — сумма по всем его result; лимит — последнее сведение CLI. */
+  #расходХода: TurnUsage = NO_USAGE;
+  #лимит: LimitInfo | undefined;
   readonly #останавливаемые = new WeakSet<object>();
   readonly #отчитанные = new WeakSet<object>();
   /** Выбор человека и выбор, с которым запущен текущий процесс. */
@@ -527,6 +546,13 @@ export class ClaudeAdapter implements Adapter {
       });
     } else if (вид === "system") {
       this.#задача(запись);
+    } else if (вид === "rate_limit_event") {
+      const о = (запись["rate_limit_info"] ?? {}) as Record<string, unknown>;
+      this.#лимит = {
+        ...(typeof о["status"] === "string" ? { status: о["status"] } : {}),
+        ...(typeof о["rateLimitType"] === "string" ? { window: о["rateLimitType"] } : {}),
+        ...(typeof о["resetsAt"] === "number" ? { resetsAt: о["resetsAt"] * 1000 } : {}),
+      };
     } else if (вид === "stream_event") {
       this.#дельта(запись);
     } else if (вид === "assistant") {
@@ -537,6 +563,7 @@ export class ClaudeAdapter implements Adapter {
       this.#запросАгента(запись);
     } else if (вид === "result") {
       this.#открытыхЗапросов = Math.max(0, this.#открытыхЗапросов - 1);
+      this.#расходХода = addUsage(this.#расходХода, расходClaude(запись["usage"]));
       const ошибка = запись["is_error"] === true;
       this.#отложенныеОтказы.push(...разобратьОтказы(запись["permission_denials"], this.#отклонённыеЧеловеком));
       if (!ошибка && (this.#субагенты.size > 0 || this.#открытыхЗапросов > 0 || this.#ждёмПродолжения)) {
@@ -619,11 +646,15 @@ export class ClaudeAdapter implements Adapter {
 
   #закончитьХод(текст: string, ошибка: boolean, запись?: Record<string, unknown>): void {
     const отказы = this.#отложенныеОтказы;
+    const расход = this.#расходХода;
+    this.#расходХода = NO_USAGE;
     this.#сброситьФон();
     this.#занят = false;
     this.#ходИдёт = undefined;
     this.#выдать("turn_completed", "turn", {
       ...(отказы.length > 0 ? { denials: отказы } : {}),
+      ...(расход.input + расход.output > 0 ? { usage: расход } : {}),
+      ...(this.#лимит ? { limit: this.#лимит } : {}),
       text: текст,
       ...(запись ? { raw: запись } : {}),
       ...(ошибка ? { failed: true } : {}),

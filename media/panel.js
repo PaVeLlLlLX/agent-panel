@@ -516,11 +516,49 @@ function показатьСостояние(с) {
   $("авто").checked = с.auto;
 }
 
+/** 1 262 000 → «1,26 млн», 17 527 → «17,5 тыс.». */
+function токены(n) {
+  const число = (значение, знаков) => String(Number(значение.toFixed(знаков))).replace(".", ",");
+  if (n >= 1_000_000) return `${число(n / 1_000_000, 2)} млн`;
+  if (n >= 1_000) return `${число(n / 1_000, 1)} тыс.`;
+  return String(n);
+}
+
+const СТАТУСЫ_ЛИМИТА = { allowed: "в норме", allowed_warning: "близко к пределу", rejected: "исчерпан" };
+const ОКНА = { week: "неделя", five_hour: "окно 5 ч" };
+
+/** Строка расхода: токены задачи по агентам и последние сведения о лимитах. */
+function показатьРасход(открыта) {
+  const строка = $("расход");
+  const расход = последнееСостояние?.usage;
+  const части = [];
+  for (const агент of ["claude", "codex"]) {
+    const р = расход?.task?.[агент];
+    if (р && р.input + р.output > 0) {
+      части.push(`${ИМЕНА[агент]} ${токены(р.input + р.output)}${р.cached ? ` (из кеша ${токены(р.cached)})` : ""}`);
+    }
+  }
+  const лимиты = [];
+  for (const агент of ["codex", "claude"]) {
+    const л = расход?.limits?.[агент];
+    if (!л) continue;
+    const окно = ОКНА[л.window] ?? л.window ?? "";
+    if (typeof л.percent === "number") лимиты.push(`${ИМЕНА[агент]}: ${окно} ${л.percent}%`);
+    else if (л.status) лимиты.push(`${ИМЕНА[агент]}: ${окно} — ${СТАТУСЫ_ЛИМИТА[л.status] ?? л.status}`);
+  }
+  строка.textContent = [
+    части.length ? `Расход задачи: ${части.join(" · ")}` : "",
+    лимиты.length ? `Лимиты — ${лимиты.join(", ")}` : "",
+  ].filter(Boolean).join(". ");
+  строка.hidden = !открыта || !строка.textContent;
+}
+
 function показатьДорожку() {
   const дорожка = $("дорожка");
   const открыта = сохранено.дорожка === true;
   дорожка.hidden = !открыта;
   $("эстафета").setAttribute("aria-expanded", String(открыта));
+  показатьРасход(открыта);
   if (!открыта) return;
   const с = последнееСостояние ?? { stage: "idle", maxRounds: 0 };
   const шаги = trackSteps(с.trail ?? [], с);

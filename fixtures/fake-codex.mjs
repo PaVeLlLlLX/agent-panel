@@ -127,6 +127,18 @@ const строки = createInterface({ input: process.stdin });
         turnId,
         completedAtMs: Date.now(),
       });
+      уведомить("thread/tokenUsage/updated", {
+        threadId: ВЕТКА,
+        turnId,
+        tokenUsage: {
+          total: { totalTokens: 99999, inputTokens: 90000, cachedInputTokens: 80000, outputTokens: 9999, reasoningOutputTokens: 0 },
+          last: { totalTokens: 17527, inputTokens: 17522, cachedInputTokens: 7936, outputTokens: 5, reasoningOutputTokens: 0 },
+          modelContextWindow: 258400,
+        },
+      });
+      уведомить("account/rateLimits/updated", {
+        rateLimits: { limitId: "codex", primary: { usedPercent: 8, windowDurationMins: 10080, resetsAt: 1791057755 }, planType: "plus" },
+      });
       уведомить("turn/completed", { threadId: ВЕТКА, turn: { id: turnId, status: "completed" } });
       return;
     }

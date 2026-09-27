@@ -144,6 +144,20 @@ test("Claude: ход с фоновым субагентом кончается �
   }
 });
 
+test("Claude: расход хода — сумма всех result хода, лимит — последнее сведение", async () => {
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await а.send({ text: "ФОНОВЫЙ-СУБАГЕНТ", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода");
+    const конец = с.события.find((е) => е.kind === "turn_completed");
+    assert.deepEqual(конец.usage, { input: 3115, cached: 3000, output: 27 });
+    assert.deepEqual(конец.limit, { status: "allowed", window: "five_hour", resetsAt: 1790553000000 });
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: фоновый Bash ход не держит — ждут только субагентов", async () => {
   const с = собиратель();
   const а = claude(с);
@@ -767,6 +781,22 @@ test("Codex: второе сообщение во время запуска не
 // ---------------------------------------------------------------------------
 // Codex
 // ---------------------------------------------------------------------------
+
+test("Codex: расход хода и недельный лимит из уведомлений app-server", async () => {
+  // Живая проба 28.09: thread/tokenUsage/updated (last — последний ход) и
+  // account/rateLimits/updated (primary.usedPercent, окно 10080 минут).
+  const с = собиратель();
+  const а = codex(с);
+  try {
+    await а.send({ text: "здравствуй", from: "claude" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода");
+    const конец = с.события.find((е) => е.kind === "turn_completed");
+    assert.deepEqual(конец.usage, { input: 17522, cached: 7936, output: 5 });
+    assert.deepEqual(конец.limit, { percent: 8, window: "week", resetsAt: 1791057755000 });
+  } finally {
+    await а.stop();
+  }
+});
 
 test("Codex: начало и конец одного инструмента связаны id элемента", async () => {
   // Рецензия Codex 28.09: без callId один инструмент давал в панели две бусины.

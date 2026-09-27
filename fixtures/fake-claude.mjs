@@ -208,7 +208,11 @@ const строки = createInterface({ input: process.stdin });
       session_id: СЕССИЯ,
     });
     записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "агент запущен, жду" }] }, session_id: СЕССИЯ });
-    записать({ type: "result", subtype: "success", is_error: false, num_turns: 2, session_id: СЕССИЯ });
+    записать({ type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt: 1790553000, rateLimitType: "five_hour" }, session_id: СЕССИЯ });
+    записать({
+      type: "result", subtype: "success", is_error: false, num_turns: 2, session_id: СЕССИЯ,
+      usage: { input_tokens: 10, cache_read_input_tokens: 1000, cache_creation_input_tokens: 100, output_tokens: 20 },
+    });
     if (bash) return;
     setTimeout(() => {
       записать({
@@ -227,7 +231,10 @@ const строки = createInterface({ input: process.stdin });
       if (текст.includes("ФОНОВЫЙ-БЕЗ-ПРОДОЛЖЕНИЯ")) return;
       записать({ type: "system", subtype: "init", session_id: СЕССИЯ, model: "fake", tools: [], argv, pid: process.pid });
       записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "alpha" }] }, session_id: СЕССИЯ });
-      записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ });
+      записать({
+        type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ,
+        usage: { input_tokens: 5, cache_read_input_tokens: 2000, cache_creation_input_tokens: 0, output_tokens: 7 },
+      });
     }, 300);
     return;
   }

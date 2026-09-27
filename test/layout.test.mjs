@@ -576,3 +576,21 @@ test("реплика субагента — отдельный приглушё�
   assert.deepEqual(р.субагент, ["Субагент: Прочитал файл."]);
   assert.deepEqual(р.claude, ["Claude пишет итог"]);
 });
+
+test("расход задачи и недельный лимит Codex видны в дорожке цикла", { skip: БЕЗ_БРАУЗЕРА }, () => {
+  const р = открыть(
+    `
+    послать({ type: "state", состояние: { stage: "working", round: 0, maxRounds: 3, approvals: 0, queued: 0, auto: true,
+      trail: [{ who: "task" }, { who: "claude" }],
+      usage: { task: { claude: { input: 1250000, cached: 1100000, output: 12000 }, codex: { input: 17522, cached: 7936, output: 5 } },
+               limits: { codex: { percent: 8, window: "week" }, claude: { status: "allowed", window: "five_hour" } } } } });
+    по("эстафета").click();
+    итог.расход = по("расход").textContent;
+  `,
+    { сИнтерфейсом: true },
+  );
+  assert.match(р.расход, /Claude 1,26 млн/);
+  assert.match(р.расход, /из кеша 1,1 млн/);
+  assert.match(р.расход, /Codex 17,5 тыс\./);
+  assert.match(р.расход, /неделя 8%/);
+});

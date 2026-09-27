@@ -39,7 +39,18 @@
  * Сохранены прежние правила: передаётся законченное, сырой вывод идёт
  * целиком, материал копится по агенту, снимок версии закреплён за ходом.
  */
-import { Adapter, AgentId, AgentPrompt, ApprovalChoice, MAX_TEXT, PanelEvent } from "./adapters/types.js";
+import {
+  Adapter,
+  AgentId,
+  AgentPrompt,
+  ApprovalChoice,
+  LimitInfo,
+  MAX_TEXT,
+  NO_USAGE,
+  PanelEvent,
+  TurnUsage,
+  addUsage,
+} from "./adapters/types.js";
 import { Journal } from "./journal.js";
 import { Snapshot, describeSnapshot, takeSnapshot } from "./snapshot.js";
 import { VERDICT_REQUEST, Verdict, parseVerdict } from "./verdict.js";
@@ -72,6 +83,11 @@ export interface RoomState {
   readonly auto: boolean;
   readonly claudeBusy: boolean;
   readonly codexBusy: boolean;
+  /** Расход с начала текущей задачи и последние сведения о лимитах агентов. */
+  readonly usage: {
+    readonly task: { readonly claude: TurnUsage; readonly codex: TurnUsage };
+    readonly limits: { readonly claude?: LimitInfo; readonly codex?: LimitInfo };
+  };
   readonly snapshot: string | undefined;
 }
 
@@ -90,6 +106,11 @@ export interface CoordinatorOptions {
    * не прикладываются. Ошибка поиска сообщения не задерживает.
    */
   readonly memory?: (текст: string, cwd: string) => Promise<{ readonly text: string; readonly titles: readonly string[] } | undefined>;
+  /**
+   * Предел токенов задачи (вход и выход обоих агентов). Достигнут —
+   * автоматическая передача ждёт решения человека. 0 или нет — без предела.
+   */
+  readonly taskTokenLimit?: number;
 }
 
 type Роль = "work" | "review" | "direct";
@@ -120,6 +141,9 @@ export class Coordinator {
   #цикл = 0;
   /** Сколько раз человек останавливал или прерывал: сообщение, ждавшее поиска, после этого не уходит. */
   #остановок = 0;
+  /** Расход с начала задачи и последние сведения о лимитах. */
+  #расход: { claude: TurnUsage; codex: TurnUsage } = { claude: NO_USAGE, codex: NO_USAGE };
+  #лимиты: { claude?: LimitInfo; codex?: LimitInfo } = {};
   #этап: Stage = "idle";
   #задача: string | undefined;
   #раунд = 0;
@@ -173,6 +197,10 @@ export class Coordinator {
       auto: this.#автоматика,
       claudeBusy: this.claude.busy,
       codexBusy: this.codex.busy,
+      usage: {
+        task: { claude: this.#расход.claude, codex: this.#расход.codex },
+        limits: { ...this.#лимиты },
+      },
       snapshot: this.#снимокКомнаты?.id,
     };
   }
@@ -202,6 +230,8 @@ export class Coordinator {
       this.#запросы.delete(сПометкой.callId);
       this.#обновить();
     } else if (сПометкой.kind === "turn_completed") {
+      if (сПометкой.usage) this.#расход[агент] = addUsage(this.#расход[агент], сПометкой.usage);
+      if (сПометкой.limit) this.#лимиты[агент] = сПометкой.limit;
       void this.#ходЗакончен(агент, сПометкой.failed === true, сПометкой.denials ?? []);
     } else if (сПометкой.kind === "error" && сПометкой.failed) {
       for (const [id, кто] of this.#запросы) if (кто === агент) this.#запросы.delete(id);
@@ -281,6 +311,24 @@ export class Coordinator {
     }
   }
 
+  /** Расход задачи достиг предела agentPanel.taskTokenLimit. */
+  #сверхПредела(): boolean {
+    const предел = this.опции.taskTokenLimit ?? 0;
+    return предел > 0 && this.#токеныЗадачи() >= предел;
+  }
+
+  #токеныЗадачи(): number {
+    const { claude, codex } = this.#расход;
+    return claude.input + claude.output + codex.input + codex.output;
+  }
+
+  #причинаПредела(что: string): string {
+    return (
+      `Расход задачи — ${this.#токеныЗадачи()} токенов — достиг предела ${this.опции.taskTokenLimit} ` +
+      `(agentPanel.taskTokenLimit): ${что}. Решите, продолжать ли.`
+    );
+  }
+
   /** Отправить удержанное по команде человека. */
   async releaseHeld(): Promise<void> {
     const у = this.#удержано;
@@ -349,6 +397,7 @@ export class Coordinator {
     this.#удержано = undefined;
     this.#последняяРабота = undefined;
     this.#памятьЗадачи = undefined;
+    this.#расход = { claude: NO_USAGE, codex: NO_USAGE };
     this.#след = [{ who: "task" }];
     this.#задача = задача;
     this.#раунд = 0;
@@ -442,6 +491,10 @@ export class Coordinator {
       );
       return;
     }
+    if (this.#сверхПредела()) {
+      this.#удержать(отправка, this.#причинаПредела("работа Claude ждёт отправки рецензенту"));
+      return;
+    }
     if (!this.#автоматика) {
       this.#удержать(отправка, "Автопересылка выключена: работа Claude ждёт отправки рецензенту.");
       return;
@@ -495,6 +548,10 @@ export class Coordinator {
     }
     if (вердикт === "missing") {
       this.#удержать(отправка, "Рецензент не вынес вердикт: решите, передавать ли его ответ разработчику.");
+      return;
+    }
+    if (this.#сверхПредела()) {
+      this.#удержать(отправка, this.#причинаПредела("замечания ждут отправки разработчику"));
       return;
     }
     if (!this.#автоматика) {

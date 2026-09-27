@@ -1034,3 +1034,32 @@ test("память: заметки названы только для сообщ
   assert.ok(!системные(события).some((е) => /приложены заметки/.test(е.text ?? "")));
   журнал.close();
 });
+
+// --- Расход задачи -------------------------------------------------------------
+
+test("расход: токены копятся по задаче, новая задача начинает счёт заново", async () => {
+  const { к, журнал } = комната();
+  await к.fromHuman("задача", "claude");
+  к.handle(событие("claude", "turn_completed", { usage: { input: 1000, cached: 800, output: 50 }, limit: { status: "allowed", window: "five_hour" } }));
+  к.handle(событие("codex", "turn_completed", { usage: { input: 500, cached: 100, output: 20 }, limit: { percent: 8, window: "week" } }));
+  к.handle(событие("claude", "turn_completed", { usage: { input: 10, cached: 0, output: 5 } }));
+  assert.deepEqual(к.state.usage.task.claude, { input: 1010, cached: 800, output: 55 });
+  assert.deepEqual(к.state.usage.task.codex, { input: 500, cached: 100, output: 20 });
+  assert.equal(к.state.usage.limits.codex.percent, 8);
+  await к.fromHuman("новая задача", "review");
+  assert.deepEqual(к.state.usage.task.claude, { input: 0, cached: 0, output: 0 });
+  assert.equal(к.state.usage.limits.codex.percent, 8, "сведения о лимите от задачи не зависят");
+  журнал.close();
+});
+
+test("расход: предел токенов задачи останавливает автоматическую передачу", async () => {
+  const { к, codex, журнал } = комната(3, { taskTokenLimit: 1000 });
+  await к.fromHuman("задача", "review");
+  к.handle(событие("claude", "message", { text: "сделал" }));
+  к.handle(событие("claude", "turn_completed", { usage: { input: 900, cached: 0, output: 200 } }));
+  await дождаться(() => к.state.stage === "held", "удержание по расходу");
+  assert.equal(codex.полученное.length, 0);
+  assert.match(к.state.held.reason, /предел/);
+  assert.equal(к.state.held.to, "codex");
+  журнал.close();
+});
