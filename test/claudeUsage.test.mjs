@@ -6,7 +6,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
-import { parseClaudeUsage, parseUsageOutput, fetchClaudeUsage } from "../out/claudeUsage.js";
+import { readdirSync } from "node:fs";
+import { parseClaudeUsage, parseUsageOutput, fetchClaudeUsage, usageDirectory } from "../out/claudeUsage.js";
 
 const НС = String.fromCharCode(10);
 const ФАЛЬШИВЫЙ_CLAUDE = fileURLToPath(new URL("../fixtures/fake-claude.mjs", import.meta.url));
@@ -44,6 +45,14 @@ test("ответ --output-format json: доля — из поля result, оши
 test("запрос /usage: без файла сессии, ответ — доля недели", async () => {
   const доля = await fetchClaudeUsage({ command: process.execPath, commandArgs: [ФАЛЬШИВЫЙ_CLAUDE], cwd: process.cwd(), shell: false });
   assert.equal(доля?.weekPercent, 4);
+});
+
+test("/usage спрашивается из пустого каталога, а не из проекта", () => {
+  // Замер 28.09: /usage запускает хук SessionStart настроек проекта.
+  const каталог = usageDirectory();
+  assert.notEqual(каталог, process.cwd());
+  assert.deepEqual(readdirSync(каталог), []);
+  assert.equal(usageDirectory(), каталог, "один каталог на процесс");
 });
 
 test("запрос /usage, который не отвечает, обрывается по сроку", async () => {

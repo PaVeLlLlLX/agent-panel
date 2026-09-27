@@ -264,6 +264,8 @@ export class ClaudeAdapter implements Adapter {
   #эхоРаботает = false;
   #ждёмЭха = 0;
   #запросБезЭха = false;
+  /** Запрос без эха уже отвечал: свой запрос повторяет сообщение раньше ответа модели. */
+  #безЭхаОтвечал = false;
   /** В процессе уже был result: стартовый init без сообщения — не ход. */
   #процессОтвечал = false;
   #открытыхЗапросов = 0;
@@ -596,6 +598,7 @@ export class ClaudeAdapter implements Adapter {
         if (this.#процессОтвечал) this.#начатьСамостоятельный();
       } else if (!this.#ходДержится && this.#эхоРаботает && this.#ждёмЭха > 0) {
         this.#запросБезЭха = true;
+        this.#безЭхаОтвечал = false;
       }
       this.#открытыхЗапросов += 1;
       this.#ждёмПродолжения = false;
@@ -616,6 +619,7 @@ export class ClaudeAdapter implements Adapter {
     } else if (вид === "stream_event") {
       this.#дельта(запись);
     } else if (вид === "assistant") {
+      if (this.#запросБезЭха) this.#безЭхаОтвечал = true;
       this.#блокиАссистента(запись);
     } else if (вид === "user" && запись["isReplay"] === true) {
       this.#эхоРаботает = true;
@@ -625,7 +629,7 @@ export class ClaudeAdapter implements Adapter {
       this.#блокиПользователя(запись);
     } else if (вид === "control_request") {
       this.#запросАгента(запись);
-    } else if (вид === "result" && this.#запросБезЭха && запись["is_error"] !== true) {
+    } else if (вид === "result" && this.#запросБезЭха && (запись["is_error"] !== true || this.#безЭхаОтвечал)) {
       this.#процессОтвечал = true;
       this.#чужойЗапросЗакончен(запись);
     } else if (вид === "result") {
@@ -806,6 +810,7 @@ export class ClaudeAdapter implements Adapter {
    */
   #чужойЗапросЗакончен(запись: Record<string, unknown>): void {
     this.#запросБезЭха = false;
+    this.#безЭхаОтвечал = false;
     this.#открытыхЗапросов = Math.max(0, this.#открытыхЗапросов - 1);
     const расход = расходClaude(запись["usage"]);
     const отказы = разобратьОтказы(запись["permission_denials"], this.#отклонённыеЧеловеком);

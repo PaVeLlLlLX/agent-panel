@@ -65,6 +65,10 @@ export interface ClaudeWeek {
   readonly percent: number;
   readonly session?: number;
   readonly resets?: string;
+  /** Когда получено, мс epoch. */
+  readonly at: number;
+  /** Последний запрос не дал доли: показывается прежняя, со временем. */
+  readonly stale?: boolean;
 }
 
 export interface RoomState {
@@ -293,14 +297,22 @@ export class Coordinator {
           percent: доля.weekPercent,
           ...(доля.sessionPercent !== undefined ? { session: доля.sessionPercent } : {}),
           ...(доля.weekResets ? { resets: доля.weekResets } : {}),
+          at: Date.now(),
         };
-        this.#обновить();
+      } else {
+        this.#доляУстарела();
       }
     } catch {
-      // Доля неизвестна — это видно по её отсутствию; нулём она не становится.
+      this.#доляУстарела();
     } finally {
       this.#доляИдёт = false;
+      this.#обновить();
     }
+  }
+
+  /** Новой доли нет: прежняя остаётся, но помечена (рецензия Codex 28.09); нулём не становится. */
+  #доляУстарела(): void {
+    if (this.#неделяClaude && !this.#неделяClaude.stale) this.#неделяClaude = { ...this.#неделяClaude, stale: true };
   }
 
   async fromHuman(текст: string, маршрут: Route): Promise<void> {

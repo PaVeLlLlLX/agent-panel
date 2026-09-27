@@ -201,8 +201,8 @@ export class CodexAdapter implements Adapter {
   /** После «новой сессии» ветка из настроек комнаты не возобновляется. */
   #безВозобновления = false;
   #ход: string | undefined;
-  /** Ход, прерванный человеком: его поздний turn/completed не закрывает новый. */
-  #прерванный: string | undefined;
+  /** Ходы, прерванные человеком: их поздний turn/completed не закрывает новый. */
+  readonly #прерванные = new Set<string>();
   #занят = false;
   #следующийId = 1;
   readonly решения: ApprovalDecision[] = [];
@@ -329,12 +329,15 @@ export class CodexAdapter implements Adapter {
     // Проверка и запуск — синхронно до первого ожидания: второе сообщение,
     // пришедшее во время запуска, ждёт того же запуска, а не теряется.
     if (!this.#к) this.#запуск = this.start();
-    await this.#запуск;
-    const к = this.#к;
-    const ветка = this.#ветка;
-    if (!к || !ветка) throw new Error("ветка Codex не создана");
+    // Занят с начала отправки: «Прервать» во время запуска процесса должно
+    // её отменить, а не пропустить (рецензия Codex 28.09).
     this.#занят = true;
+    const запуск = this.#запуск;
     try {
+      await запуск;
+      const к = this.#к;
+      const ветка = this.#ветка;
+      if (!к || !ветка || this.#запуск !== запуск) throw new Error("отправка Codex прервана до начала хода");
       await this.#запрос(к, "turn/start", {
         threadId: ветка,
         ...this.#параметрыМодели(),
@@ -447,9 +450,13 @@ export class CodexAdapter implements Adapter {
     const к = this.#к;
     if (!к) return;
     if (this.#ветка && this.#ход) {
-      // Конец прерванного хода придёт позже ответа; к новому ходу он не относится.
-      this.#прерванный = this.#ход;
-      await this.#запрос(к, "turn/interrupt", { threadId: this.#ветка, turnId: this.#ход }).catch(() => undefined);
+      // Конец прерванного хода придёт позже ответа; к новому ходу он не
+      // относится. Ход забывается сразу: следующее прерывание до начала
+      // нового хода не должно уйти прежнему (рецензия Codex 28.09).
+      const ход = this.#ход;
+      this.#прерванные.add(ход);
+      this.#ход = undefined;
+      await this.#запрос(к, "turn/interrupt", { threadId: this.#ветка, turnId: ход }).catch(() => undefined);
       this.#занят = false;
       return;
     }
@@ -464,6 +471,8 @@ export class CodexAdapter implements Adapter {
     this.#запуск = undefined;
     this.#занят = false;
     this.#ход = undefined;
+    // Номера ходов нового процесса могут совпасть с прежними.
+    this.#прерванные.clear();
     if (!к) return;
     к.остановлен = true;
     for (const [, о] of к.ожидания) о.reject(new Error("адаптер Codex остановлен"));
@@ -582,8 +591,7 @@ export class CodexAdapter implements Adapter {
       }
       case "turn/completed": {
         const ход = (п["turn"] ?? {}) as { id?: unknown; status?: string; error?: { message?: string } };
-        if (typeof ход.id === "string" && ход.id === this.#прерванный) {
-          this.#прерванный = undefined;
+        if (typeof ход.id === "string" && this.#прерванные.delete(ход.id)) {
           if (this.#занят) {
             // Новый ход уже идёт: поздний конец прерванного его не закрывает
             // (рецензия Codex 28.09).

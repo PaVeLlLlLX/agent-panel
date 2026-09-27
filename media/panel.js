@@ -544,7 +544,12 @@ function показатьРасход(открыта) {
     const неделя = агент === "claude" ? расход?.limits?.claudeWeek : undefined;
     if (неделя) {
       // Доля недели из /usage; статус окна из потока — только когда он не «в норме».
-      const доли = [`неделя ${неделя.percent}%`];
+      // Сведение старше 10 минут или последний запрос не удался — со временем.
+      const давно = неделя.stale || (typeof неделя.at === "number" && Date.now() - неделя.at > 10 * 60_000);
+      const время = давно && typeof неделя.at === "number"
+        ? ` (на ${new Date(неделя.at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })})`
+        : "";
+      const доли = [`неделя ${неделя.percent}%${время}`];
       if (typeof неделя.session === "number") доли.push(`окно 5 ч ${неделя.session}%`);
       if (л?.status && л.status !== "allowed") доли.push(СТАТУСЫ_ЛИМИТА[л.status] ?? л.status);
       лимиты.push(`${ИМЕНА[агент]}: ${доли.join(", ")}`);

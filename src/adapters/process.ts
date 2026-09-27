@@ -33,7 +33,10 @@ export function запуститьПроцесс(
   cwd: string,
   shell: boolean = WINDOWS,
 ): ChildProcessWithoutNullStreams {
-  return spawn(command, [...args], {
+  // cmd.exe делит строку по пробелам: путь вроде «C:\Program Files\…» без
+  // кавычек стал бы несколькими словами (рецензия Codex 28.09).
+  const команда = shell && WINDOWS && /\s/.test(command) && !command.startsWith('"') ? `"${command}"` : command;
+  return spawn(команда, [...args], {
     cwd,
     shell,
     stdio: ["pipe", "pipe", "pipe"],

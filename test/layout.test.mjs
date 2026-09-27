@@ -610,7 +610,22 @@ test("недельная доля Claude и окно сессии видны р�
     { сИнтерфейсом: true },
   );
   assert.match(р.расход, /Claude: неделя 4%, окно 5 ч 28%, близко к пределу/);
+  assert.doesNotMatch(р.расход, /на \d/);
   assert.match(р.расход, /Codex: неделя 8%/);
+});
+
+test("устаревшая недельная доля Claude показана со временем сведения", { skip: БЕЗ_БРАУЗЕРА }, () => {
+  const р = открыть(
+    `
+    const at = new Date(2026, 8, 28, 5, 14).getTime();
+    послать({ type: "state", состояние: { stage: "idle", round: 0, maxRounds: 3, approvals: 0, queued: 0, auto: true,
+      trail: [], usage: { task: {}, limits: { claudeWeek: { percent: 4, at, stale: true } } } } });
+    по("эстафета").click();
+    итог.расход = по("расход").textContent;
+  `,
+    { сИнтерфейсом: true },
+  );
+  assert.match(р.расход, /Claude: неделя 4% \(на 05:14\)/);
 });
 
 test("ссылка «новая сессия» в карточке модели просит расширение начать сессию заново", { skip: БЕЗ_БРАУЗЕРА }, () => {

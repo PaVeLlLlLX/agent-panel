@@ -147,7 +147,7 @@ class Комната {
         ? { memory: (текст: string, каталог: string) => runMemorySearch(командаПамяти, каталог, текст) }
         : {}),
       ...(настройки.get<boolean>("claudeWeeklyUsage", true)
-        ? { claudeUsage: () => fetchClaudeUsage({ command: настройки.get<string>("claudeCommand", "claude"), cwd }) }
+        ? { claudeUsage: () => fetchClaudeUsage({ command: настройки.get<string>("claudeCommand", "claude") }) }
         : {}),
       onEvent: (событие) => this.#отправитьВПанель({ type: "event", событие: forDisplay(событие) }),
       onState: (состояние) => this.#отправитьВПанель({ type: "state", состояние }),

@@ -140,7 +140,9 @@ test("недельная доля Claude запрашивается после �
   });
   ход(к, "claude", "ответ");
   await дождаться(() => к.state.usage.limits.claudeWeek?.percent === 4, "доля недели");
-  assert.deepEqual(к.state.usage.limits.claudeWeek, { percent: 4, session: 28, resets: "Oct 4, 12am" });
+  const { at, ...доля } = к.state.usage.limits.claudeWeek;
+  assert.deepEqual(доля, { percent: 4, session: 28, resets: "Oct 4, 12am" });
+  assert.ok(Date.now() - at < 5000, "время сведения");
   ход(к, "claude", "ещё ответ");
   ход(к, "codex", "ответ Codex");
   await пауза(50);
@@ -162,7 +164,26 @@ test("сбой запроса недельной доли — доли нет, �
 test("недельную долю можно запросить при открытии панели", async () => {
   const { к } = комната(3, { claudeUsage: async () => ({ weekPercent: 12 }) });
   await к.refreshClaudeUsage();
-  assert.deepEqual(к.state.usage.limits.claudeWeek, { percent: 12 });
+  assert.equal(к.state.usage.limits.claudeWeek.percent, 12);
+  assert.equal(к.state.usage.limits.claudeWeek.stale, undefined);
+});
+
+test("неудачный повторный запрос помечает прежнюю долю устаревшей", async () => {
+  // Рецензия Codex 28.09 (2febf2e): прежний процент показывался как текущий.
+  let вызов = 0;
+  const { к } = комната(3, {
+    claudeUsage: async () => {
+      вызов += 1;
+      if (вызов === 1) return { weekPercent: 12 };
+      if (вызов === 2) return undefined;
+      throw new Error("нет claude");
+    },
+    claudeUsageEveryMs: 0,
+  });
+  await к.refreshClaudeUsage();
+  await к.refreshClaudeUsage();
+  assert.equal(к.state.usage.limits.claudeWeek.percent, 12);
+  assert.equal(к.state.usage.limits.claudeWeek.stale, true);
 });
 
 test("«Прервать» снимает прямые сообщения из очереди и говорит об этом", async () => {

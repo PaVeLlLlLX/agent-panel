@@ -19,7 +19,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -431,6 +431,29 @@ test("Claude: субагент чужого запроса не держит с�
   }
 });
 
+test("Claude: чужой запрос, запустивший субагента, чужой и при ошибке", async () => {
+  // Рецензия Codex 28.09 (2febf2e): ошибка без эха считалась своей, даже если
+  // запрос уже работал. Свой запрос повторяет сообщение раньше любого ответа
+  // модели, значит, запрос без эха с ответом — чужой.
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await а.send({ text: "привет", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "первый ход");
+    с.события.length = 0;
+    await а.send({ text: "ЧУЖОЙ-СУБАГЕНТ-С-ОШИБКОЙ", from: "human" });
+    await дождаться(() => с.события.filter((е) => е.kind === "turn_completed").length === 3, "три конца хода");
+    const [чужой, свой, продолжение] = с.события.filter((е) => е.kind === "turn_completed");
+    assert.equal(чужой.unsolicited, true);
+    assert.equal(чужой.failed, true);
+    assert.equal(свой.unsolicited, undefined);
+    assert.equal(свой.failed, undefined);
+    assert.equal(продолжение.unsolicited, true);
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: стартовый init без сообщения — не самостоятельный ход", async () => {
   // Рецензия Codex 28.09: публичный start() без send. Фальшивый CLI пишет init
   // сразу при запуске (настоящий 2.1.220 молчит до сообщения — проба 28.09).
@@ -513,6 +536,80 @@ test("Codex: поздний конец прерванного хода не за
     const конец = с.события.find((е) => е.kind === "turn_completed");
     assert.equal(конец.failed, undefined);
     assert.ok(с.события.some((е) => е.kind === "message" && е.text === "поздний ответ"));
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Codex: «Прервать» во время запуска процесса отменяет отправку", async () => {
+  // Рецензия Codex 28.09 (2febf2e): пока шёл запуск, адаптер не был занят, и
+  // прерывание ничего не делало — ход начинался после него.
+  const с = собиратель();
+  const а = codex(с);
+  try {
+    // Обработчик — сразу: отказ приходит во время прерывания.
+    const отправка = а.send({ text: "ПОЗЖЕ", from: "human" }).then(() => "ушла", (беда) => беда);
+    await а.interrupt();
+    assert.ok((await отправка) instanceof Error, "отправка отменена");
+    await new Promise((r) => setTimeout(r, 600));
+    assert.equal(а.busy, false);
+    assert.equal(с.события.some((е) => е.kind === "message" && е.text === "поздний ответ"), false);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Codex: второе «Прервать» до начала нового хода не адресуется прежнему", async () => {
+  // Рецензия Codex 28.09 (2febf2e): после первого прерывания #ход оставался
+  // прежним, и второе прерывание уходило ему, а новый ход продолжался.
+  const с = собиратель();
+  const а = codex(с);
+  try {
+    await а.send({ text: "ДОЛГИЙ-ХОД", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_started"), "начало долгого хода");
+    await а.interrupt();
+    const отправка = а.send({ text: "ПОЗЖЕ", from: "human" }).catch(() => undefined);
+    await а.interrupt();
+    await отправка;
+    await new Promise((r) => setTimeout(r, 600));
+    assert.equal(а.busy, false);
+    assert.equal(с.события.some((е) => е.kind === "message" && е.text === "поздний ответ"), false);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Codex: метка прерванного хода не переживает перезапуск процесса", async () => {
+  // Рецензия Codex 28.09 (2febf2e): номера ходов нового процесса могут
+  // совпасть с прежними; пропущенный конец оставил бы адаптер занятым.
+  const с = собиратель();
+  const а = codex(с);
+  try {
+    await а.send({ text: "ДОЛГИЙ-ХОД", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_started"), "начало долгого хода");
+    await а.interrupt();
+    await а.stop();
+    с.события.length = 0;
+    await а.send({ text: "привет", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода нового процесса");
+    assert.equal(а.busy, false);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: команда с пробелом в пути запускается через оболочку Windows", { skip: process.platform !== "win32" }, async () => {
+  // Рецензия Codex 28.09 (2febf2e): путь без кавычек cmd.exe делил на части.
+  const папка = join(каталог(), "папка с пробелом");
+  mkdirSync(папка);
+  const обёртка = join(папка, "fake claude.cmd");
+  writeFileSync(обёртка, `@"${process.execPath}" "${ФАЛЬШИВЫЙ_CLAUDE}" %*\r\n`);
+  const с = собиратель();
+  const а = new ClaudeAdapter({ command: обёртка, cwd: каталог() }, с.sink);
+  try {
+    await а.send({ text: "привет", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "ход через обёртку");
+    assert.ok(с.события.some((е) => е.kind === "message" && е.text === "привет"));
   } finally {
     await а.stop();
   }

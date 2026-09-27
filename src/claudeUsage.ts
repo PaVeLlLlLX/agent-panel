@@ -11,6 +11,9 @@
  * английский текст для человека; форма не гарантирована, поэтому незнакомая
  * форма даёт «неизвестно», а не ноль.
  */
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { запуститьПроцесс, остановитьДерево } from "./adapters/process.js";
 
 /** Срок ответа: обычный — 4 с, запас на холодный старт CLI. */
@@ -50,9 +53,22 @@ export function parseUsageOutput(stdout: string): ClaudeUsage | undefined {
   return parseClaudeUsage(запись.result);
 }
 
+let пустойКаталог: string | undefined;
+
+/**
+ * Пустой каталог для `/usage`, один на процесс. Из каталога проекта CLI
+ * запустил бы хук SessionStart его настроек (замер 28.09: хук сработал на
+ * `/usage` с `--setting-sources project,local`); доля от каталога не зависит.
+ */
+export function usageDirectory(): string {
+  пустойКаталог ??= mkdtempSync(join(tmpdir(), "agent-panel-usage-"));
+  return пустойКаталог;
+}
+
 export interface UsageRequest {
   readonly command: string;
-  readonly cwd: string;
+  /** По умолчанию — usageDirectory(). */
+  readonly cwd?: string;
   /** Аргументы перед флагами — для фальшивого CLI в тестах. */
   readonly commandArgs?: readonly string[];
   readonly shell?: boolean;
@@ -70,14 +86,15 @@ export function fetchClaudeUsage(запрос: UsageRequest): Promise<ClaudeUsag
     "-p",
     "/usage",
     "--no-session-persistence",
-    // Ни хуков, ни MCP владельца: для /usage они не нужны.
+    // Без пользовательских настроек (хуков и MCP владельца); настроек проекта
+    // нет — каталог пустой.
     "--setting-sources",
     "project,local",
     "--output-format",
     "json",
   ];
   return new Promise((resolve, reject) => {
-    const процесс = запуститьПроцесс(запрос.command, аргументы, запрос.cwd, запрос.shell);
+    const процесс = запуститьПроцесс(запрос.command, аргументы, запрос.cwd ?? usageDirectory(), запрос.shell);
     процесс.stdin.end();
     let вывод = "";
     const таймер = setTimeout(() => {
