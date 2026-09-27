@@ -12,7 +12,14 @@
  * `~/.claude/hooks/memory_search.py` через qmd) служит и сессиям Claude, и
  * обоим агентам панели. Команда задаётся настройкой; по умолчанию выключено.
  */
-import { spawn } from "node:child_process";
+import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { остановитьДерево } from "./adapters/process.js";
+
+/**
+ * Сколько ждать поиска. Сообщение человека ждёт вместе с ним, поэтому срок
+ * короткий: обычный поиск через qmd отвечает за 1–3 с (замер 28.09).
+ */
+export const MEMORY_TIMEOUT_MS = 10_000;
 
 export interface Memory {
   /** Текст заметок для агентов — как его вернула команда. */
@@ -49,15 +56,16 @@ export function runMemorySearch(
   command: string,
   cwd: string,
   prompt: string,
-  таймаут = 20_000,
+  таймаут = MEMORY_TIMEOUT_MS,
 ): Promise<Memory | undefined> {
   return new Promise((resolve, reject) => {
-    const процесс = spawn(command, { cwd, shell: true, windowsHide: true });
+    const процесс = spawn(command, { cwd, shell: true, windowsHide: true }) as ChildProcessWithoutNullStreams;
     let вывод = "";
     let ошибки = "";
     const таймер = setTimeout(() => {
-      процесс.kill();
-      reject(new Error(`поиск не ответил за ${Math.round(таймаут / 1000)} с`));
+      // Через оболочку: kill() снял бы только её, команда поиска осталась бы жить.
+      void остановитьДерево(процесс);
+      reject(new Error(`поиск не ответил за ${Math.max(1, Math.round(таймаут / 1000))} с`));
     }, таймаут);
     процесс.stdout.setEncoding("utf8");
     процесс.stderr.setEncoding("utf8");

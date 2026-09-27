@@ -64,6 +64,15 @@ export class Journal {
       );
       CREATE INDEX IF NOT EXISTS events_room_seq ON events(room, seq);
     `);
+    // Колонки, добавленные позже: журнал прежней версии получает их при открытии.
+    // Без них история после перезапуска теряла связь отказа с вызовом
+    // (tool_call_id) и действия субагента (parent_call_id) — рецензия Codex 28.09.
+    const есть = new Set(
+      (this.#бд.prepare("PRAGMA table_info(events)").all() as Record<string, unknown>[]).map((к) => String(к["name"])),
+    );
+    for (const колонка of ["tool_call_id", "parent_call_id"]) {
+      if (!есть.has(колонка)) this.#бд.exec(`ALTER TABLE events ADD COLUMN ${колонка} TEXT`);
+    }
   }
 
   ensureRoom(room: string, cwd: string): void {
@@ -128,8 +137,8 @@ export class Journal {
       .prepare(
         `INSERT INTO events
            (room, id, agent, kind, visibility, at, text, tool, call_id,
-            turn_id, snapshot, raw)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            turn_id, snapshot, raw, tool_call_id, parent_call_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         room,
@@ -144,6 +153,8 @@ export class Journal {
         событие.turnId ?? null,
         событие.snapshot ?? null,
         событие.raw === undefined ? null : JSON.stringify(событие.raw),
+        событие.toolCallId ?? null,
+        событие.parentCallId ?? null,
       );
   }
 
@@ -152,7 +163,8 @@ export class Journal {
     if (this.#закрыт) return [];
     const строки = this.#бд
       .prepare(
-        `SELECT id, agent, kind, visibility, at, text, tool, call_id, turn_id, snapshot
+        `SELECT id, agent, kind, visibility, at, text, tool, call_id, turn_id, snapshot,
+                tool_call_id, parent_call_id
          FROM events WHERE room = ? ORDER BY seq DESC LIMIT ?`,
       )
       .all(room, limit) as Record<string, unknown>[];
@@ -167,6 +179,8 @@ export class Journal {
       ...(с["call_id"] != null ? { callId: String(с["call_id"]) } : {}),
       ...(с["turn_id"] != null ? { turnId: String(с["turn_id"]) } : {}),
       ...(с["snapshot"] != null ? { snapshot: String(с["snapshot"]) } : {}),
+      ...(с["tool_call_id"] != null ? { toolCallId: String(с["tool_call_id"]) } : {}),
+      ...(с["parent_call_id"] != null ? { parentCallId: String(с["parent_call_id"]) } : {}),
     })) as PanelEvent[];
   }
 

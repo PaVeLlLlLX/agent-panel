@@ -28,3 +28,19 @@ test("пустой вывод, не JSON и ответ без контекста
   assert.equal(parseMemoryOutput("не json"), undefined);
   assert.equal(parseMemoryOutput(JSON.stringify({ hookSpecificOutput: {} })), undefined);
 });
+
+import { runMemorySearch } from "../out/memory.js";
+
+test("поиск, который не отвечает, обрывается по сроку, а не держит сообщение", async () => {
+  const начало = Date.now();
+  await assert.rejects(
+    runMemorySearch(`"${process.execPath}" -e "setTimeout(() => {}, 60000)"`, process.cwd(), "вопрос", 300),
+    /не ответил/,
+  );
+  assert.ok(Date.now() - начало < 5000, "обрыв по сроку занял слишком долго");
+});
+
+test("по умолчанию поиск ждёт не больше 10 секунд", async () => {
+  const { MEMORY_TIMEOUT_MS } = await import("../out/memory.js");
+  assert.equal(MEMORY_TIMEOUT_MS, 10_000);
+});

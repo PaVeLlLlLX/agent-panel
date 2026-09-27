@@ -95,8 +95,9 @@ class Комната {
     // нет пользовательских настроек, а значит и ваших MCP-серверов (qmd, om).
     const командаПамяти = настройки.get<string>("memorySearchCommand", "").trim();
     const mcpКонфиг = настройки.get<string>("claudeMcpConfig", "").trim();
-    // На Windows Claude запускается через оболочку: путь с пробелами — в кавычках.
-    const mcpАргумент = process.platform === "win32" && /\s/.test(mcpКонфиг) ? `"${mcpКонфиг}"` : mcpКонфиг;
+    // На Windows Claude запускается через cmd.exe: путь всегда в кавычках — иначе
+    // пробел или «&» в имени папки разбил бы команду (рецензия Codex 28.09).
+    const mcpАргумент = process.platform === "win32" ? `"${mcpКонфиг}"` : mcpКонфиг;
 
     const claude = new ClaudeAdapter(
       {

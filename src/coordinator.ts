@@ -118,6 +118,8 @@ const ОТМЕТКИ: Record<Verdict, string> = { accepted: "✓", remarks: "!",
 
 export class Coordinator {
   #цикл = 0;
+  /** Сколько раз человек останавливал или прерывал: сообщение, ждавшее поиска, после этого не уходит. */
+  #остановок = 0;
   #этап: Stage = "idle";
   #задача: string | undefined;
   #раунд = 0;
@@ -224,16 +226,25 @@ export class Coordinator {
       at: Date.now(),
       text: текст,
     });
+    const остановок = this.#остановок;
     const память = await this.#найтиВПамяти(текст);
-    if (цикл !== undefined && this.#текущий(цикл)) this.#памятьЗадачи = память;
+    if (this.#остановок !== остановок) {
+      // Человек остановил панель, пока шёл поиск: сообщение не уходит.
+      this.#сообщить("Сообщение не отправлено: панель остановлена во время поиска по памяти.");
+      this.#обновить();
+      return;
+    }
+    if (цикл !== undefined && !this.#текущий(цикл)) return;
+    // Заметки называются человеку, только когда сообщение действительно уходит.
+    if (память) this.#сообщить(память.заметка);
+    if (цикл !== undefined) this.#памятьЗадачи = память?.блок;
     const prompt: AgentPrompt = {
-      text: память ? `${текст}${НС}${НС}${память}` : текст,
+      text: память ? `${текст}${НС}${НС}${память.блок}` : текст,
       from: "human",
       snapshot: describeSnapshot(this.#снимокКомнаты),
     };
 
     if (цикл !== undefined) {
-      if (!this.#текущий(цикл)) return;
       await this.#отправить({
         to: "claude",
         prompt,
@@ -253,14 +264,16 @@ export class Coordinator {
    * Заметки памяти к сообщению человека — с пояснением для агента и строкой
    * для человека: какие заметки ушли агентам, он должен видеть.
    */
-  async #найтиВПамяти(текст: string): Promise<string | undefined> {
+  async #найтиВПамяти(текст: string): Promise<{ блок: string; заметка: string } | undefined> {
     if (!this.опции.memory) return undefined;
     try {
       const найдено = await this.опции.memory(текст, this.опции.cwd);
       if (!найдено) return undefined;
       const названия = найдено.titles.map((название) => `«${название}»`).join(", ");
-      this.#сообщить(`Память: к сообщению приложены заметки (${найдено.titles.length}): ${названия}.`);
-      return `${ПРО_ПАМЯТЬ}${НС}${НС}${найдено.text}`;
+      return {
+        блок: `${ПРО_ПАМЯТЬ}${НС}${НС}${найдено.text}`,
+        заметка: `Память: к сообщению приложены заметки (${найдено.titles.length}): ${названия}.`,
+      };
     } catch (беда) {
       const причина = беда instanceof Error ? беда.message : String(беда);
       this.#сообщить(`Поиск по памяти не удался: ${причина}. Сообщение ушло без заметок.`);
@@ -305,6 +318,7 @@ export class Coordinator {
   }
 
   async stopAll(): Promise<void> {
+    this.#остановок += 1;
     this.#сброситьОжидание("stopped");
     this.#очередь.length = 0;
     await Promise.allSettled([this.claude.stop(), this.codex.stop()]);
@@ -312,6 +326,7 @@ export class Coordinator {
   }
 
   async interruptAll(): Promise<void> {
+    this.#остановок += 1;
     this.#сброситьОжидание("stopped");
     await Promise.allSettled([this.claude.interrupt(), this.codex.interrupt()]);
     this.#сообщить("Ход прерван человеком. Цикл рецензии остановлен.");
