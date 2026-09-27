@@ -30,6 +30,22 @@ test("история восстанавливает связь отказа с �
   журнал.close();
 });
 
+test("история помнит ход, начатый агентом без сообщения панели", () => {
+  // Без отметки после повторного открытия реплика самостоятельного хода
+  // выглядела бы работой по задаче.
+  const путь = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const журнал = new Journal(путь);
+  журнал.ensureRoom("r", "C:/x");
+  журнал.append("r", событие({ kind: "turn_started", unsolicited: true, text: "фоновая задача закончилась" }));
+  журнал.append("r", событие({ kind: "turn_completed", unsolicited: true }));
+  журнал.append("r", событие({ kind: "turn_completed" }));
+  const история = журнал.history("r");
+  assert.equal(история[0].unsolicited, true);
+  assert.equal(история[1].unsolicited, true);
+  assert.equal(история[2].unsolicited, undefined);
+  журнал.close();
+});
+
 test("журнал прежней версии получает новые колонки при открытии", () => {
   const путь = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
   const старая = new DatabaseSync(путь);

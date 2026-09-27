@@ -559,6 +559,24 @@ test("действия субагента отмечены в чётках и в
   assert.deepEqual(р.метки, ["субагент"]);
 });
 
+test("реплика самостоятельного хода Claude помечена «сам», следующая — нет", { skip: БЕЗ_БРАУЗЕРА }, () => {
+  // Снимок сцены 28.09 и рецензия Codex: реплика хода, который Claude начал
+  // сам после фоновой команды, выглядела как работа по задаче.
+  const р = открыть(
+    `
+    const с = (kind, доп) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...доп });
+    послать({ type: "event", событие: с("turn_started", { unsolicited: true, text: "фоновая задача закончилась: pytest" }) });
+    послать({ type: "event", событие: с("text_delta", { text: "Тесты" }) });
+    послать({ type: "event", событие: с("message", { text: "Тесты прошли." }) });
+    послать({ type: "event", событие: с("turn_completed", { unsolicited: true }) });
+    послать({ type: "event", событие: с("message", { text: "Ответ по задаче." }) });
+    итог.пузыри = [...document.querySelectorAll(".пузырь.claude")].map((п) => [п.classList.contains("сам"), п.querySelector(".автор .имя").textContent]);
+  `,
+    { сИнтерфейсом: true },
+  );
+  assert.deepEqual(р.пузыри, [[true, "Claude · сам"], [false, "Claude"]]);
+});
+
 test("реплика субагента — отдельный приглушённый блок, пузырь Claude не трогает", { skip: БЕЗ_БРАУЗЕРА }, () => {
   // Живая трасса 28.09: текст фонового субагента приходит в поток и без
   // --forward-subagent-text, с parent_tool_use_id.

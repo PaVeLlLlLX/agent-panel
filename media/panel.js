@@ -352,8 +352,17 @@ function карточкаРазрешения(е, история) {
 
 // --- События -------------------------------------------------------------------
 
+/**
+ * Агенты, идущие ходом, который начали сами (Claude после фоновой команды):
+ * их реплики — не работа по задаче, и это должно быть видно в самой реплике.
+ */
+const самостоятельные = new Map();
+
 function показатьСобытие(е, история = false) {
   switch (е.kind) {
+    case "turn_started":
+      if (е.unsolicited) самостоятельные.set(е.agent, е.text ?? "");
+      return;
     case "text_delta": {
       let п = потоки.get(е.agent);
       if (!п) {
@@ -383,11 +392,14 @@ function показатьСобытие(е, история = false) {
         return;
       }
       const открытый = потоки.get(е.agent);
-      if (открытый) {
-        закончить(открытый, е.agent, е.text);
-        потоки.delete(е.agent);
-      } else {
-        закончить(пузырь(е.agent, "", { снимок: е.snapshot }), е.agent, е.text);
+      const п = открытый ?? пузырь(е.agent, "", { снимок: е.snapshot });
+      закончить(п, е.agent, е.text);
+      if (открытый) потоки.delete(е.agent);
+      if (самостоятельные.has(е.agent)) {
+        п.classList.add("сам");
+        const имя = п.querySelector(".автор .имя");
+        имя.textContent = `${ИМЕНА[е.agent] ?? е.agent} · сам`;
+        имя.title = самостоятельные.get(е.agent) || "ход начат без сообщения панели";
       }
       вниз();
       return;
@@ -446,6 +458,7 @@ function показатьСобытие(е, история = false) {
     }
     case "turn_completed":
       группы.delete(е.agent);
+      if (е.unsolicited) самостоятельные.delete(е.agent);
       if (е.failed) уведомление(`${ИМЕНА[е.agent]}: ${е.text ?? "ход не удался"}`, "ошибка");
       return;
     case "error": {
