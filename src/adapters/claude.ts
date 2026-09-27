@@ -54,6 +54,7 @@ import {
   ModelOption,
   PanelEvent,
   clamp,
+  clampKeepingFull,
   newEventId,
   stripAnsi,
 } from "./types.js";
@@ -165,6 +166,23 @@ function подписиПравил(правила: readonly Record<string, unkn
         : String(r.toolName ?? "?"),
     ),
   );
+}
+
+/**
+ * Текст результата инструмента. Настоящий Claude отдаёт его строкой или
+ * массивом блоков; блоки текста склеиваются как текст — прежде массив уходил
+ * рецензенту JSON-строкой с экранированными переводами строк. Прочие блоки
+ * (изображения) остаются JSON: выдумывать им текст нельзя.
+ */
+export function текстРезультата(содержимое: unknown): string {
+  if (typeof содержимое === "string") return содержимое;
+  if (!Array.isArray(содержимое)) return JSON.stringify(содержимое ?? null);
+  return содержимое
+    .map((блок: unknown) => {
+      const б = блок as Record<string, unknown> | null;
+      return б && б["type"] === "text" && typeof б["text"] === "string" ? б["text"] : JSON.stringify(блок);
+    })
+    .join(String.fromCharCode(10));
 }
 
 export class ClaudeAdapter implements Adapter {
@@ -581,13 +599,12 @@ export class ClaudeAdapter implements Adapter {
     for (const блок of this.#блоки(запись)) {
       if (блок["type"] !== "tool_result") continue;
       const id = String(блок["tool_use_id"] ?? "");
-      const содержимое = блок["content"];
       // Сырой вывод, а не пересказ: рецензент без права запуска зависит от него.
-      const текст = typeof содержимое === "string" ? содержимое : JSON.stringify(содержимое ?? null);
+      const текст = текстРезультата(блок["content"]);
       this.#выдать("tool_result", "turn", {
         tool: this.#вызовы.get(id) ?? "?",
         callId: id,
-        text: clamp(текст),
+        ...clampKeepingFull(текст),
         raw: блок,
       });
       this.#вызовы.delete(id);

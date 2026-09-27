@@ -83,6 +83,12 @@ export interface PanelEvent {
   /** Необработанная запись протокола — для разбора расхождений. */
   readonly raw?: unknown;
   /**
+   * Полный текст, если `text` обрезан для показа. Нужен рецензенту: он не
+   * запускает команды и зависит от вывода, который ему принесли. В журнал не
+   * пишется (там есть `raw`), в webview не уходит — см. forDisplay.
+   */
+  readonly full?: string;
+  /**
    * Ожидаемый результат не будет получен: у turn_completed — ход провалился
    * или прерван, у error — процесс агента умер. Координатор по этой отметке
    * перестаёт ждать ответа.
@@ -189,6 +195,22 @@ export function clamp(text: string, max = MAX_TEXT): string {
   if (text.length <= max) return text;
   const отрезано = text.length - max;
   return `${text.slice(0, max)}\n… обрезано ${отрезано} символов`;
+}
+
+/** Текст для показа и, если он обрезан, полный — для рецензента. */
+export function clampKeepingFull(text: string): { text: string; full?: string } {
+  return text.length > MAX_TEXT ? { text: clamp(text), full: text } : { text };
+}
+
+/**
+ * Событие для webview: без полной записи протокола и полного текста. Интерфейсу
+ * они не нужны, а один длинный вывод команды — это мегабайты в каждом
+ * сообщении webview.
+ */
+export function forDisplay(событие: PanelEvent): PanelEvent {
+  if (событие.raw === undefined && событие.full === undefined) return событие;
+  const { raw: _raw, full: _full, ...лёгкое } = событие;
+  return лёгкое;
 }
 
 /** Цветовые коды терминала: в панели они видны как мусор вида `[2m…[0m`. */

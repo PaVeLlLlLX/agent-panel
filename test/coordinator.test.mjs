@@ -20,6 +20,7 @@ import { join } from "node:path";
 
 import { Coordinator } from "../out/coordinator.js";
 import { Journal } from "../out/journal.js";
+import { forDisplay } from "../out/adapters/types.js";
 
 class Заглушка {
   constructor(id) {
@@ -47,7 +48,7 @@ class Заглушка {
   решения = [];
 }
 
-function комната(предел = 3) {
+function комната(предел = 3, опции = {}) {
   const каталог = mkdtempSync(join(tmpdir(), "panel-"));
   const журнал = new Journal(join(каталог, "j.sqlite"));
   журнал.ensureRoom("r", каталог);
@@ -59,6 +60,7 @@ function комната(предел = 3) {
     cwd: каталог,
     maxAutoRounds: предел,
     onEvent: (е) => события.push(е),
+    ...опции,
   });
   return { к, claude, codex, журнал, события, каталог };
 }
@@ -203,13 +205,58 @@ test("вердикт НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА останавл
   журнал.close();
 });
 
-test("рецензент знает, что длинный вывод усечён и где лежит полный", async () => {
+test("рецензент знает, как помечен неполный вывод и где лежит полный", async () => {
   const { к, codex, журнал } = комната();
   await к.fromHuman("задача", "review");
   ход(к, "claude", "сделал");
   await дождаться(() => codex.полученное.length === 1, "передача рецензенту");
-  assert.match(codex.полученное[0].text, /обрезано/);
+  assert.match(codex.полученное[0].text, /[Нн]еполный/);
   assert.match(codex.полученное[0].text, /журнал/i);
+  журнал.close();
+});
+
+test("рецензент получает полный вывод, обрезанный только для показа, с отметкой полноты", async () => {
+  // Исследование Codex 27.09: рецензенту уходил усечённый показ, и пометка
+  // «сырой вывод» завышала полноту переданного.
+  const { к, codex, журнал } = комната();
+  await к.fromHuman("задача", "review");
+  к.handle(событие("claude", "tool_call", { tool: "Bash", callId: "c1", text: "cat big.log" }));
+  к.handle(
+    событие("claude", "tool_result", {
+      tool: "Bash",
+      callId: "c1",
+      text: "x".repeat(10) + " … обрезано 99 999 символов",
+      full: "x".repeat(99_000) + "КОНЕЦ",
+    }),
+  );
+  ход(к, "claude", "прочитал");
+  await дождаться(() => codex.полученное.length === 1, "передача рецензенту");
+  const т = codex.полученное[0].text;
+  assert.match(т, /КОНЕЦ/, "конец вывода до рецензента не дошёл");
+  assert.match(т, /вызов c1/);
+  assert.match(т, /полный, 99 005 символов/);
+  журнал.close();
+});
+
+test("выводы больше бюджета проверки режутся поровну: начало и конец, пропуск указан", async () => {
+  const { к, codex, журнал } = комната(3, { evidenceBudget: 30_000 });
+  await к.fromHuman("задача", "review");
+  const вывод = (id, длина, метка) =>
+    событие("claude", "tool_result", { tool: "Bash", callId: id, text: "показ", full: метка + "y".repeat(длина - метка.length - 5) + "ХВОСТ" });
+  к.handle(вывод("a", 40_000, "ПЕРВЫЙ"));
+  к.handle(вывод("b", 40_000, "ВТОРОЙ"));
+  к.handle(событие("claude", "tool_result", { tool: "Read", callId: "c", text: "маленький вывод целиком" }));
+  ход(к, "claude", "готово");
+  await дождаться(() => codex.полученное.length === 1, "передача рецензенту");
+  const т = codex.полученное[0].text;
+  assert.match(т, /маленький вывод целиком/);
+  assert.match(т, /вызов c · полный/);
+  assert.equal((т.match(/неполный: показано/g) ?? []).length, 2, "оба длинных вывода помечены неполными");
+  assert.match(т, /ПЕРВЫЙ/);
+  assert.match(т, /ВТОРОЙ/);
+  assert.equal((т.match(/ХВОСТ/g) ?? []).length, 2, "конец длинного вывода показан");
+  assert.match(т, /пропущены символы \d/);
+  assert.ok(т.length < 45_000, `материал больше бюджета: ${т.length}`);
   журнал.close();
 });
 
@@ -877,4 +924,13 @@ test("журнал после закрытия не роняет позднее 
     к.handle(событие("claude", "error", { failed: true, text: "процесс завершился" }));
   });
   assert.deepEqual(журнал.history("r"), []);
+});
+
+test("в webview не уходят запись протокола и полный текст: там только показ", () => {
+  const е = { id: "1", agent: "claude", kind: "tool_result", visibility: "turn", at: 0, text: "показ", raw: { big: 1 }, full: "полный" };
+  const лёгкое = forDisplay(е);
+  assert.equal(лёгкое.raw, undefined);
+  assert.equal(лёгкое.full, undefined);
+  assert.equal(лёгкое.text, "показ");
+  assert.equal(е.full, "полный", "исходное событие не меняется: рецензенту нужен полный");
 });

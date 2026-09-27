@@ -158,6 +158,35 @@ const строки = createInterface({ input: process.stdin });
     return;
   }
 
+  // ДЛИННЫЙ-ВЫВОД: результат инструмента длиннее предела показа, блоками
+  // текста — как у настоящего Claude для части инструментов.
+  if (текст.includes("ДЛИННЫЙ-ВЫВОД")) {
+    записать({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "toolu_long", name: "Bash", input: { command: "cat big.log" } }] },
+      session_id: СЕССИЯ,
+    });
+    записать({
+      type: "user",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_long",
+            content: [
+              { type: "text", text: "начало-вывода " + "x".repeat(100_000) },
+              { type: "text", text: "КОНЕЦ-ВЫВОДА" },
+            ],
+          },
+        ],
+      },
+      session_id: СЕССИЯ,
+    });
+    записать({ type: "assistant", message: { content: [{ type: "text", text: "прочитал" }] }, session_id: СЕССИЯ });
+    записать({ type: "result", subtype: "success", is_error: false, num_turns: 2, session_id: СЕССИЯ });
+    return;
+  }
+
   // ЧУЖОЙ-ЗАПРОС: control_request, который панель не обслуживает. Без ответа
   // настоящий Claude ждал бы вечно.
   if (текст.includes("ЧУЖОЙ-ЗАПРОС")) {

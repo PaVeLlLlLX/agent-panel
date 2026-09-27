@@ -16,7 +16,7 @@ import * as vscode from "vscode";
 import { join } from "node:path";
 import { ClaudeAdapter } from "./adapters/claude.js";
 import { CodexAdapter } from "./adapters/codex.js";
-import { Adapter, ApprovalChoice, ModelChoice, ModelOption, PanelEvent, stripAnsi } from "./adapters/types.js";
+import { Adapter, ApprovalChoice, ModelChoice, ModelOption, PanelEvent, forDisplay, stripAnsi } from "./adapters/types.js";
 import { Coordinator, RoomState, Route } from "./coordinator.js";
 import { Journal } from "./journal.js";
 import { describeChoice, normalizeChoice, sameChoice } from "./models.js";
@@ -131,7 +131,8 @@ class Комната {
       room: this.#имя,
       cwd,
       maxAutoRounds: настройки.get<number>("maxAutoRounds", 3),
-      onEvent: (событие) => this.#отправитьВПанель({ type: "event", событие }),
+      evidenceBudget: настройки.get<number>("reviewEvidenceChars", 240_000),
+      onEvent: (событие) => this.#отправитьВПанель({ type: "event", событие: forDisplay(событие) }),
       onState: (состояние) => this.#отправитьВПанель({ type: "state", состояние }),
     });
 
@@ -142,7 +143,8 @@ class Комната {
     switch (сообщение.type) {
       case "ready":
         for (const событие of this.#журнал.history(this.#имя)) {
-          const чистое = событие.text ? { ...событие, text: stripAnsi(событие.text) } : событие;
+          const лёгкое = forDisplay(событие);
+          const чистое = лёгкое.text ? { ...лёгкое, text: stripAnsi(лёгкое.text) } : лёгкое;
           this.#отправитьВПанель({ type: "event", событие: чистое, история: true });
         }
         this.#отправитьВПанель({ type: "state", состояние: this.#координатор.state });

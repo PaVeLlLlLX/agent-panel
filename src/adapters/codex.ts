@@ -47,6 +47,7 @@ import {
   ModelOption,
   PanelEvent,
   clamp,
+  clampKeepingFull,
   newEventId,
   stripAnsi,
 } from "./types.js";
@@ -532,7 +533,7 @@ export class CodexAdapter implements Adapter {
     if (ИНСТРУМЕНТАЛЬНЫЕ.has(вид)) {
       this.#выдать(завершён ? "tool_result" : "tool_call", "turn", {
         tool: вид,
-        text: clamp(текст || JSON.stringify(элемент)),
+        ...clampKeepingFull(текст || JSON.stringify(элемент)),
         raw: элемент,
       });
     }
