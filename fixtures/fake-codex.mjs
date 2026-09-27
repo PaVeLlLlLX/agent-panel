@@ -206,6 +206,14 @@ const строки = createInterface({ input: process.stdin });
       ответ({});
       // Настоящий Codex присылает конец прерванного хода отдельно и позже ответа.
       if (долгие.delete(з.params.turnId)) {
+        // Перед концом — поздний элемент прерванного хода.
+        setTimeout(() => {
+          уведомить("item/completed", {
+            item: { type: "agentMessage", id: "i-прерванный", text: "поздний кусок" },
+            threadId: ВЕТКА,
+            turnId: з.params.turnId,
+          });
+        }, 100);
         setTimeout(() => {
           уведомить("turn/completed", { threadId: ВЕТКА, turn: { id: з.params.turnId, status: "interrupted" } });
         }, 150);

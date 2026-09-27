@@ -633,6 +633,7 @@ export class CodexAdapter implements Adapter {
       case "item/reasoning/summaryTextDelta":
       case "item/commandExecution/outputDelta":
       case "process/outputDelta": {
+        if (this.#изПрерванного(п)) return;
         const текст = this.#текстИз(п["delta"] ?? п["chunk"] ?? п["text"] ?? п["output"]);
         if (текст) this.#выдать("text_delta", "stream", { text: текст });
         return;
@@ -645,7 +646,16 @@ export class CodexAdapter implements Adapter {
     }
   }
 
+  /**
+   * Событие прерванного хода: его поздние элементы не должны войти в ответ
+   * нового — например, в материал следующей проверки (рецензия Codex 28.09).
+   */
+  #изПрерванного(п: Record<string, unknown>): boolean {
+    return typeof п["turnId"] === "string" && this.#прерванные.has(п["turnId"]);
+  }
+
   #элемент(п: Record<string, unknown>, завершён: boolean): void {
+    if (this.#изПрерванного(п)) return;
     const элемент = (п["item"] ?? п) as Record<string, unknown>;
     const вид = String(элемент["type"] ?? "");
     const текст = this.#текстИз(элемент["text"] ?? элемент["content"]);

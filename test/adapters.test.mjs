@@ -668,6 +668,25 @@ test("Codex: сбой при запуске не снимает занятост
   }
 });
 
+test("Codex: поздние элементы прерванного хода не попадают в новый ход", async () => {
+  // Рецензия Codex 28.09 (8d38285): фильтровался только turn/completed, а
+  // поздний item/completed мог войти в ответ новой проверки.
+  const с = собиратель();
+  const а = codex(с);
+  try {
+    await а.send({ text: "ДОЛГИЙ-ХОД", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_started"), "начало долгого хода");
+    await а.interrupt();
+    с.события.length = 0;
+    await а.send({ text: "ПОЗЖЕ", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец нового хода");
+    const реплики = с.события.filter((е) => е.kind === "message").map((е) => е.text);
+    assert.deepEqual(реплики, ["поздний ответ"]);
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Codex: поздний конец прерванного хода не выдаётся концом хода и без нового", async () => {
   // Рецензия Codex 28.09 (fe9bce2): при свободном адаптере поздний конец
   // становился ложным turn_completed.
