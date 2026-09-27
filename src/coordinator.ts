@@ -64,6 +64,11 @@ export interface RoomState {
   readonly queued: number;
   /** Запросы разрешений, ждущие ответа человека. Пока они есть, ход агента стоит. */
   readonly approvals: number;
+  /**
+   * След текущего цикла для «Дорожки»: кто получал работу и чем кончилась
+   * каждая проверка (✓ принято, ! замечания, ? решение человека, – без вердикта).
+   */
+  readonly trail: readonly Шаг[];
   readonly auto: boolean;
   readonly claudeBusy: boolean;
   readonly codexBusy: boolean;
@@ -97,6 +102,13 @@ interface Отправка {
 
 type Удержанное = Отправка & { причина: string; действие: "send" | "retry" };
 
+export interface Шаг {
+  readonly who: "task" | "claude" | "codex" | "you";
+  mark?: string;
+}
+
+const ОТМЕТКИ: Record<Verdict, string> = { accepted: "✓", remarks: "!", human: "?", missing: "–" };
+
 export class Coordinator {
   #цикл = 0;
   #этап: Stage = "idle";
@@ -114,6 +126,7 @@ export class Coordinator {
   readonly #очередь: Отправка[] = [];
   /** Открытые запросы разрешений: id запроса → агент, который спросил. */
   readonly #запросы = new Map<string, AgentId>();
+  #след: Шаг[] = [];
   readonly #снять: (cwd: string) => Promise<Snapshot>;
 
   constructor(
@@ -145,6 +158,7 @@ export class Coordinator {
         : undefined,
       queued: this.#очередь.length,
       approvals: this.#запросы.size,
+      trail: this.#след.map((ш) => ({ ...ш })),
       auto: this.#автоматика,
       claudeBusy: this.claude.busy,
       codexBusy: this.codex.busy,
@@ -289,6 +303,7 @@ export class Coordinator {
     this.#цикл += 1;
     this.#удержано = undefined;
     this.#последняяРабота = undefined;
+    this.#след = [{ who: "task" }];
     this.#задача = задача;
     this.#раунд = 0;
     this.#вердикт = undefined;
@@ -396,6 +411,8 @@ export class Coordinator {
       .join("\n\n");
     const вердикт = parseVerdict(текст);
     this.#вердикт = вердикт;
+    const проверка = [...this.#след].reverse().find((ш) => ш.who === "codex");
+    if (проверка) проверка.mark = ОТМЕТКИ[вердикт];
 
     if (вердикт === "accepted") {
       this.#этап = "accepted";
@@ -443,6 +460,7 @@ export class Coordinator {
 
   #удержать(отправка: Отправка, причина: string, действие: "send" | "retry" = "send"): void {
     this.#удержано = { ...отправка, причина, действие };
+    if (отправка.цель.цикл === this.#цикл) this.#след.push({ who: "you" });
     this.#этап = "held";
     this.#сообщить(причина);
   }
@@ -480,6 +498,9 @@ export class Coordinator {
     }
     if (о.снимок) this.#снимки.set(о.to, о.снимок);
     if (о.to === "claude" && о.цель.роль === "work") this.#последняяРабота = о;
+    if (о.цель.цикл !== undefined && о.цель.цикл === this.#цикл && (о.to === "claude" || о.to === "codex")) {
+      this.#след.push({ who: о.to });
+    }
     this.#накопители.set(о.to, []);
 
     // Цель регистрируется ДО отправки: быстрый агент может завершить ход,

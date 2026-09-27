@@ -213,6 +213,61 @@ test("рецензент знает, что длинный вывод усечё
   журнал.close();
 });
 
+// ---------------------------------------------------------------------------
+// След цикла для «Дорожки»
+// ---------------------------------------------------------------------------
+
+test("след цикла: задача, работа и проверка с отметкой вердикта", async () => {
+  const { к, claude, codex, журнал } = комната();
+  await к.fromHuman("задача", "review");
+  await дождаться(() => claude.полученное.length === 1, "работа у Claude");
+  assert.deepEqual(к.state.trail, [{ who: "task" }, { who: "claude" }]);
+  ход(к, "claude", "сделал");
+  await дождаться(() => codex.полученное.length === 1, "проверка у Codex");
+  ход(к, "codex", "Дефект.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await дождаться(() => claude.полученное.length === 2, "возврат Claude");
+  assert.deepEqual(к.state.trail, [
+    { who: "task" },
+    { who: "claude" },
+    { who: "codex", mark: "!" },
+    { who: "claude" },
+  ]);
+  журнал.close();
+});
+
+test("след цикла: принятие ставит галочку, удержание добавляет человека", async () => {
+  const принятие = комната();
+  await принятие.к.fromHuman("задача", "review");
+  ход(принятие.к, "claude", "сделал");
+  await дождаться(() => принятие.codex.полученное.length === 1, "проверка");
+  ход(принятие.к, "codex", "Хорошо.\nВЕРДИКТ: ПРИНЯТО");
+  await дождаться(() => принятие.к.state.stage === "accepted", "принятие");
+  assert.deepEqual(принятие.к.state.trail.at(-1), { who: "codex", mark: "✓" });
+  принятие.журнал.close();
+
+  const удержание = комната();
+  await удержание.к.fromHuman("задача", "review");
+  ход(удержание.к, "claude", "сделал");
+  await дождаться(() => удержание.codex.полученное.length === 1, "проверка");
+  ход(удержание.к, "codex", "Нужны данные.\nВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА");
+  await дождаться(() => удержание.к.state.stage === "held", "удержание");
+  assert.deepEqual(удержание.к.state.trail.slice(-2), [{ who: "codex", mark: "?" }, { who: "you" }]);
+  удержание.журнал.close();
+});
+
+test("след цикла: новая задача начинает заново, прямой вопрос его не трогает", async () => {
+  const { к, claude, журнал } = комната();
+  await к.fromHuman("задача А", "review");
+  ход(к, "claude", "сделал");
+  await к.fromHuman("вопрос", "codex");
+  assert.deepEqual(к.state.trail.map((ш) => ш.who).slice(0, 2), ["task", "claude"]);
+  assert.ok(!к.state.trail.some((ш) => ш.who === "codex" && !ш.mark && false));
+  await к.fromHuman("задача Б", "review");
+  await дождаться(() => claude.полученное.length >= 2, "новая работа");
+  assert.deepEqual(к.state.trail, [{ who: "task" }, { who: "claude" }]);
+  журнал.close();
+});
+
 test("удержанное отправляется по команде человека", async () => {
   const { к, claude, codex, журнал } = комната();
   await к.fromHuman("задача", "review");
