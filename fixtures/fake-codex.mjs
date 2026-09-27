@@ -102,6 +102,15 @@ const строки = createInterface({ input: process.stdin });
           params: { threadId: ВЕТКА, turnId },
         });
       }
+      if (текст.includes("КОМАНДА")) {
+        const команда = { type: "commandExecution", id: "cmd-1", command: "git status", status: "inProgress" };
+        уведомить("item/started", { item: команда, threadId: ВЕТКА, turnId });
+        уведомить("item/completed", {
+          item: { ...команда, status: "completed", aggregatedOutput: "чисто", exitCode: 0 },
+          threadId: ВЕТКА,
+          turnId,
+        });
+      }
       if (текст.includes("ОШИБКА-ХОДА")) {
         уведомить("turn/completed", {
           threadId: ВЕТКА,

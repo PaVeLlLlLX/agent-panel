@@ -412,11 +412,20 @@ function показатьСобытие(е, история = false) {
         карточка.querySelector(".итог").textContent = е.text ?? "решено";
         карточка.classList.add(/^отклонено/.test(е.text ?? "") ? "отклонено" : "решено");
         запросы.delete(е.callId);
+        // Карточка живёт по id запроса, бусина — по id вызова инструмента.
+        if (/^отклонено/.test(е.text ?? "") && е.toolCallId) {
+          const г = группы.get(е.agent);
+          const вызов = г?.вызовы.get(е.toolCallId);
+          if (вызов) {
+            г.отказы += 1;
+            отметитьВызов(г, вызов, "denied");
+          }
+        }
         return;
       }
       const г = группаДействий(е.agent);
       г.отказы += 1;
-      const вызов = г.вызовы.get(е.callId);
+      const вызов = г.вызовы.get(е.toolCallId ?? е.callId);
       if (вызов) отметитьВызов(г, вызов, "denied");
       else обновитьСводку(г);
       г.список.append(элемент("div", "отказ-строка", е.text ?? "отказано"));
@@ -544,7 +553,11 @@ function показатьМаршрут() {
       к.dataset.маршрут = м.id;
       к.title = `${м.name}: ${м.hint}`;
       к.append(значокМаршрута(м.id));
-      к.addEventListener("click", () => выбратьМаршрут(м.id));
+      к.addEventListener("click", () => {
+        выбратьМаршрут(м.id);
+        // Кнопки пересоздаются: фокус переходит на новую отмеченную.
+        $("режимы").querySelector('[aria-checked="true"]')?.focus();
+      });
       return к;
     }),
   );
@@ -560,7 +573,7 @@ function показатьМаршрут() {
       к.append(значокМаршрута(м.id), элемент("span", "", м.name), галка);
       к.addEventListener("click", () => {
         выбратьМаршрут(м.id);
-        закрытьМеню();
+        закрытьМеню(true);
       });
       return к;
     }),
@@ -573,9 +586,12 @@ function выбратьМаршрут(id) {
   показатьМаршрут();
 }
 
-function закрытьМеню() {
+/** Закрыть меню режима; с возвратом — фокус на кнопку названия, откуда меню открыли. */
+function закрытьМеню(вернутьФокус = false) {
+  const былоОткрыто = !$("маршрут-меню").hidden;
   $("маршрут-меню").hidden = true;
   $("маршрут").setAttribute("aria-expanded", "false");
+  if (вернутьФокус && былоОткрыто) $("маршрут").focus();
 }
 
 $("маршрут").addEventListener("click", (событие) => {
@@ -588,7 +604,7 @@ document.addEventListener("click", (событие) => {
   if (!$("маршрут-меню").hidden && !событие.target.closest?.("#маршрут-меню")) закрытьМеню();
 });
 document.addEventListener("keydown", (событие) => {
-  if (событие.key === "Escape") закрытьМеню();
+  if (событие.key === "Escape") закрытьМеню(true);
 });
 показатьМаршрут();
 
@@ -680,6 +696,9 @@ function нарисоватьНить(агент, модель) {
   const поУмолчанию = defaultEffort(модель);
   const выбор = МОДЕЛИ[агент].choice.effort;
   const р = threadLayout(агент, уровни, выбор, поУмолчанию, полоса.clientWidth || 328);
+  // Вернуть «по умолчанию» можно, пока выбран явный уровень: у Claude умолчание
+  // неизвестно, и никакой узел его не заменяет (рецензия Codex 28.09).
+  $(`нить-сброс-${агент}`).hidden = !р || !выбор;
   if (!р) {
     подпись.textContent = МОДЕЛИ[агент].options ? "Без уровней" : "—";
     подпись.style.color = "var(--тихий)";
@@ -811,6 +830,12 @@ for (const агент of ["claude", "codex"]) {
     if (!следующий) return;
     событие.preventDefault();
     следующий.click();
+  });
+}
+
+for (const агент of ["claude", "codex"]) {
+  $(`нить-сброс-${агент}`).addEventListener("click", () => {
+    выбрать(агент, { model: МОДЕЛИ[агент].choice.model, effort: "" });
   });
 }
 

@@ -70,6 +70,12 @@ export interface PanelEvent {
   readonly tool?: string;
   /** Идентификатор вызова инструмента: связывает call, running и result. */
   readonly callId?: string;
+  /**
+   * У запроса и решения разрешения callId — id запроса, а это — id вызова
+   * инструмента, о котором спрашивают (у Claude tool_use_id). По нему панель
+   * окрашивает бусину вызова, когда человек отказал.
+   */
+  readonly toolCallId?: string;
   /** Ход, в который вошло событие. */
   readonly turnId?: string;
   /**

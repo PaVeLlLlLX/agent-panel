@@ -406,6 +406,7 @@ export class ClaudeAdapter implements Adapter {
     });
     this.#выдать("approval_decided", "turn", {
       callId: id,
+      ...(запрос.вызов ? { toolCallId: запрос.вызов } : {}),
       text:
         подпись ??
         (выбор === "deny"
@@ -456,7 +457,11 @@ export class ClaudeAdapter implements Adapter {
     for (const [id, запрос] of this.#запросы) {
       if (запрос.процесс !== процесс) continue;
       this.#запросы.delete(id);
-      this.#выдать("approval_decided", "turn", { callId: id, text: причина });
+      this.#выдать("approval_decided", "turn", {
+        callId: id,
+        ...(запрос.вызов ? { toolCallId: запрос.вызов } : {}),
+        text: причина,
+      });
     }
   }
 
@@ -554,6 +559,7 @@ export class ClaudeAdapter implements Adapter {
     this.#выдать("approval_requested", "turn", {
       tool: String(запрос["display_name"] ?? запрос["tool_name"] ?? "?"),
       callId: id,
+      ...(typeof запрос["tool_use_id"] === "string" ? { toolCallId: запрос["tool_use_id"] } : {}),
       text: clamp(строки.join("\n")),
       sessionRules: подписиПравил(правила),
       raw: запись,

@@ -237,3 +237,21 @@ test("вердикт: строку не в конце, в коде, в цита�
   assert.equal(verdictLine("`ВЕРДИКТ: ПРИНЯТО`"), null);
   assert.equal(verdictLine(""), null);
 });
+
+test("эстафета: прямой ответ после принятой задачи виден, а не «Работа принята»", () => {
+  // Рецензия Codex 28.09: accepted проверялся раньше занятости агентов.
+  const р = relayView(состояние({ stage: "accepted", verdict: "accepted", claudeBusy: true }));
+  assert.equal(р.active, "claude");
+  assert.equal(р.label, "Claude отвечает");
+  assert.equal(relayView(состояние({ stage: "accepted", verdict: "accepted" })).active, "accepted");
+});
+
+test("вердикт: ограды кода помнят вид и длину, как src/verdict.ts", () => {
+  // Рецензия Codex 28.09: чётность оград давала «принято» внутри блока из четырёх кавычек.
+  assert.equal(verdictLine(строки("````", "```", "ВЕРДИКТ: ПРИНЯТО")), null, "три кавычки не закрывают четыре");
+  assert.equal(verdictLine(строки("````", "код", "````", "ВЕРДИКТ: ПРИНЯТО")).verdict, "accepted");
+  assert.equal(verdictLine(строки("~~~", "ВЕРДИКТ: ПРИНЯТО")), null, "тильды — тоже ограда");
+  assert.equal(verdictLine(строки("~~~", "```", "ВЕРДИКТ: ПРИНЯТО")), null, "кавычки не закрывают тильды");
+  assert.equal(verdictLine(строки("```js", "x", "``` лишнее", "ВЕРДИКТ: ПРИНЯТО")), null, "ограда с текстом после не закрывает");
+  assert.equal(verdictLine(строки("```js", "x", "```", "ВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ")).verdict, "remarks");
+});

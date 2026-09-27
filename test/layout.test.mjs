@@ -473,3 +473,72 @@ test("светлая тема: у агентов свои цвета, разли
   assert.equal(р.claude, "#B8702F");
   assert.equal(р.codex, "#1E8C96");
 });
+
+test("отказ человека в карточке окрашивает бусину вызова по tool_use_id", { skip: БЕЗ_БРАУЗЕРА }, () => {
+  const р = открыть(
+    `
+    const с = (kind, доп) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...доп });
+    послать({ type: "event", событие: с("tool_call", { tool: "Bash", callId: "toolu_1", text: "git push" }) });
+    послать({ type: "event", событие: с("approval_requested", { tool: "Bash", callId: "perm-1", toolCallId: "toolu_1", text: "git push" }) });
+    послать({ type: "event", событие: с("approval_decided", { callId: "perm-1", toolCallId: "toolu_1", text: "отклонено человеком" }) });
+    послать({ type: "event", событие: с("tool_result", { tool: "Bash", callId: "toolu_1", text: "Отклонено человеком в панели." }) });
+    итог.бусины = [...document.querySelectorAll(".действия .чётки .бусина")].map((б) => б.className);
+    итог.счётчики = [...document.querySelectorAll(".действия .счётчик")].map((с) => с.title + " " + с.textContent);
+    итог.карточка = document.querySelector(".разрешение").className;
+  `,
+    { сИнтерфейсом: true },
+  );
+  assert.deepEqual(р.бусины, ["бусина square denied"]);
+  assert.deepEqual(р.счётчики, ["Команды 1", "Отказано 1"]);
+  assert.match(р.карточка, /отклонено/);
+});
+
+test("режим: после выбора фокус остаётся на переключателе или возвращается на название", { skip: БЕЗ_БРАУЗЕРА }, () => {
+  const р = открыть(
+    `
+    по("режимы").querySelector("[data-маршрут=both]").focus();
+    по("режимы").querySelector("[data-маршрут=both]").click();
+    итог.послеПереключателя = document.activeElement?.dataset?.маршрут;
+    по("маршрут").click();
+    по("маршрут-меню").querySelector("[data-маршрут=codex]").focus();
+    по("маршрут-меню").querySelector("[data-маршрут=codex]").click();
+    итог.послеМеню = document.activeElement?.id;
+    по("маршрут").click();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    итог.послеEscape = document.activeElement?.id;
+    итог.менюЗакрыто = по("маршрут-меню").hidden;
+  `,
+    { сИнтерфейсом: true },
+  );
+  assert.equal(р.послеПереключателя, "both");
+  assert.equal(р.послеМеню, "маршрут");
+  assert.equal(р.послеEscape, "маршрут");
+  assert.equal(р.менюЗакрыто, true);
+});
+
+test("уровень рассуждения можно вернуть к умолчанию агента", { skip: БЕЗ_БРАУЗЕРА }, () => {
+  // Рецензия Codex 28.09: у Claude умолчание неизвестно, и после выбора узла
+  // вернуть «по умолчанию» было нечем — прежний список это позволял.
+  const р = открыть(
+    `
+    по("модели-кнопка").click();
+    послать({ type: "models", agent: "claude", choice: { model: "", effort: "" }, options: [
+      { id: "", label: "по умолчанию", description: "", efforts: ["low", "high", "max"] },
+    ] });
+    const сброс = по("нить-сброс-claude");
+    итог.сбросДо = сброс.hidden;
+    по("нить-claude").querySelectorAll(".нить-узел")[1].click();
+    итог.сбросПосле = сброс.hidden;
+    сброс.click();
+    итог.выбран = [...по("нить-claude").querySelectorAll(".нить-узел")].some((у) => у.getAttribute("aria-checked") === "true");
+    итог.сбросВКонце = сброс.hidden;
+    итог.выборы = window.отправленное.filter((м) => м.type === "setModel").map((м) => м.effort);
+  `,
+    { сИнтерфейсом: true },
+  );
+  assert.equal(р.сбросДо, true, "при умолчании сбрасывать нечего");
+  assert.equal(р.сбросПосле, false);
+  assert.equal(р.выбран, false);
+  assert.equal(р.сбросВКонце, true);
+  assert.deepEqual(р.выборы, ["high", ""]);
+});

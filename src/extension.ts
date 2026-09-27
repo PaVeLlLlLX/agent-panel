@@ -357,6 +357,7 @@ function разметка(webview: vscode.Webview, контекст: vscode.Exte
     <div class="нить-карточка" data-agent="claude">
       <div class="нить-заголовок">
         <span id="нить-уровень-claude" class="нить-уровень">По умолчанию</span>
+        <button id="нить-сброс-claude" class="ссылка-кнопка нить-сброс" hidden title="Вернуть уровень по умолчанию: решает агент">по умолчанию</button>
         <span class="нить-агент">Claude</span>
         <select id="модель-claude" class="нить-модель" disabled aria-label="Модель Claude"></select>
       </div>
@@ -365,6 +366,7 @@ function разметка(webview: vscode.Webview, контекст: vscode.Exte
     <div class="нить-карточка" data-agent="codex">
       <div class="нить-заголовок">
         <span id="нить-уровень-codex" class="нить-уровень">По умолчанию</span>
+        <button id="нить-сброс-codex" class="ссылка-кнопка нить-сброс" hidden title="Вернуть уровень по умолчанию модели">по умолчанию</button>
         <span class="нить-агент">Codex</span>
         <select id="модель-codex" class="нить-модель" disabled aria-label="Модель Codex"></select>
       </div>

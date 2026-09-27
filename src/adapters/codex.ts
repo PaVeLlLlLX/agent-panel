@@ -531,8 +531,11 @@ export class CodexAdapter implements Adapter {
       return;
     }
     if (ИНСТРУМЕНТАЛЬНЫЕ.has(вид)) {
+      // id элемента связывает начало и конец одного инструмента: без него
+      // панель рисовала две бусины на вызов (рецензия Codex 28.09).
       this.#выдать(завершён ? "tool_result" : "tool_call", "turn", {
         tool: вид,
+        ...(typeof элемент["id"] === "string" ? { callId: элемент["id"] } : {}),
         ...clampKeepingFull(текст || JSON.stringify(элемент)),
         raw: элемент,
       });

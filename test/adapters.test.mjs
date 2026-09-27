@@ -102,6 +102,24 @@ test("Claude: длинный вывод инструмента — усечён�
   }
 });
 
+test("Claude: запрос и решение разрешения знают, о каком вызове инструмента речь", async () => {
+  // Рецензия Codex 28.09: карточка живёт по request_id, бусина — по tool_use_id,
+  // и отказ человека не доходил до бусины.
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await а.send({ text: "НУЖНО-РАЗРЕШЕНИЕ", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "approval_requested"), "запрос разрешения");
+    const запрос = с.события.find((е) => е.kind === "approval_requested");
+    assert.equal(запрос.toolCallId, "toolu_perm");
+    await а.answerApproval(запрос.callId, "deny");
+    await дождаться(() => с.события.some((е) => е.kind === "approval_decided"), "решение");
+    assert.equal(с.события.find((е) => е.kind === "approval_decided").toolCallId, "toolu_perm");
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: пользовательские настройки с хуками по умолчанию не загружаются", async () => {
   const с = собиратель();
   const а = claude(с);
@@ -699,6 +717,23 @@ test("Codex: второе сообщение во время запуска не
 // ---------------------------------------------------------------------------
 // Codex
 // ---------------------------------------------------------------------------
+
+test("Codex: начало и конец одного инструмента связаны id элемента", async () => {
+  // Рецензия Codex 28.09: без callId один инструмент давал в панели две бусины.
+  const с = собиратель();
+  const а = codex(с);
+  try {
+    await а.send({ text: "КОМАНДА", from: "claude" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода");
+    const вызов = с.события.find((е) => е.kind === "tool_call");
+    const итог = с.события.find((е) => е.kind === "tool_result");
+    assert.ok(вызов && итог, "нет начала или конца инструмента");
+    assert.equal(вызов.callId, "cmd-1");
+    assert.equal(итог.callId, "cmd-1");
+  } finally {
+    await а.stop();
+  }
+});
 
 test("Codex: ветка из thread.id, процесс поднимается сам, ответ и поток доходят", async () => {
   const с = собиратель();

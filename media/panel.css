@@ -510,6 +510,7 @@ details.действия[open] > summary .шеврон { transform: rotate(90deg
   font-size: 0.85em;
 }
 .нить-агент { font-size: 0.85em; color: var(--тихий); flex-shrink: 0; }
+.нить-сброс { font-size: 0.8em; color: var(--едва); text-decoration: underline dotted; }
 .нить-полоса { position: relative; height: 44px; }
 /* Пустая полоса не скрывается, а схлопывается: ширина нужна для раскладки узлов. */
 .нить-полоса:empty { height: 0; }
