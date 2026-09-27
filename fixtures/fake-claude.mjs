@@ -156,6 +156,20 @@ const строки = createInterface({ input: process.stdin });
     }, 200);
     return;
   }
+  // ЧУЖОЙ-ПОТОК: чужой запрос успел начать ответ (только stream_event) и
+  // кончился ошибкой; свой идёт следом. Эхо своего приходит раньше первого
+  // stream_event (замер 28.09), значит, поток без эха — чужой.
+  if (текст.includes("ЧУЖОЙ-ПОТОК")) {
+    initЗапроса();
+    записать({ type: "stream_event", parent_tool_use_id: null, event: { type: "message_start" }, session_id: СЕССИЯ });
+    записать({ type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_delta", delta: { type: "text_delta", text: "чуж" } }, session_id: СЕССИЯ });
+    записать({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 1, session_id: СЕССИЯ });
+    initЗапроса();
+    эхо();
+    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "ответ на сообщение" }] }, session_id: СЕССИЯ });
+    записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ });
+    return;
+  }
   эхо();
   // ФОН-УВЕДОМЛЕНИЕ-БЕЗ-ХОДА: фоновая команда кончилась, но CLI ход не начал.
   if (текст.includes("ФОН-УВЕДОМЛЕНИЕ-БЕЗ-ХОДА")) {

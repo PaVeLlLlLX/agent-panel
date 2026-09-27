@@ -527,6 +527,20 @@ function токены(n) {
 const СТАТУСЫ_ЛИМИТА = { allowed: "в норме", allowed_warning: "близко к пределу", rejected: "исчерпан" };
 const ОКНА = { week: "неделя", five_hour: "окно 5 ч" };
 
+/** Время сведения; не сегодняшнее — с датой: «на 05:14», «на 27.09 23:50». */
+function когдаСведение(at) {
+  const д = new Date(at);
+  const часы = д.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  if (д.toDateString() === new Date().toDateString()) return часы;
+  return `${String(д.getDate()).padStart(2, "0")}.${String(д.getMonth() + 1).padStart(2, "0")} ${часы}`;
+}
+
+// Пометка «на …» зависит от возраста сведения, а не только от событий:
+// раскрытая строка расхода перерисовывается раз в минуту (рецензия Codex 28.09).
+setInterval(() => {
+  if (сохранено.дорожка === true) показатьРасход(true);
+}, 60_000);
+
 /** Строка расхода: токены задачи по агентам и последние сведения о лимитах. */
 function показатьРасход(открыта) {
   const строка = $("расход");
@@ -546,9 +560,7 @@ function показатьРасход(открыта) {
       // Доля недели из /usage; статус окна из потока — только когда он не «в норме».
       // Сведение старше 10 минут или последний запрос не удался — со временем.
       const давно = неделя.stale || (typeof неделя.at === "number" && Date.now() - неделя.at > 10 * 60_000);
-      const время = давно && typeof неделя.at === "number"
-        ? ` (на ${new Date(неделя.at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })})`
-        : "";
+      const время = давно && typeof неделя.at === "number" ? ` (на ${когдаСведение(неделя.at)})` : "";
       const доли = [`неделя ${неделя.percent}%${время}`];
       if (typeof неделя.session === "number") доли.push(`окно 5 ч ${неделя.session}%`);
       if (л?.status && л.status !== "allowed") доли.push(СТАТУСЫ_ЛИМИТА[л.status] ?? л.status);

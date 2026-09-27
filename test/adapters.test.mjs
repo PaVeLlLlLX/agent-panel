@@ -454,6 +454,25 @@ test("Claude: чужой запрос, запустивший субагента
   }
 });
 
+test("Claude: чужой запрос, начавший поток и упавший, — чужой", async () => {
+  // Рецензия Codex 28.09 (fe9bce2): до ошибки мог прийти только stream_event.
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await а.send({ text: "привет", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "первый ход");
+    с.события.length = 0;
+    await а.send({ text: "ЧУЖОЙ-ПОТОК", from: "human" });
+    await дождаться(() => с.события.filter((е) => е.kind === "turn_completed").length === 2, "два конца хода");
+    const [чужой, свой] = с.события.filter((е) => е.kind === "turn_completed");
+    assert.equal(чужой.unsolicited, true);
+    assert.equal(свой.unsolicited, undefined);
+    assert.equal(свой.failed, undefined);
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: стартовый init без сообщения — не самостоятельный ход", async () => {
   // Рецензия Codex 28.09: публичный start() без send. Фальшивый CLI пишет init
   // сразу при запуске (настоящий 2.1.220 молчит до сообщения — проба 28.09).
@@ -610,6 +629,69 @@ test("Claude: команда с пробелом в пути запускает�
     await а.send({ text: "привет", from: "human" });
     await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "ход через обёртку");
     assert.ok(с.события.some((е) => е.kind === "message" && е.text === "привет"));
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Codex: сбой при запуске не снимает занятость следующей отправки", async () => {
+  // Рецензия Codex 28.09 (fe9bce2): процесс умер при запуске, координатор уже
+  // отправил следующее сообщение, а catch прежней отправки снял его занятость.
+  const метка = join(каталог(), "умер");
+  const события = [];
+  let вторая;
+  let занятПослеСбоя;
+  const а = new CodexAdapter(
+    { command: "node", commandArgs: [ФАЛЬШИВЫЙ_CODEX, "--die-once", метка], cwd: каталог() },
+    (е) => {
+      события.push(е);
+      if (е.kind === "error" && е.failed && !вторая) {
+        вторая = а.send({ text: "ПОЗЖЕ", from: "human" }).then(() => "ушла", (беда) => беда);
+      }
+    },
+  );
+  try {
+    const первая = а.send({ text: "привет", from: "human" }).then(() => "ушла", (беда) => {
+      // Вторая отправка уже начата (в обработчике ошибки), её ход ещё не
+      // начался: в этом окне координатор по busy решает, слать ли третью.
+      занятПослеСбоя = а.busy;
+      return беда;
+    });
+    assert.ok((await первая) instanceof Error, "первая отправка не удалась");
+    assert.ok(вторая, "вторая отправка начата при сбое");
+    assert.equal(занятПослеСбоя, true, "занятость второй отправки не снята");
+    assert.equal(await вторая, "ушла");
+    assert.equal(а.busy, true, "второй ход ещё идёт");
+    await дождаться(() => события.some((е) => е.kind === "message" && е.text === "поздний ответ"), "ответ второго хода");
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Codex: поздний конец прерванного хода не выдаётся концом хода и без нового", async () => {
+  // Рецензия Codex 28.09 (fe9bce2): при свободном адаптере поздний конец
+  // становился ложным turn_completed.
+  const с = собиратель();
+  const а = codex(с);
+  try {
+    await а.send({ text: "ДОЛГИЙ-ХОД", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_started"), "начало долгого хода");
+    await а.interrupt();
+    с.события.length = 0;
+    await дождаться(() => с.события.some((е) => /поздний конец прерванного/.test(е.text ?? "")), "поздний конец");
+    assert.equal(с.события.some((е) => е.kind === "turn_completed"), false);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: команда с аргументом в строке не берётся в кавычки целиком", { skip: process.platform !== "win32" }, async () => {
+  // Рецензия Codex 28.09 (fe9bce2): «node script.js» в кавычках — одно имя.
+  const с = собиратель();
+  const а = new ClaudeAdapter({ command: `node ${ФАЛЬШИВЫЙ_CLAUDE}`, cwd: каталог() }, с.sink);
+  try {
+    await а.send({ text: "привет", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "ход");
   } finally {
     await а.stop();
   }

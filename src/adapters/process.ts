@@ -21,6 +21,7 @@
  * Проверено на Windows. Ветка для остальных систем написана по документации
  * Node и тестами на этой машине не покрыта.
  */
+import { existsSync } from "node:fs";
 import { ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
 
 export const ТАЙМАУТ_ОСТАНОВКИ = 5000;
@@ -35,7 +36,10 @@ export function запуститьПроцесс(
 ): ChildProcessWithoutNullStreams {
   // cmd.exe делит строку по пробелам: путь вроде «C:\Program Files\…» без
   // кавычек стал бы несколькими словами (рецензия Codex 28.09).
-  const команда = shell && WINDOWS && /\s/.test(command) && !command.startsWith('"') ? `"${command}"` : command;
+  // Строка вида «node script.js» — команда с аргументом, её не трогать:
+  // кавычки нужны только пути к существующему файлу.
+  const команда =
+    shell && WINDOWS && /\s/.test(command) && !command.startsWith('"') && existsSync(command) ? `"${command}"` : command;
   return spawn(команда, [...args], {
     cwd,
     shell,

@@ -617,6 +617,8 @@ export class ClaudeAdapter implements Adapter {
         ...(typeof о["resetsAt"] === "number" ? { resetsAt: о["resetsAt"] * 1000 } : {}),
       };
     } else if (вид === "stream_event") {
+      // Эхо своего запроса приходит раньше первого stream_event (замер 28.09).
+      if (this.#запросБезЭха) this.#безЭхаОтвечал = true;
       this.#дельта(запись);
     } else if (вид === "assistant") {
       if (this.#запросБезЭха) this.#безЭхаОтвечал = true;

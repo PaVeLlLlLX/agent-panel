@@ -203,6 +203,8 @@ export class CodexAdapter implements Adapter {
   #ход: string | undefined;
   /** Ходы, прерванные человеком: их поздний turn/completed не закрывает новый. */
   readonly #прерванные = new Set<string>();
+  /** Номер последней отправки: сбой прежней не трогает занятость новой. */
+  #отправок = 0;
   #занят = false;
   #следующийId = 1;
   readonly решения: ApprovalDecision[] = [];
@@ -328,6 +330,7 @@ export class CodexAdapter implements Adapter {
   async send(prompt: AgentPrompt): Promise<void> {
     // Проверка и запуск — синхронно до первого ожидания: второе сообщение,
     // пришедшее во время запуска, ждёт того же запуска, а не теряется.
+    const моя = ++this.#отправок;
     if (!this.#к) this.#запуск = this.start();
     // Занят с начала отправки: «Прервать» во время запуска процесса должно
     // её отменить, а не пропустить (рецензия Codex 28.09).
@@ -344,7 +347,9 @@ export class CodexAdapter implements Adapter {
         input: [{ type: "text", text: this.#оформить(prompt) }],
       });
     } catch (беда) {
-      this.#занят = false;
+      // Более поздняя отправка уже идёт (процесс умер при запуске, координатор
+      // отправил следующее): её занятость не снимать (рецензия Codex 28.09).
+      if (моя === this.#отправок) this.#занят = false;
       throw беда;
     }
   }
@@ -592,12 +597,10 @@ export class CodexAdapter implements Adapter {
       case "turn/completed": {
         const ход = (п["turn"] ?? {}) as { id?: unknown; status?: string; error?: { message?: string } };
         if (typeof ход.id === "string" && this.#прерванные.delete(ход.id)) {
-          if (this.#занят) {
-            // Новый ход уже идёт: поздний конец прерванного его не закрывает
-            // (рецензия Codex 28.09).
-            this.#выдать("diagnostic", "stream", { text: "поздний конец прерванного хода Codex пропущен — идёт новый ход" });
-            return;
-          }
+          // Человек уже знает о прерывании, координатор уже сбросил ожидание:
+          // поздний конец не закрывает ни новый ход, ни «ничей» (рецензии Codex 28.09).
+          this.#выдать("diagnostic", "stream", { text: "поздний конец прерванного хода Codex пропущен" });
+          return;
         }
         this.#занят = false;
         this.#ход = undefined;

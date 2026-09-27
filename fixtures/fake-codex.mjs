@@ -19,6 +19,7 @@
  *   ЗАПИСАТЬ    — сервер запрашивает у клиента одобрение на изменение файла
  *                 и пишет в stderr, что клиент ответил.
  */
+import { existsSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const ВЕТКА = "fake-thread-1";
@@ -31,6 +32,14 @@ process.stderr.write(
 
 const долгие = new Set();
 let номерХода = 0;
+
+// --die-once <файл>: первый запуск умирает на initialize, следующие работают.
+const iМетки = process.argv.indexOf("--die-once");
+if (iМетки > 0 && !existsSync(process.argv[iМетки + 1])) {
+  writeFileSync(process.argv[iМетки + 1], "умер");
+  createInterface({ input: process.stdin }).once("line", () => process.exit(3));
+  await new Promise(() => {});
+}
 
 const строки = createInterface({ input: process.stdin });
 строки.on("line", (строка) => {
