@@ -187,6 +187,66 @@ const строки = createInterface({ input: process.stdin });
     return;
   }
 
+  // Трудные порядки для ожидания субагентов (рецензия Codex 28.09).
+  const субагентЗапущен = (id) => {
+    записать({ type: "system", subtype: "task_started", task_id: id, tool_use_id: "toolu_" + id, task_type: "local_agent", session_id: СЕССИЯ });
+  };
+  const итог = (текстИтога, ошибка = false) => {
+    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: текстИтога }] }, session_id: СЕССИЯ });
+    записать({ type: "result", subtype: ошибка ? "error_during_execution" : "success", is_error: ошибка, num_turns: 1, session_id: СЕССИЯ });
+  };
+  const init = () => записать({ type: "system", subtype: "init", session_id: СЕССИЯ, model: "fake", tools: [], argv, pid: process.pid });
+  const готов = (id) => записать({ type: "system", subtype: "task_notification", task_id: id, status: "completed", session_id: СЕССИЯ });
+  // ДВА-СУБАГЕНТА: второй кончается, пока модель отвечает итоговым запросом.
+  if (текст.includes("ДВА-СУБАГЕНТА")) {
+    субагентЗапущен("t1");
+    субагентЗапущен("t2");
+    итог("жду двоих");
+    setTimeout(() => {
+      готов("t1");
+      init();
+      готов("t2");
+      setTimeout(() => {
+        итог("итог-1");
+        setTimeout(() => {
+          init();
+          итог("итог-2");
+        }, 50);
+      }, 400);
+    }, 100);
+    return;
+  }
+  // СНИМОК-БЕЗ-ТИПА: background_tasks_changed с известным id без task_type.
+  if (текст.includes("СНИМОК-БЕЗ-ТИПА")) {
+    субагентЗапущен("t1");
+    итог("жду");
+    записать({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "t1" }], session_id: СЕССИЯ });
+    setTimeout(() => {
+      готов("t1");
+      init();
+      итог("итог");
+    }, 400);
+    return;
+  }
+  // ОШИБКА-ПРИ-СУБАГЕНТЕ: result с ошибкой, пока субагент работает; его итог приходит позже.
+  if (текст.includes("ОШИБКА-ПРИ-СУБАГЕНТЕ")) {
+    субагентЗапущен("t1");
+    итог("сбой", true);
+    setTimeout(() => {
+      готов("t1");
+      init();
+      итог("поздний итог");
+    }, 400);
+    return;
+  }
+  // УПАСТЬ-ПРИ-СУБАГЕНТЕ: процесс умирает, пока субагент работает.
+  if (текст.includes("УПАСТЬ-ПРИ-СУБАГЕНТЕ")) {
+    субагентЗапущен("t1");
+    итог("жду");
+    setTimeout(() => process.exit(3), 50);
+    return;
+  }
+
   // ФОНОВЫЙ-СУБАГЕНТ / ФОНОВЫЙ-БЕЗ-ПРОДОЛЖЕНИЯ / ФОНОВЫЙ-BASH: форма снята живой
   // трассой Claude Code 2.1.220 в режиме stream-json 28.09.2026. Agent по
   // умолчанию запускает субагента в фоне: result приходит раньше, чем субагент

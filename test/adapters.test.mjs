@@ -158,6 +158,76 @@ test("Claude: расход хода — сумма всех result хода, л�
   }
 });
 
+const концыХода = (с) => с.события.filter((е) => е.kind === "turn_completed");
+const подождать = (мс) => new Promise((r) => setTimeout(r, мс));
+
+test("Claude: срок не закрывает ход, пока модель отвечает итоговым запросом", async () => {
+  const с = собиратель();
+  const а = claude(с, { backgroundGraceMs: 200 });
+  try {
+    await а.send({ text: "ДВА-СУБАГЕНТА", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "message" && е.text === "итог-2"), "итог-2");
+    await подождать(400);
+    assert.equal(концыХода(с).length, 1, "ход закрыт дважды или раньше итога");
+    const порядок = с.события.filter((е) => е.kind === "message" || е.kind === "turn_completed").map((е) => е.text);
+    assert.equal(порядок[порядок.length - 1].startsWith("ход завершён"), true);
+    assert.ok(порядок.indexOf("итог-2") < порядок.length - 1);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: снимок задач без task_type не снимает известного субагента", async () => {
+  const с = собиратель();
+  const а = claude(с, { backgroundGraceMs: 200 });
+  try {
+    await а.send({ text: "СНИМОК-БЕЗ-ТИПА", from: "human" });
+    await дождаться(() => концыХода(с).length > 0, "конец хода");
+    await подождать(100);
+    assert.equal(концыХода(с).length, 1);
+    const итоги = с.события.filter((е) => е.kind === "message").map((е) => е.text);
+    assert.deepEqual(итоги, ["жду", "итог"], "ход закрыт по сроку до итога");
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: после ошибки при работающем субагенте его поздний итог держит следующий ход", async () => {
+  const с = собиратель();
+  const а = claude(с, { backgroundGraceMs: 200 });
+  try {
+    await а.send({ text: "ОШИБКА-ПРИ-СУБАГЕНТЕ", from: "human" });
+    await дождаться(() => концыХода(с).length === 1, "ход с ошибкой");
+    assert.equal(концыХода(с)[0].failed, true);
+    await а.send({ text: "здравствуй", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "message" && е.text === "поздний итог"), "поздний итог");
+    await дождаться(() => концыХода(с).length === 2, "конец второго хода");
+    await подождать(300);
+    assert.equal(концыХода(с).length, 2, "поздний итог закончил второй ход раньше или вдвойне");
+    const последние = с.события.filter((е) => е.kind === "message" || е.kind === "turn_completed").slice(-2).map((е) => е.kind);
+    assert.deepEqual(последние, ["message", "turn_completed"]);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: процесс умер при работающем субагенте — следующий ход не виснет", async () => {
+  const с = собиратель();
+  const а = claude(с, { backgroundGraceMs: 200 });
+  try {
+    await а.send({ text: "УПАСТЬ-ПРИ-СУБАГЕНТЕ", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "error"), "ошибка процесса");
+    const было = концыХода(с).length;
+    await а.send({ text: "здравствуй", from: "human" });
+    await дождаться(() => концыХода(с).length > было, "конец нового хода");
+    await подождать(400);
+    assert.equal(концыХода(с).length, было + 1, "поздний срок старого хода выдал лишний конец");
+    assert.equal(а.busy, false);
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: фоновый Bash ход не держит — ждут только субагентов", async () => {
   const с = собиратель();
   const а = claude(с);

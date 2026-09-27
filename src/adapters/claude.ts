@@ -83,7 +83,7 @@ export interface ClaudeOptions {
   readonly onSessionId?: (id: string) => void;
   /**
    * Сколько ждать продолжения хода после того, как фоновые субагенты
-   * закончили, а Claude ещё не начал итоговый запрос (мс, по умолчанию 60 000).
+   * закончили, а Claude ещё не начал итоговый запрос (мс, по умолчанию 15 000: итоговый запрос по живой трассе начинается через 0,1 с).
    */
   readonly backgroundGraceMs?: number;
 }
@@ -314,6 +314,9 @@ export class ClaudeAdapter implements Adapter {
     if (this.#процесс === процесс) {
       this.#процесс = undefined;
       this.#занят = false;
+      // Уведомлений умершего процесса уже не будет: его субагенты и срок
+      // ожидания не должны держать или закрывать следующий ход.
+      this.#сброситьФон();
     }
     this.#закрытьЗапросы(процесс, "запрос закрыт: процесс Claude завершился");
     if (this.#отчитанные.has(процесс)) return;
@@ -609,25 +612,29 @@ export class ClaudeAdapter implements Adapter {
         закончить(id);
       }
     } else if (вид === "background_tasks_changed" && Array.isArray(запись["tasks"])) {
-      const идут = new Set(
-        (запись["tasks"] as Record<string, unknown>[])
-          .filter((з) => з?.["task_type"] === "local_agent" && typeof з["task_id"] === "string")
-          .map((з) => з["task_id"] as string),
-      );
-      for (const задача of [...this.#субагенты]) if (!идут.has(задача)) закончить(задача);
-      for (const задача of идут) this.#субагенты.add(задача);
+      const задачи = (запись["tasks"] as Record<string, unknown>[]).filter((з) => typeof з?.["task_id"] === "string");
+      // Снимается только то, чего в снимке нет: известный id без task_type —
+      // всё ещё идущий субагент (рецензия Codex 28.09).
+      const вСнимке = new Set(задачи.map((з) => з["task_id"] as string));
+      for (const задача of [...this.#субагенты]) if (!вСнимке.has(задача)) закончить(задача);
+      for (const з of задачи) if (з["task_type"] === "local_agent") this.#субагенты.add(з["task_id"] as string);
     }
   }
 
-  /** Срок ожидания продолжения — только когда ход держится и субагентов уже нет. */
+  /**
+   * Срок ожидания продолжения — только когда ход держится, субагентов уже нет,
+   * запрос модели не открыт и разрешений никто не ждёт: иначе срок закрыл бы
+   * живой ответ (рецензия Codex 28.09).
+   */
   #назначитьСрок(): void {
     if (!this.#ходДержится || this.#субагенты.size > 0 || this.#срокПродолжения) return;
+    if (this.#открытыхЗапросов > 0 || this.#запросы.size > 0) return;
     this.#срокПродолжения = setTimeout(() => {
       this.#срокПродолжения = undefined;
       if (this.#ходДержится) {
         this.#закончитьХод("ход завершён: субагенты закончили, продолжения от Claude не было", false);
       }
-    }, this.опции.backgroundGraceMs ?? 60_000);
+    }, this.опции.backgroundGraceMs ?? 15_000);
   }
 
   #отменитьСрок(): void {
@@ -635,9 +642,19 @@ export class ClaudeAdapter implements Adapter {
     this.#срокПродолжения = undefined;
   }
 
+  /** Всё состояние фона — при остановке и смерти процесса. */
   #сброситьФон(): void {
-    this.#отменитьСрок();
     this.#субагенты.clear();
+    this.#сброситьХод();
+  }
+
+  /**
+   * Состояние хода. Идущие субагенты не сбрасываются: если ход кончился
+   * ошибкой при работающем субагенте, его поздний итог должен держать
+   * следующий ход, а не закончить его своим result (рецензия Codex 28.09).
+   */
+  #сброситьХод(): void {
+    this.#отменитьСрок();
     this.#открытыхЗапросов = 0;
     this.#ждёмПродолжения = false;
     this.#ходДержится = false;
@@ -648,7 +665,7 @@ export class ClaudeAdapter implements Adapter {
     const отказы = this.#отложенныеОтказы;
     const расход = this.#расходХода;
     this.#расходХода = NO_USAGE;
-    this.#сброситьФон();
+    this.#сброситьХод();
     this.#занят = false;
     this.#ходИдёт = undefined;
     this.#выдать("turn_completed", "turn", {
