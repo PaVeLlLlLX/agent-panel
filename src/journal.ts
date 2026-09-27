@@ -104,6 +104,13 @@ export class Journal {
     }
   }
 
+  /** Новая сессия агента: привязка комнаты к прежней забывается. */
+  forgetSession(room: string, агент: "claude" | "codex"): void {
+    if (this.#закрыт) return;
+    const колонка = агент === "claude" ? "claude_session" : "codex_thread";
+    this.#бд.prepare(`UPDATE rooms SET ${колонка} = NULL, updated_at = ? WHERE room = ?`).run(Date.now(), room);
+  }
+
   binding(room: string): RoomBinding | undefined {
     const строка = this.#бд
       .prepare(

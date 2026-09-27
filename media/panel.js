@@ -885,6 +885,8 @@ for (const агент of ["claude", "codex"]) {
 }
 
 for (const агент of ["claude", "codex"]) {
+  // Подтверждение спрашивает расширение: новая сессия — необратимое забывание.
+  $(`новая-сессия-${агент}`).addEventListener("click", () => vscode.postMessage({ type: "newSession", agent: агент }));
   $(`нить-сброс-${агент}`).addEventListener("click", () => {
     выбрать(агент, { model: МОДЕЛИ[агент].choice.model, effort: "" });
   });

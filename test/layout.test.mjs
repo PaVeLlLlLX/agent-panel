@@ -594,3 +594,16 @@ test("расход задачи и недельный лимит Codex видн�
   assert.match(р.расход, /Codex 17,5 тыс\./);
   assert.match(р.расход, /неделя 8%/);
 });
+
+test("ссылка «новая сессия» в карточке модели просит расширение начать сессию заново", { skip: БЕЗ_БРАУЗЕРА }, () => {
+  const р = открыть(
+    `
+    по("модели-кнопка").click();
+    по("новая-сессия-claude").click();
+    по("новая-сессия-codex").click();
+    итог.запросы = window.отправленное.filter((м) => м.type === "newSession");
+  `,
+    { сИнтерфейсом: true },
+  );
+  assert.deepEqual(р.запросы, [{ type: "newSession", agent: "claude" }, { type: "newSession", agent: "codex" }]);
+});

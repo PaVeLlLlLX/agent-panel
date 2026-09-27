@@ -198,6 +198,8 @@ export class CodexAdapter implements Adapter {
   #к: Контекст | undefined;
   #запуск: Promise<void> | undefined;
   #ветка: string | undefined;
+  /** После «новой сессии» ветка из настроек комнаты не возобновляется. */
+  #безВозобновления = false;
   #ход: string | undefined;
   #занят = false;
   #следующийId = 1;
@@ -218,6 +220,12 @@ export class CodexAdapter implements Adapter {
 
   get busy(): boolean {
     return this.#занят;
+  }
+
+  async forgetSession(): Promise<void> {
+    await this.stop();
+    this.#ветка = undefined;
+    this.#безВозобновления = true;
   }
 
   get sessionId(): string | undefined {
@@ -263,7 +271,7 @@ export class CodexAdapter implements Adapter {
       // помнит свою прежнюю роль разработчика, а в панели он рецензент.
       // thread/resume принимает developerInstructions наравне с thread/start
       // (схема app-server 0.153.0).
-      const известная = this.#ветка ?? this.опции.resumeThreadId;
+      const известная = this.#ветка ?? (this.#безВозобновления ? undefined : this.опции.resumeThreadId);
       const общие = {
         cwd: this.опции.cwd,
         sandbox: "read-only",

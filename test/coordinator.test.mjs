@@ -1082,3 +1082,28 @@ test("расход: поздний ход прежней задачи и пря�
   assert.equal(к.state.usage.limits.codex.percent, 9, "сведения о лимите обновляются с любого хода");
   журнал.close();
 });
+
+test("новая сессия: агент забывает сессию, журнал — привязку, человек видит строку", async () => {
+  const { к, claude, журнал, события } = комната();
+  журнал.bindSessions("r", "claude-старая", "codex-ветка");
+  claude.забыто = 0;
+  claude.forgetSession = async () => {
+    claude.забыто += 1;
+  };
+  await к.newSession("claude");
+  assert.equal(claude.забыто, 1);
+  assert.equal(журнал.binding("r").claudeSessionId, undefined);
+  assert.equal(журнал.binding("r").codexThreadId, "codex-ветка", "ветку Codex не трогаем");
+  assert.ok(системные(события).some((е) => /новая сессия Claude/i.test(е.text ?? "")));
+  журнал.close();
+});
+
+test("новая сессия посреди хода агента останавливает цикл, а не оставляет его ждать", async () => {
+  const { к, claude, журнал } = комната();
+  claude.forgetSession = async () => {};
+  await к.fromHuman("задача", "review");
+  claude.busy = true;
+  await к.newSession("claude");
+  assert.equal(к.state.stage, "stopped");
+  журнал.close();
+});

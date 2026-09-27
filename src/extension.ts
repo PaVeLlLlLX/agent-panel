@@ -200,6 +200,9 @@ class Комната {
       case "listModels":
         await this.#загрузитьМодели();
         return;
+      case "newSession":
+        if (сообщение.agent === "claude" || сообщение.agent === "codex") await this.newSession(сообщение.agent);
+        return;
       case "setModel": {
         const агент = сообщение.agent as ВыбираемыйАгент;
         if (!АГЕНТЫ.includes(агент)) return;
@@ -275,6 +278,19 @@ class Комната {
     });
   }
 
+  /** Новая сессия агента — после подтверждения: прежний разговор агент помнить не будет. */
+  async newSession(агент: "claude" | "codex"): Promise<void> {
+    const имя = агент === "claude" ? "Claude" : "Codex";
+    const ответ = await vscode.window.showWarningMessage(
+      `Начать новую сессию ${имя} для этой комнаты? Прежний разговор останется в истории ${имя}, ` +
+        "но агент не будет его помнить. Беседа в панели сохранится.",
+      { modal: true },
+      "Начать новую",
+    );
+    if (ответ !== "Начать новую") return;
+    await this.#координатор.newSession(агент);
+  }
+
   #отправитьВПанель(
     сообщение:
       | { type: "event"; событие: PanelEvent; история?: boolean }
@@ -306,7 +322,8 @@ type ВходящееUI =
   | { type: "openLink"; href: string }
   | { type: "listModels" }
   | { type: "setModel"; agent: string; model: unknown; effort: unknown }
-  | { type: "setPermissionMode"; mode: string };
+  | { type: "setPermissionMode"; mode: string }
+  | { type: "newSession"; agent: string };
 
 /**
  * Разметка webview.
@@ -376,6 +393,7 @@ function разметка(webview: vscode.Webview, контекст: vscode.Exte
       </div>
       <div id="нить-claude" class="нить-полоса" role="radiogroup" aria-label="Уровень рассуждения Claude"></div>
       <button id="нить-сброс-claude" class="ссылка-кнопка нить-сброс" hidden title="Вернуть уровень по умолчанию: решает агент">↺ вернуть по умолчанию</button>
+      <button id="новая-сессия-claude" class="ссылка-кнопка новая-сессия" title="Начать новую сессию Claude: прежний разговор останется в истории, но агент его помнить не будет. Нужна, когда длинная сессия дорого обходится каждому ходу">новая сессия</button>
     </div>
     <div class="нить-карточка" data-agent="codex">
       <div class="нить-заголовок">
@@ -385,6 +403,7 @@ function разметка(webview: vscode.Webview, контекст: vscode.Exte
       </div>
       <div id="нить-codex" class="нить-полоса" role="radiogroup" aria-label="Уровень рассуждения Codex"></div>
       <button id="нить-сброс-codex" class="ссылка-кнопка нить-сброс" hidden title="Вернуть уровень по умолчанию модели">↺ вернуть по умолчанию</button>
+      <button id="новая-сессия-codex" class="ссылка-кнопка новая-сессия" title="Начать новую сессию Codex: прежний разговор останется в истории, но агент его помнить не будет. Нужна, когда длинная сессия дорого обходится каждому ходу">новая сессия</button>
     </div>
   </div>
   <div class="поле">
@@ -431,6 +450,12 @@ export function activate(контекст: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("agentPanel.stopAll", async () => {
       await комната?.dispose();
+    }),
+    vscode.commands.registerCommand("agentPanel.newClaudeSession", async () => {
+      await комната?.newSession("claude");
+    }),
+    vscode.commands.registerCommand("agentPanel.newCodexSession", async () => {
+      await комната?.newSession("codex");
     }),
   );
 }

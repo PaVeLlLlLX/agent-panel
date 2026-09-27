@@ -496,6 +496,11 @@ export class ClaudeAdapter implements Adapter {
     await this.stop();
   }
 
+  async forgetSession(): Promise<void> {
+    await this.stop();
+    this.#сессия = undefined;
+  }
+
   async stop(): Promise<void> {
     this.#строки?.close();
     this.#строки = undefined;

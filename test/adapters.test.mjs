@@ -326,6 +326,23 @@ test("Claude: субагент кончился, а продолжения не�
   }
 });
 
+test("Claude: после «новой сессии» процесс запускается без --resume", async () => {
+  const с = собиратель();
+  const а = claude(с, { resumeSessionId: "старая-сессия" });
+  try {
+    await а.start();
+    await дождаться(() => с.события.some((е) => е.raw?.argv), "первый запуск");
+    assert.ok(с.события.find((е) => е.raw?.argv).raw.argv.includes("--resume"));
+    await а.forgetSession();
+    с.события.length = 0;
+    await а.start();
+    await дождаться(() => с.события.some((е) => е.raw?.argv), "запуск после забвения");
+    assert.equal(с.события.find((е) => е.raw?.argv).raw.argv.includes("--resume"), false);
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: пользовательские настройки с хуками по умолчанию не загружаются", async () => {
   const с = собиратель();
   const а = claude(с);

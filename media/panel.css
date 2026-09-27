@@ -518,6 +518,7 @@ details.действия[open] > summary .шеврон { transform: rotate(90deg
 }
 .нить-агент { font-size: 0.85em; color: var(--тихий); flex-shrink: 0; }
 .нить-сброс { align-self: flex-end; margin-top: -6px; font-size: 0.8em; color: var(--едва); }
+.новая-сессия { align-self: flex-start; margin-top: -4px; font-size: 0.8em; color: var(--едва); }
 .нить-полоса { position: relative; height: 44px; }
 /* Пустая полоса не скрывается, а схлопывается: ширина нужна для раскладки узлов. */
 .нить-полоса:empty { height: 0; }

@@ -23,6 +23,14 @@
       {
         "command": "agentPanel.stopAll",
         "title": "Agent Panel: остановить обоих"
+      },
+      {
+        "command": "agentPanel.newClaudeSession",
+        "title": "Agent Panel: новая сессия Claude для комнаты"
+      },
+      {
+        "command": "agentPanel.newCodexSession",
+        "title": "Agent Panel: новая сессия Codex для комнаты"
       }
     ],
     "configuration": {

@@ -49,3 +49,15 @@ test("журнал прежней версии получает новые ко�
   assert.equal(история[1].parentCallId, "p");
   журнал.close();
 });
+
+test("новая сессия: привязка агента комнаты очищается, другого — остаётся", () => {
+  const путь = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const журнал = new Journal(путь);
+  журнал.ensureRoom("r", "C:/x");
+  журнал.bindSessions("r", "claude-1", "codex-1");
+  журнал.forgetSession("r", "claude");
+  const п = журнал.binding("r");
+  assert.equal(п.claudeSessionId, undefined);
+  assert.equal(п.codexThreadId, "codex-1");
+  журнал.close();
+});
