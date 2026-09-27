@@ -49,6 +49,16 @@
           "minimum": 10000,
           "description": "Сколько символов выводов инструментов Claude уходит рецензенту за одну проверку. Короткие выводы идут целиком, длинные — началом и концом с пометкой «неполный»; полный вывод остаётся в журнале."
         },
+        "agentPanel.memorySearchCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Команда поиска по памяти проекта: к сообщению человека прикладываются найденные заметки для обоих агентов, панель называет их в беседе. Протокол — как у хука UserPromptSubmit Claude Code (JSON {cwd, prompt} на вход, hookSpecificOutput.additionalContext на выход). Пусто — выключено. Пример: python C:/Users/you/.claude/hooks/memory_search.py"
+        },
+        "agentPanel.claudeMcpConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Путь к JSON с MCP-серверами для Claude панели (флаг --mcp-config). Нужен, потому что пользовательских настроек, а с ними и ваших MCP-серверов (например, qmd для поиска по памяти), у Claude панели нет. Пусто — не передаётся."
+        },
         "agentPanel.claudeSettingSources": {
           "type": "string",
           "default": "project,local",

@@ -85,6 +85,11 @@ export interface CoordinatorOptions {
   readonly snapshot?: (cwd: string) => Promise<Snapshot>;
   /** Сколько символов выводов инструментов уходит рецензенту за проверку (по умолчанию EVIDENCE_BUDGET). */
   readonly evidenceBudget?: number;
+  /**
+   * Поиск заметок памяти к сообщению человека (см. memory.ts). Нет — заметки
+   * не прикладываются. Ошибка поиска сообщения не задерживает.
+   */
+  readonly memory?: (текст: string, cwd: string) => Promise<{ readonly text: string; readonly titles: readonly string[] } | undefined>;
 }
 
 type Роль = "work" | "review" | "direct";
@@ -128,6 +133,8 @@ export class Coordinator {
   readonly #очередь: Отправка[] = [];
   /** Открытые запросы разрешений: id запроса → агент, который спросил. */
   readonly #запросы = new Map<string, AgentId>();
+  /** Заметки памяти, приложенные к задаче текущего цикла: их видит и рецензент. */
+  #памятьЗадачи: string | undefined;
   #след: Шаг[] = [];
   readonly #снять: (cwd: string) => Promise<Snapshot>;
 
@@ -217,8 +224,10 @@ export class Coordinator {
       at: Date.now(),
       text: текст,
     });
+    const память = await this.#найтиВПамяти(текст);
+    if (цикл !== undefined && this.#текущий(цикл)) this.#памятьЗадачи = память;
     const prompt: AgentPrompt = {
-      text: текст,
+      text: память ? `${текст}${НС}${НС}${память}` : текст,
       from: "human",
       snapshot: describeSnapshot(this.#снимокКомнаты),
     };
@@ -238,6 +247,25 @@ export class Coordinator {
       }
     }
     this.#обновить();
+  }
+
+  /**
+   * Заметки памяти к сообщению человека — с пояснением для агента и строкой
+   * для человека: какие заметки ушли агентам, он должен видеть.
+   */
+  async #найтиВПамяти(текст: string): Promise<string | undefined> {
+    if (!this.опции.memory) return undefined;
+    try {
+      const найдено = await this.опции.memory(текст, this.опции.cwd);
+      if (!найдено) return undefined;
+      const названия = найдено.titles.map((название) => `«${название}»`).join(", ");
+      this.#сообщить(`Память: к сообщению приложены заметки (${найдено.titles.length}): ${названия}.`);
+      return `${ПРО_ПАМЯТЬ}${НС}${НС}${найдено.text}`;
+    } catch (беда) {
+      const причина = беда instanceof Error ? беда.message : String(беда);
+      this.#сообщить(`Поиск по памяти не удался: ${причина}. Сообщение ушло без заметок.`);
+      return undefined;
+    }
   }
 
   /** Отправить удержанное по команде человека. */
@@ -305,6 +333,7 @@ export class Coordinator {
     this.#цикл += 1;
     this.#удержано = undefined;
     this.#последняяРабота = undefined;
+    this.#памятьЗадачи = undefined;
     this.#след = [{ who: "task" }];
     this.#задача = задача;
     this.#раунд = 0;
@@ -379,10 +408,11 @@ export class Coordinator {
     const снимок = await this.#снять(this.опции.cwd);
     if (!this.#текущий(цикл)) return;
 
+    const память = this.#памятьЗадачи ? `${this.#памятьЗадачи}${НС}${НС}` : "";
     const отправка: Отправка = {
       to: "codex",
       prompt: {
-        text: `Задача человека:\n${задача}\n\nМатериал разработчика:\n${текст}\n\n${ПРО_УСЕЧЕНИЕ}\n\n${VERDICT_REQUEST}`,
+        text: `Задача человека:\n${задача}\n\n${память}Материал разработчика:\n${текст}\n\n${ПРО_УСЕЧЕНИЕ}\n\n${VERDICT_REQUEST}`,
         from: "claude",
         snapshot: describeSnapshot(снимок),
       },
@@ -596,6 +626,11 @@ const ПРО_УСЕЧЕНИЕ =
   "У каждого вывода инструмента в заголовке указана полнота. «Полный» — передан целиком. " +
   "«Неполный» — вывод длиннее бюджета проверки: показаны начало и конец, пропущенный диапазон " +
   "указан внутри вывода. Полный вывод хранится в журнале панели — если он нужен, попросите человека.";
+
+/** Заметки памяти — справка, а не поручение: агент должен это различать. */
+const ПРО_ПАМЯТЬ =
+  "Ниже — заметки из памяти проекта, найденные панелью по словам этого сообщения. Это не слова человека, " +
+  "а справка: у заметок бывают даты, оговорки и поздние исправления — проверяйте их, прежде чем опираться.";
 
 /** Что копится для передачи. Поток, диагностика и рассуждения — нет. */
 const ПЕРЕДАВАЕМЫЕ = new Set<PanelEvent["kind"]>(["message", "tool_call", "tool_result"]);

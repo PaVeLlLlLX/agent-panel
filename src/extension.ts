@@ -21,6 +21,7 @@ import { Coordinator, RoomState, Route } from "./coordinator.js";
 import { Journal } from "./journal.js";
 import { describeChoice, normalizeChoice, sameChoice } from "./models.js";
 import { resolveCodexCommand } from "./codexBinary.js";
+import { runMemorySearch } from "./memory.js";
 
 let комната: Комната | undefined;
 
@@ -90,6 +91,12 @@ class Комната {
     this.#панель.onDidDispose(() => void this.dispose());
 
     const принять = (событие: PanelEvent) => this.#координатор.handle(событие);
+    // Память по теме для обоих агентов и MCP-серверы для Claude панели: у него
+    // нет пользовательских настроек, а значит и ваших MCP-серверов (qmd, om).
+    const командаПамяти = настройки.get<string>("memorySearchCommand", "").trim();
+    const mcpКонфиг = настройки.get<string>("claudeMcpConfig", "").trim();
+    // На Windows Claude запускается через оболочку: путь с пробелами — в кавычках.
+    const mcpАргумент = process.platform === "win32" && /\s/.test(mcpКонфиг) ? `"${mcpКонфиг}"` : mcpКонфиг;
 
     const claude = new ClaudeAdapter(
       {
@@ -98,6 +105,7 @@ class Комната {
         model: this.#выборы.claude.model,
         effort: this.#выборы.claude.effort,
         settingSources: настройки.get<string>("claudeSettingSources", "project,local"),
+        ...(mcpКонфиг ? { extraArgs: ["--mcp-config", mcpАргумент] } : {}),
         ...(привязка?.claudeSessionId ? { resumeSessionId: привязка.claudeSessionId } : {}),
         permissionMode: this.#режим,
         onSessionId: (id) => {
@@ -132,6 +140,9 @@ class Комната {
       cwd,
       maxAutoRounds: настройки.get<number>("maxAutoRounds", 3),
       evidenceBudget: настройки.get<number>("reviewEvidenceChars", 240_000),
+      ...(командаПамяти
+        ? { memory: (текст: string, каталог: string) => runMemorySearch(командаПамяти, каталог, текст) }
+        : {}),
       onEvent: (событие) => this.#отправитьВПанель({ type: "event", событие: forDisplay(событие) }),
       onState: (состояние) => this.#отправитьВПанель({ type: "state", состояние }),
     });
