@@ -54,10 +54,18 @@ import {
 import { Journal } from "./journal.js";
 import { Snapshot, describeSnapshot, takeSnapshot } from "./snapshot.js";
 import { VERDICT_REQUEST, Verdict, parseVerdict } from "./verdict.js";
+import type { ClaudeUsage } from "./claudeUsage.js";
 
 export type Route = "review" | "both" | "claude" | "codex";
 
 export type Stage = "idle" | "working" | "reviewing" | "held" | "accepted" | "stopped";
+
+/** Недельная доля Claude в состоянии комнаты: проценты недели и окна сессии. */
+export interface ClaudeWeek {
+  readonly percent: number;
+  readonly session?: number;
+  readonly resets?: string;
+}
 
 export interface RoomState {
   readonly task: string | undefined;
@@ -86,7 +94,12 @@ export interface RoomState {
   /** Расход с начала текущей задачи и последние сведения о лимитах агентов. */
   readonly usage: {
     readonly task: { readonly claude: TurnUsage; readonly codex: TurnUsage };
-    readonly limits: { readonly claude?: LimitInfo; readonly codex?: LimitInfo };
+    readonly limits: {
+      readonly claude?: LimitInfo;
+      readonly codex?: LimitInfo;
+      /** Недельная доля Claude из /usage (см. claudeUsage.ts). */
+      readonly claudeWeek?: ClaudeWeek;
+    };
   };
   readonly snapshot: string | undefined;
 }
@@ -106,6 +119,13 @@ export interface CoordinatorOptions {
    * не прикладываются. Ошибка поиска сообщения не задерживает.
    */
   readonly memory?: (текст: string, cwd: string) => Promise<{ readonly text: string; readonly titles: readonly string[] } | undefined>;
+  /**
+   * Недельная доля лимита Claude (claudeUsage.ts). Спрашивается после хода
+   * Claude и при открытии панели, не чаще claudeUsageEveryMs. Нет — доли нет.
+   */
+  readonly claudeUsage?: () => Promise<ClaudeUsage | undefined>;
+  /** Не чаще, мс; по умолчанию 5 минут. */
+  readonly claudeUsageEveryMs?: number;
   /**
    * Предел токенов задачи (вход и выход обоих агентов). Достигнут —
    * автоматическая передача ждёт решения человека. 0 или нет — без предела.
@@ -144,6 +164,9 @@ export class Coordinator {
   /** Расход с начала задачи и последние сведения о лимитах. */
   #расход: { claude: TurnUsage; codex: TurnUsage } = { claude: NO_USAGE, codex: NO_USAGE };
   #лимиты: { claude?: LimitInfo; codex?: LimitInfo } = {};
+  #неделяClaude: ClaudeWeek | undefined;
+  #доляСпрошена = 0;
+  #доляИдёт = false;
   #этап: Stage = "idle";
   #задача: string | undefined;
   #раунд = 0;
@@ -199,7 +222,7 @@ export class Coordinator {
       codexBusy: this.codex.busy,
       usage: {
         task: { claude: this.#расход.claude, codex: this.#расход.codex },
-        limits: { ...this.#лимиты },
+        limits: { ...this.#лимиты, ...(this.#неделяClaude ? { claudeWeek: this.#неделяClaude } : {}) },
       },
       snapshot: this.#снимокКомнаты?.id,
     };
@@ -222,6 +245,8 @@ export class Coordinator {
       накопитель.push(сПометкой);
       this.#накопители.set(агент, накопитель);
     }
+
+    if (агент === "claude" && сПометкой.kind === "turn_completed") void this.refreshClaudeUsage();
 
     if (сПометкой.kind === "approval_requested" && сПометкой.callId) {
       this.#запросы.set(сПометкой.callId, агент);
@@ -250,12 +275,43 @@ export class Coordinator {
     }
   }
 
+  /**
+   * Недельная доля Claude: не чаще claudeUsageEveryMs и не два запроса сразу.
+   * Сбой — доля остаётся прежней (или неизвестной), работа не задерживается.
+   */
+  async refreshClaudeUsage(): Promise<void> {
+    const спросить = this.опции.claudeUsage;
+    if (!спросить || this.#доляИдёт) return;
+    const период = this.опции.claudeUsageEveryMs ?? 5 * 60_000;
+    if (this.#доляСпрошена && Date.now() - this.#доляСпрошена < период) return;
+    this.#доляИдёт = true;
+    this.#доляСпрошена = Date.now();
+    try {
+      const доля = await спросить();
+      if (доля) {
+        this.#неделяClaude = {
+          percent: доля.weekPercent,
+          ...(доля.sessionPercent !== undefined ? { session: доля.sessionPercent } : {}),
+          ...(доля.weekResets ? { resets: доля.weekResets } : {}),
+        };
+        this.#обновить();
+      }
+    } catch {
+      // Доля неизвестна — это видно по её отсутствию; нулём она не становится.
+    } finally {
+      this.#доляИдёт = false;
+    }
+  }
+
   async fromHuman(текст: string, маршрут: Route): Promise<void> {
     // Новая задача регистрируется ДО ожидания снимка: иначе продолжение
     // прежнего цикла, ждущее тот же снимок, успело бы отправить устаревшее.
     const цикл = маршрут === "review" ? this.#начатьЦикл(текст) : undefined;
     this.#обновить();
 
+    // Остановка во время снимка или поиска по памяти отменяет сообщение
+    // (рецензия Codex 28.09: прежде счётчик запоминался после снимка).
+    const остановок = this.#остановок;
     this.#снимокКомнаты = await this.#снять(this.опции.cwd);
     this.handle({
       id: `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
@@ -265,11 +321,10 @@ export class Coordinator {
       at: Date.now(),
       text: текст,
     });
-    const остановок = this.#остановок;
     const память = await this.#найтиВПамяти(текст);
     if (this.#остановок !== остановок) {
       // Человек остановил панель, пока шёл поиск: сообщение не уходит.
-      this.#сообщить("Сообщение не отправлено: панель остановлена во время поиска по памяти.");
+      this.#сообщить("Сообщение не отправлено: панель остановлена, пока оно готовилось (снимок файлов, поиск по памяти).");
       this.#обновить();
       return;
     }
@@ -417,15 +472,16 @@ export class Coordinator {
   async interruptAll(): Promise<void> {
     this.#остановок += 1;
     this.#сброситьОжидание("stopped");
+    // Прямые сообщения человека ждали конца хода, а его теперь не будет.
+    // Отправлять их сразу нельзя: человек мог прервать именно чтобы отменить,
+    // а поздний конец прерванного хода мешал бы новому. Сняты и названы
+    // (рецензии Codex 28.09); пересылки цикла сняты выше.
+    const снято = this.#очередь.length;
+    this.#очередь.length = 0;
     await Promise.allSettled([this.claude.interrupt(), this.codex.interrupt()]);
-    // Прямые сообщения человека ждали конца хода, а его теперь не будет
-    // (рецензия Codex 28.09); пересылки цикла уже сняты.
-    const вОчереди = this.#очередь.length;
-    await this.#выгрузитьОчередь();
-    const отправлено = вОчереди - this.#очередь.length;
     this.#сообщить(
       "Ход прерван человеком. Цикл рецензии остановлен." +
-        (отправлено > 0 ? ` Ваши сообщения из очереди отправлены: ${отправлено}.` : ""),
+        (снято > 0 ? ` Не отправлено сообщений из очереди: ${снято} — при необходимости отправьте заново.` : ""),
     );
     this.#обновить();
   }

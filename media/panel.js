@@ -541,6 +541,15 @@ function показатьРасход(открыта) {
   const лимиты = [];
   for (const агент of ["codex", "claude"]) {
     const л = расход?.limits?.[агент];
+    const неделя = агент === "claude" ? расход?.limits?.claudeWeek : undefined;
+    if (неделя) {
+      // Доля недели из /usage; статус окна из потока — только когда он не «в норме».
+      const доли = [`неделя ${неделя.percent}%`];
+      if (typeof неделя.session === "number") доли.push(`окно 5 ч ${неделя.session}%`);
+      if (л?.status && л.status !== "allowed") доли.push(СТАТУСЫ_ЛИМИТА[л.status] ?? л.status);
+      лимиты.push(`${ИМЕНА[агент]}: ${доли.join(", ")}`);
+      continue;
+    }
     if (!л) continue;
     const окно = ОКНА[л.window] ?? л.window ?? "";
     if (typeof л.percent === "number") лимиты.push(`${ИМЕНА[агент]}: ${окно} ${л.percent}%`);

@@ -201,6 +201,8 @@ export class CodexAdapter implements Adapter {
   /** После «новой сессии» ветка из настроек комнаты не возобновляется. */
   #безВозобновления = false;
   #ход: string | undefined;
+  /** Ход, прерванный человеком: его поздний turn/completed не закрывает новый. */
+  #прерванный: string | undefined;
   #занят = false;
   #следующийId = 1;
   readonly решения: ApprovalDecision[] = [];
@@ -445,6 +447,8 @@ export class CodexAdapter implements Adapter {
     const к = this.#к;
     if (!к) return;
     if (this.#ветка && this.#ход) {
+      // Конец прерванного хода придёт позже ответа; к новому ходу он не относится.
+      this.#прерванный = this.#ход;
       await this.#запрос(к, "turn/interrupt", { threadId: this.#ветка, turnId: this.#ход }).catch(() => undefined);
       this.#занят = false;
       return;
@@ -577,7 +581,16 @@ export class CodexAdapter implements Adapter {
         return;
       }
       case "turn/completed": {
-        const ход = (п["turn"] ?? {}) as { status?: string; error?: { message?: string } };
+        const ход = (п["turn"] ?? {}) as { id?: unknown; status?: string; error?: { message?: string } };
+        if (typeof ход.id === "string" && ход.id === this.#прерванный) {
+          this.#прерванный = undefined;
+          if (this.#занят) {
+            // Новый ход уже идёт: поздний конец прерванного его не закрывает
+            // (рецензия Codex 28.09).
+            this.#выдать("diagnostic", "stream", { text: "поздний конец прерванного хода Codex пропущен — идёт новый ход" });
+            return;
+          }
+        }
         this.#занят = false;
         this.#ход = undefined;
         const провал = ход.status === "failed" || ход.status === "interrupted";

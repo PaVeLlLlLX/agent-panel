@@ -388,6 +388,49 @@ test("Claude: гонка — CLI начал свой запрос раньше, 
   }
 });
 
+test("Claude: свой запрос с ошибкой до эха — конец своего хода, а не чужой", async () => {
+  // Рецензия Codex 28.09: иначе ход ждал бы следующего запроса вечно.
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await а.send({ text: "привет", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "первый ход");
+    с.события.length = 0;
+    await а.send({ text: "ОШИБКА-ДО-ЭХА", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода");
+    const конец = с.события.find((е) => е.kind === "turn_completed");
+    assert.equal(конец.failed, true);
+    assert.equal(конец.unsolicited, undefined);
+    assert.equal(а.busy, false);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: субагент чужого запроса не держит свой ход", async () => {
+  // Рецензия Codex 28.09: субагент запроса без эха попадал в общий набор,
+  // держал ответ на сообщение, а его итог становился частью этого ответа.
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await а.send({ text: "привет", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "первый ход");
+    с.события.length = 0;
+    await а.send({ text: "ЧУЖОЙ-СУБАГЕНТ", from: "human" });
+    await дождаться(() => с.события.filter((е) => е.kind === "turn_completed").length === 3, "три конца хода");
+    const [чужой, свой, продолжение] = с.события.filter((е) => е.kind === "turn_completed");
+    assert.equal(чужой.unsolicited, true);
+    assert.equal(свой.unsolicited, undefined);
+    assert.equal(продолжение.unsolicited, true);
+    const i = (текст) => с.события.findIndex((е) => е.text === текст);
+    assert.ok(i("ответ на сообщение") < с.события.indexOf(свой));
+    assert.ok(с.события.indexOf(свой) < i("итог чужого субагента"));
+    assert.equal(с.события.some((е) => /ждёт субагентов/.test(е.text ?? "")), false);
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: стартовый init без сообщения — не самостоятельный ход", async () => {
   // Рецензия Codex 28.09: публичный start() без send. Фальшивый CLI пишет init
   // сразу при запуске (настоящий 2.1.220 молчит до сообщения — проба 28.09).
@@ -447,6 +490,29 @@ test("Claude: субагент кончился, а продолжения не�
     const конец = с.события.find((е) => е.kind === "turn_completed");
     assert.match(конец.text, /продолжени/);
     assert.equal(а.busy, false);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Codex: поздний конец прерванного хода не закрывает новый ход", async () => {
+  // Рецензия Codex 28.09: turn/completed прерванного хода приходит после
+  // ответа на turn/interrupt; без сверки с ходом он снимал бы новый.
+  const с = собиратель();
+  const а = codex(с);
+  try {
+    await а.send({ text: "ДОЛГИЙ-ХОД", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_started"), "начало долгого хода");
+    await а.interrupt();
+    с.события.length = 0;
+    await а.send({ text: "ПОЗЖЕ", from: "human" });
+    await new Promise((r) => setTimeout(r, 250));
+    assert.equal(а.busy, true, "новый ход ещё идёт");
+    assert.equal(с.события.some((е) => е.kind === "turn_completed"), false);
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец нового хода");
+    const конец = с.события.find((е) => е.kind === "turn_completed");
+    assert.equal(конец.failed, undefined);
+    assert.ok(с.события.some((е) => е.kind === "message" && е.text === "поздний ответ"));
   } finally {
     await а.stop();
   }

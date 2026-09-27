@@ -240,6 +240,12 @@ export class ClaudeAdapter implements Adapter {
    */
   readonly #субагенты = new Set<string>();
   /**
+   * Субагенты запроса без эха — хода самого CLI, начатого раньше сообщения
+   * панели. Ход панели они не держат: их итог CLI пришлёт своим запросом
+   * после, и он будет самостоятельным (рецензия Codex 28.09).
+   */
+  readonly #чужиеСубагенты = new Set<string>();
+  /**
    * Ход, начатый самим Claude без сообщения панели: кончилась фоновая
    * команда, и CLI сам запускает запрос модели (init без send). Пока он идёт,
    * адаптер занят — сообщения панели ждут в очереди координатора.
@@ -619,11 +625,17 @@ export class ClaudeAdapter implements Adapter {
       this.#блокиПользователя(запись);
     } else if (вид === "control_request") {
       this.#запросАгента(запись);
-    } else if (вид === "result" && this.#запросБезЭха) {
+    } else if (вид === "result" && this.#запросБезЭха && запись["is_error"] !== true) {
       this.#процессОтвечал = true;
       this.#чужойЗапросЗакончен(запись);
     } else if (вид === "result") {
       this.#процессОтвечал = true;
+      if (this.#запросБезЭха) {
+        // Ошибка раньше эха — свой запрос: принять его за чужой значило бы
+        // ждать следующего вечно (рецензия Codex 28.09).
+        this.#запросБезЭха = false;
+        this.#ждёмЭха = Math.max(0, this.#ждёмЭха - 1);
+      }
       this.#открытыхЗапросов = Math.max(0, this.#открытыхЗапросов - 1);
       this.#расходХода = addUsage(this.#расходХода, расходClaude(запись["usage"]));
       const ошибка = запись["is_error"] === true;
@@ -656,6 +668,7 @@ export class ClaudeAdapter implements Adapter {
     const вид = запись["subtype"];
     const id = typeof запись["task_id"] === "string" ? запись["task_id"] : undefined;
     const закончить = (задача: string | undefined) => {
+      if (задача && this.#чужиеСубагенты.delete(задача)) return;
       if (задача && this.#субагенты.delete(задача)) {
         // Субагент кончил — Claude сам начнёт итоговый запрос.
         this.#ждёмПродолжения = true;
@@ -663,7 +676,9 @@ export class ClaudeAdapter implements Adapter {
       }
     };
     if (вид === "task_started") {
-      if (id && запись["task_type"] === "local_agent") this.#субагенты.add(id);
+      if (id && запись["task_type"] === "local_agent") {
+        (this.#запросБезЭха ? this.#чужиеСубагенты : this.#субагенты).add(id);
+      }
     } else if (вид === "task_notification") {
       if (id && !this.#субагенты.has(id)) {
         const суть = запись["summary"] ?? запись["description"];
@@ -680,8 +695,11 @@ export class ClaudeAdapter implements Adapter {
       // Снимается только то, чего в снимке нет: известный id без task_type —
       // всё ещё идущий субагент (рецензия Codex 28.09).
       const вСнимке = new Set(задачи.map((з) => з["task_id"] as string));
-      for (const задача of [...this.#субагенты]) if (!вСнимке.has(задача)) закончить(задача);
-      for (const з of задачи) if (з["task_type"] === "local_agent") this.#субагенты.add(з["task_id"] as string);
+      for (const задача of [...this.#субагенты, ...this.#чужиеСубагенты]) if (!вСнимке.has(задача)) закончить(задача);
+      for (const з of задачи) {
+        const задача = з["task_id"] as string;
+        if (з["task_type"] === "local_agent" && !this.#чужиеСубагенты.has(задача)) this.#субагенты.add(задача);
+      }
     }
   }
 
@@ -744,6 +762,7 @@ export class ClaudeAdapter implements Adapter {
   /** Всё состояние фона — при остановке и смерти процесса. */
   #сброситьФон(): void {
     this.#субагенты.clear();
+    this.#чужиеСубагенты.clear();
     // Уведомление и эхо умершего процесса к новому не относятся (рецензия Codex 28.09).
     this.#последняяФоновая = undefined;
     this.#ждёмЭха = 0;

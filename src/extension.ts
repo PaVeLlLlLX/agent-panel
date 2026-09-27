@@ -22,6 +22,7 @@ import { Journal } from "./journal.js";
 import { describeChoice, normalizeChoice, sameChoice } from "./models.js";
 import { resolveCodexCommand } from "./codexBinary.js";
 import { runMemorySearch } from "./memory.js";
+import { fetchClaudeUsage } from "./claudeUsage.js";
 
 let комната: Комната | undefined;
 
@@ -145,6 +146,9 @@ class Комната {
       ...(командаПамяти
         ? { memory: (текст: string, каталог: string) => runMemorySearch(командаПамяти, каталог, текст) }
         : {}),
+      ...(настройки.get<boolean>("claudeWeeklyUsage", true)
+        ? { claudeUsage: () => fetchClaudeUsage({ command: настройки.get<string>("claudeCommand", "claude"), cwd }) }
+        : {}),
       onEvent: (событие) => this.#отправитьВПанель({ type: "event", событие: forDisplay(событие) }),
       onState: (состояние) => this.#отправитьВПанель({ type: "state", состояние }),
     });
@@ -163,6 +167,7 @@ class Комната {
         this.#отправитьВПанель({ type: "state", состояние: this.#координатор.state });
         for (const агент of АГЕНТЫ) this.#отправитьМодели(агент);
         this.#отправитьВПанель({ type: "permissions", mode: this.#режим });
+        void this.#координатор.refreshClaudeUsage();
         return;
       case "send":
         if (!сообщение.text.trim() || !МАРШРУТЫ.has(сообщение.route as Route)) return;
@@ -368,7 +373,7 @@ function разметка(webview: vscode.Webview, контекст: vscode.Exte
     <span class="распорка"></span>
     <span id="очередь" class="очередь" hidden title="Сообщения, которые ждут, пока агент закончит текущий ход"></span>
     <span id="раунд" class="раунды" role="img" aria-label="проверок 0 из 0" title="Проверка — один раз, когда Codex посмотрел работу Claude. Предел — сколько проверок разрешено на одну задачу, чтобы агенты не спорили бесконечно"></span>
-    <button id="прервать" class="круглая" aria-label="Прервать ход" title="Прервать текущий ход агентов. Следующее сообщение продолжит те же сессии"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 4v8M10 4v8"/></svg></button>
+    <button id="прервать" class="круглая" aria-label="Прервать ход" title="Прервать текущий ход агентов; сообщения, ждавшие в очереди, не отправляются. Следующее сообщение продолжит те же сессии"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 4v8M10 4v8"/></svg></button>
     <button id="стоп" class="круглая опасно" aria-label="Остановить агентов" title="Завершить процессы обоих агентов вместе с их командами"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5"/></svg></button>
   </div>
   <div id="задача" class="задача" hidden></div>

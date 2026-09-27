@@ -595,6 +595,24 @@ test("расход задачи и недельный лимит Codex видн�
   assert.match(р.расход, /неделя 8%/);
 });
 
+test("недельная доля Claude и окно сессии видны рядом с лимитом Codex", { skip: БЕЗ_БРАУЗЕРА }, () => {
+  const р = открыть(
+    `
+    послать({ type: "state", состояние: { stage: "idle", round: 0, maxRounds: 3, approvals: 0, queued: 0, auto: true,
+      trail: [],
+      usage: { task: {},
+               limits: { codex: { percent: 8, window: "week" },
+                         claude: { status: "allowed_warning", window: "five_hour" },
+                         claudeWeek: { percent: 4, session: 28 } } } } });
+    по("эстафета").click();
+    итог.расход = по("расход").textContent;
+  `,
+    { сИнтерфейсом: true },
+  );
+  assert.match(р.расход, /Claude: неделя 4%, окно 5 ч 28%, близко к пределу/);
+  assert.match(р.расход, /Codex: неделя 8%/);
+});
+
 test("ссылка «новая сессия» в карточке модели просит расширение начать сессию заново", { skip: БЕЗ_БРАУЗЕРА }, () => {
   const р = открыть(
     `

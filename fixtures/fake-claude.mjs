@@ -29,6 +29,23 @@ if (argv.includes("--close-stdin")) {
 const СЕССИЯ = "fake-claude-session";
 const записать = (о) => process.stdout.write(`${JSON.stringify(о)}\n`);
 
+// `claude -p "/usage"` — ответ без запроса модели (CLI 2.1.220, 28.09). Доля
+// отдаётся, только если адаптер просит не оставлять файл сессии.
+if (argv.includes("/usage") && argv.includes("--hang-usage")) {
+  // Зависший /usage: остальной модуль (init, чтение stdin) не выполняется.
+  setInterval(() => {}, 1000);
+  await new Promise(() => {});
+} else if (argv.includes("/usage")) {
+  const строки = [
+    "Current session: 28% used · resets Sep 28, 6:50am (Asia/Novosibirsk)",
+    argv.includes("--no-session-persistence")
+      ? "Current week (all models): 4% used · resets Oct 4, 12am (Asia/Novosibirsk)"
+      : "session would be persisted",
+  ];
+  записать({ type: "result", subtype: "success", is_error: false, result: строки.join(String.fromCharCode(10)) });
+  process.exit(0);
+}
+
 // Настоящие агенты пишут в stderr служебные логи с цветовыми кодами.
 process.stderr.write(
   "\x1b[2m2026-09-14T17:07:57.727561Z\x1b[0m \x1b[33mWARN\x1b[0m фальшивый служебный лог\n",
@@ -108,6 +125,34 @@ const строки = createInterface({ input: process.stdin });
     эхо();
     записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "ответ на сообщение" }] }, session_id: СЕССИЯ });
     записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ, usage: { input_tokens: 5, output_tokens: 5 } });
+    return;
+  }
+  // ОШИБКА-ДО-ЭХА: свой запрос кончился ошибкой раньше, чем CLI повторил сообщение.
+  if (текст.includes("ОШИБКА-ДО-ЭХА")) {
+    initЗапроса();
+    записать({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 0, session_id: СЕССИЯ });
+    return;
+  }
+  // ЧУЖОЙ-СУБАГЕНТ: чужой запрос запускает субагента, потом идёт свой;
+  // субагент чужого кончается позже, и CLI сам продолжает.
+  if (текст.includes("ЧУЖОЙ-СУБАГЕНТ")) {
+    записать({ type: "system", subtype: "task_notification", task_id: "tb", status: "completed", summary: "Background command lint completed", session_id: СЕССИЯ });
+    initЗапроса();
+    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "toolu_чужой", name: "Agent", input: { description: "чужой" } }] }, session_id: СЕССИЯ });
+    записать({ type: "system", subtype: "task_started", task_id: "t9", tool_use_id: "toolu_чужой", task_type: "local_agent", session_id: СЕССИЯ });
+    записать({ type: "user", parent_tool_use_id: null, message: { content: [{ type: "tool_result", tool_use_id: "toolu_чужой", content: "Async agent launched successfully." }] }, session_id: СЕССИЯ });
+    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "чужой ждёт субагента" }] }, session_id: СЕССИЯ });
+    записать({ type: "result", subtype: "success", is_error: false, num_turns: 2, session_id: СЕССИЯ });
+    initЗапроса();
+    эхо();
+    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "ответ на сообщение" }] }, session_id: СЕССИЯ });
+    записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ });
+    setTimeout(() => {
+      записать({ type: "system", subtype: "task_notification", task_id: "t9", status: "completed", session_id: СЕССИЯ });
+      initЗапроса();
+      записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "итог чужого субагента" }] }, session_id: СЕССИЯ });
+      записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ });
+    }, 200);
     return;
   }
   эхо();

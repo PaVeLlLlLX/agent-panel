@@ -29,6 +29,7 @@ process.stderr.write(
   "\x1b[2m2026-09-14T17:07:57Z\x1b[0m \x1b[31mERROR\x1b[0m codex_models_manager::manager: failed to refresh available models\n",
 );
 
+const долгие = new Set();
 let номерХода = 0;
 
 const строки = createInterface({ input: process.stdin });
@@ -88,6 +89,21 @@ const строки = createInterface({ input: process.stdin });
     case "turn/start": {
       номерХода += 1;
       const turnId = `turn-${номерХода}`;
+      const текстХода = (з.params.input ?? []).map((в) => в.text ?? "").join("");
+      // ДОЛГИЙ-ХОД: ход идёт, пока его не прервут; ПОЗЖЕ — кончается через 400 мс.
+      if (текстХода.includes("ДОЛГИЙ-ХОД") || текстХода.includes("ПОЗЖЕ")) {
+        ответ({ turn: { id: turnId, status: "inProgress" } });
+        уведомить("turn/started", { threadId: ВЕТКА, turn: { id: turnId, status: "inProgress" } });
+        if (текстХода.includes("ДОЛГИЙ-ХОД")) {
+          долгие.add(turnId);
+          return;
+        }
+        setTimeout(() => {
+          уведомить("item/completed", { item: { type: "agentMessage", id: "i-поздно", text: "поздний ответ" }, threadId: ВЕТКА, turnId });
+          уведомить("turn/completed", { threadId: ВЕТКА, turn: { id: turnId, status: "completed" } });
+        }, 400);
+        return;
+      }
       // Модель и уровень хода — в stderr: тест читает их из диагностики.
       process.stderr.write(`ПАРАМЕТРЫ-ХОДА ${JSON.stringify({ model: з.params.model, effort: з.params.effort })}\n`);
       ответ({ turn: { id: turnId, status: "inProgress" } });
@@ -173,6 +189,12 @@ const строки = createInterface({ input: process.stdin });
     }
     case "turn/interrupt":
       ответ({});
+      // Настоящий Codex присылает конец прерванного хода отдельно и позже ответа.
+      if (долгие.delete(з.params.turnId)) {
+        setTimeout(() => {
+          уведомить("turn/completed", { threadId: ВЕТКА, turn: { id: з.params.turnId, status: "interrupted" } });
+        }, 150);
+      }
       return;
     default:
       отправить({

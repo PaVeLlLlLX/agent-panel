@@ -68,6 +68,11 @@
           "default": "",
           "description": "Команда поиска по памяти проекта: к сообщению человека прикладываются найденные заметки для обоих агентов, панель называет их в беседе. Протокол — как у хука UserPromptSubmit Claude Code (JSON {cwd, prompt} на вход, hookSpecificOutput.additionalContext на выход). Пусто — выключено. Пример: python C:/Users/you/.claude/hooks/memory_search.py"
         },
+        "agentPanel.claudeWeeklyUsage": {
+          "type": "boolean",
+          "default": true,
+          "description": "Показывать в дорожке цикла недельную долю лимита Claude и окно сессии: панель спрашивает `claude -p /usage` при открытии и после ходов Claude, не чаще раза в 5 минут. Запрос не тратит токенов и не оставляет файла сессии. Выключено — видно только состояние пятичасового окна."
+        },
         "agentPanel.claudeMcpConfig": {
           "type": "string",
           "default": "",

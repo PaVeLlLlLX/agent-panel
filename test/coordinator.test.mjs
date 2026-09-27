@@ -128,10 +128,49 @@ test("самостоятельный ход Claude не занимает цел�
   assert.doesNotMatch(codex.полученное[0].text, /Команда завершена успешно/);
 });
 
-test("«Прервать» доставляет прямые сообщения человека из очереди", async () => {
-  // Рецензия Codex 28.09: прямое сообщение ждало конца хода, а после
-  // прерывания конца хода не будет — очередь висела с «в очереди 1».
-  const { к, claude } = комната();
+test("недельная доля Claude запрашивается после его хода, не чаще раза в период", async () => {
+  // Граница владельца — не больше 90% недели Claude; в потоке claude -p доли нет.
+  let вызовов = 0;
+  const { к } = комната(3, {
+    claudeUsage: async () => {
+      вызовов += 1;
+      return { weekPercent: 4, sessionPercent: 28, weekResets: "Oct 4, 12am" };
+    },
+    claudeUsageEveryMs: 60_000,
+  });
+  ход(к, "claude", "ответ");
+  await дождаться(() => к.state.usage.limits.claudeWeek?.percent === 4, "доля недели");
+  assert.deepEqual(к.state.usage.limits.claudeWeek, { percent: 4, session: 28, resets: "Oct 4, 12am" });
+  ход(к, "claude", "ещё ответ");
+  ход(к, "codex", "ответ Codex");
+  await пауза(50);
+  assert.equal(вызовов, 1);
+});
+
+test("сбой запроса недельной доли — доли нет, работа идёт", async () => {
+  const { к, codex } = комната(3, {
+    claudeUsage: async () => {
+      throw new Error("claude не найден");
+    },
+  });
+  await к.fromHuman("сделай", "review");
+  ход(к, "claude", "готово");
+  await дождаться(() => codex.полученное.length === 1, "рецензия");
+  assert.equal(к.state.usage.limits.claudeWeek, undefined);
+});
+
+test("недельную долю можно запросить при открытии панели", async () => {
+  const { к } = комната(3, { claudeUsage: async () => ({ weekPercent: 12 }) });
+  await к.refreshClaudeUsage();
+  assert.deepEqual(к.state.usage.limits.claudeWeek, { percent: 12 });
+});
+
+test("«Прервать» снимает прямые сообщения из очереди и говорит об этом", async () => {
+  // Рецензии Codex 28.09: прямое сообщение ждало конца хода, а после
+  // прерывания его не будет — очередь висела. Отправлять его сразу нельзя:
+  // человек мог прервать именно чтобы отменить, а поздний конец прерванного
+  // хода Codex снял бы цель нового. Снять и назвать — честнее.
+  const { к, claude, события } = комната();
   claude.busy = true;
   claude.interrupt = async () => {
     claude.прерван += 1;
@@ -142,8 +181,17 @@ test("«Прервать» доставляет прямые сообщения 
   await к.interruptAll();
   assert.equal(claude.прерван, 1);
   assert.equal(к.state.queued, 0);
-  assert.equal(claude.полученное.length, 1);
-  assert.match(claude.полученное[0].text, /вопрос/);
+  assert.equal(claude.полученное.length, 0);
+  assert.ok(системные(события).some((е) => /Не отправлено сообщений из очереди: 1/.test(е.text)));
+});
+
+test("«Прервать» во время снимка файлов — сообщение не уходит", async () => {
+  // Рецензия Codex 28.09: счётчик остановок запоминался после снимка.
+  const { к, claude } = комната();
+  const отправка = к.fromHuman("вопрос", "claude");
+  await к.interruptAll();
+  await отправка;
+  assert.equal(claude.полученное.length, 0);
 });
 
 test("сообщение Claude во время его самостоятельного хода ждёт конца этого хода", async () => {
