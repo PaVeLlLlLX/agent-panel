@@ -120,6 +120,56 @@ test("Claude: запрос и решение разрешения знают, о
   }
 });
 
+test("Claude: ход с фоновым субагентом кончается итогом, а не первым result", async () => {
+  // Живая трасса 28.09: в режиме панели result приходит, пока субагент ещё
+  // работает; потом Claude сам продолжает ход. Прежде панель отдавала
+  // рецензенту «агент запущен, жду», а итог никто не проверял.
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await а.send({ text: "ФОНОВЫЙ-СУБАГЕНТ", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "message" && е.text === "агент запущен, жду"), "промежуточная реплика");
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(с.события.filter((е) => е.kind === "turn_completed").length, 0, "ход кончился раньше субагента");
+    assert.equal(а.busy, true, "пока работает субагент, Claude занят");
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода");
+    const порядок = с.события.filter((е) => е.kind === "message" || е.kind === "turn_completed").map((е) => е.kind === "message" ? е.text : "конец");
+    assert.deepEqual(порядок, ["агент запущен, жду", "alpha", "конец"]);
+    assert.equal(а.busy, false);
+    const субагента = с.события.filter((е) => е.parentCallId === "toolu_agent").map((е) => е.kind);
+    assert.deepEqual(субагента, ["tool_call", "tool_result"], "действия субагента помечены вызовом, который его запустил");
+    assert.ok(с.события.some((е) => е.kind === "diagnostic" && /субагент/.test(е.text ?? "")), "человек видит, почему ход не кончился");
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: фоновый Bash ход не держит — ждут только субагентов", async () => {
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await а.send({ text: "ФОНОВЫЙ-BASH", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода");
+    assert.equal(а.busy, false);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: субагент кончился, а продолжения нет — ход закрывается по сроку", async () => {
+  const с = собиратель();
+  const а = claude(с, { backgroundGraceMs: 200 });
+  try {
+    await а.send({ text: "ФОНОВЫЙ-БЕЗ-ПРОДОЛЖЕНИЯ", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода по сроку");
+    const конец = с.события.find((е) => е.kind === "turn_completed");
+    assert.match(конец.text, /продолжени/);
+    assert.equal(а.busy, false);
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: пользовательские настройки с хуками по умолчанию не загружаются", async () => {
   const с = собиратель();
   const а = claude(с);

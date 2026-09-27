@@ -187,6 +187,51 @@ const строки = createInterface({ input: process.stdin });
     return;
   }
 
+  // ФОНОВЫЙ-СУБАГЕНТ / ФОНОВЫЙ-БЕЗ-ПРОДОЛЖЕНИЯ / ФОНОВЫЙ-BASH: форма снята живой
+  // трассой Claude Code 2.1.220 в режиме stream-json 28.09.2026. Agent по
+  // умолчанию запускает субагента в фоне: result приходит раньше, чем субагент
+  // закончил; потом записи субагента с parent_tool_use_id, task_notification,
+  // новый init и настоящий итог со своим result.
+  if (текст.includes("ФОНОВЫЙ-")) {
+    const bash = текст.includes("ФОНОВЫЙ-BASH");
+    записать({
+      type: "assistant",
+      parent_tool_use_id: null,
+      message: { content: [{ type: "tool_use", id: "toolu_agent", name: bash ? "Bash" : "Agent", input: { description: "фон" } }] },
+      session_id: СЕССИЯ,
+    });
+    записать({ type: "system", subtype: "task_started", task_id: "t1", tool_use_id: "toolu_agent", task_type: bash ? "local_bash" : "local_agent", session_id: СЕССИЯ });
+    записать({
+      type: "user",
+      parent_tool_use_id: null,
+      message: { content: [{ type: "tool_result", tool_use_id: "toolu_agent", content: [{ type: "text", text: "Async agent launched successfully." }] }] },
+      session_id: СЕССИЯ,
+    });
+    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "агент запущен, жду" }] }, session_id: СЕССИЯ });
+    записать({ type: "result", subtype: "success", is_error: false, num_turns: 2, session_id: СЕССИЯ });
+    if (bash) return;
+    setTimeout(() => {
+      записать({
+        type: "assistant",
+        parent_tool_use_id: "toolu_agent",
+        message: { content: [{ type: "tool_use", id: "toolu_sub", name: "Read", input: { file_path: "a.txt" } }] },
+        session_id: СЕССИЯ,
+      });
+      записать({
+        type: "user",
+        parent_tool_use_id: "toolu_agent",
+        message: { content: [{ type: "tool_result", tool_use_id: "toolu_sub", content: "alpha" }] },
+        session_id: СЕССИЯ,
+      });
+      записать({ type: "system", subtype: "task_notification", task_id: "t1", tool_use_id: "toolu_agent", status: "completed", session_id: СЕССИЯ });
+      if (текст.includes("ФОНОВЫЙ-БЕЗ-ПРОДОЛЖЕНИЯ")) return;
+      записать({ type: "system", subtype: "init", session_id: СЕССИЯ, model: "fake", tools: [], argv, pid: process.pid });
+      записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "alpha" }] }, session_id: СЕССИЯ });
+      записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ });
+    }, 300);
+    return;
+  }
+
   // ЧУЖОЙ-ЗАПРОС: control_request, который панель не обслуживает. Без ответа
   // настоящий Claude ждал бы вечно.
   if (текст.includes("ЧУЖОЙ-ЗАПРОС")) {

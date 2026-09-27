@@ -238,6 +238,20 @@ test("рецензент получает полный вывод, обреза�
   журнал.close();
 });
 
+test("рецензент видит, какие действия сделал субагент, а не сам Claude", async () => {
+  const { к, codex, журнал } = комната();
+  await к.fromHuman("задача", "review");
+  к.handle(событие("claude", "tool_call", { tool: "Agent", callId: "toolu_agent", text: "{}" }));
+  к.handle(событие("claude", "tool_call", { tool: "Read", callId: "toolu_sub", parentCallId: "toolu_agent", text: "a.txt" }));
+  к.handle(событие("claude", "tool_result", { tool: "Read", callId: "toolu_sub", parentCallId: "toolu_agent", text: "alpha" }));
+  ход(к, "claude", "итог");
+  await дождаться(() => codex.полученное.length === 1, "передача рецензенту");
+  const т = codex.полученное[0].text;
+  assert.match(т, /вызов инструмента Read · вызов toolu_sub · субагент вызова toolu_agent/);
+  assert.match(т, /СЫРОЙ вывод инструмента Read · вызов toolu_sub · субагент вызова toolu_agent/);
+  журнал.close();
+});
+
 test("выводы больше бюджета проверки режутся поровну: начало и конец, пропуск указан", async () => {
   const { к, codex, журнал } = комната(3, { evidenceBudget: 30_000 });
   await к.fromHuman("задача", "review");

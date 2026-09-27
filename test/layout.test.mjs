@@ -542,3 +542,37 @@ test("уровень рассуждения можно вернуть к умо�
   assert.equal(р.сбросВКонце, true);
   assert.deepEqual(р.выборы, ["high", ""]);
 });
+
+test("действия субагента отмечены в чётках и в списке", { skip: БЕЗ_БРАУЗЕРА }, () => {
+  const р = открыть(
+    `
+    const с = (kind, доп) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...доп });
+    послать({ type: "event", событие: с("tool_call", { tool: "Agent", callId: "toolu_agent", text: "{}" }) });
+    послать({ type: "event", событие: с("tool_call", { tool: "Read", callId: "toolu_sub", parentCallId: "toolu_agent", text: "a.txt" }) });
+    послать({ type: "event", событие: с("tool_result", { tool: "Read", callId: "toolu_sub", parentCallId: "toolu_agent", text: "alpha" }) });
+    итог.бусины = [...document.querySelectorAll(".действия .чётки .бусина")].map((б) => б.classList.contains("субагент"));
+    итог.метки = [...document.querySelectorAll(".действия .вызов .кто")].map((м) => м.textContent);
+  `,
+    { сИнтерфейсом: true },
+  );
+  assert.deepEqual(р.бусины, [false, true]);
+  assert.deepEqual(р.метки, ["субагент"]);
+});
+
+test("реплика субагента — отдельный приглушённый блок, пузырь Claude не трогает", { skip: БЕЗ_БРАУЗЕРА }, () => {
+  // Живая трасса 28.09: текст фонового субагента приходит в поток и без
+  // --forward-subagent-text, с parent_tool_use_id.
+  const р = открыть(
+    `
+    const с = (kind, доп) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...доп });
+    послать({ type: "event", событие: с("text_delta", { text: "Claude пишет" }) });
+    послать({ type: "event", событие: с("message", { text: "Прочитал файл.", parentCallId: "toolu_agent" }) });
+    послать({ type: "event", событие: с("message", { text: "Claude пишет итог" }) });
+    итог.субагент = [...document.querySelectorAll(".пузырь.субагент")].map((п) => п.querySelector(".автор .имя").textContent + ": " + п.querySelector(".текст").textContent.trim());
+    итог.claude = [...document.querySelectorAll(".пузырь.claude:not(.субагент)")].map((п) => п.querySelector(".текст").textContent.trim());
+  `,
+    { сИнтерфейсом: true },
+  );
+  assert.deepEqual(р.субагент, ["Субагент: Прочитал файл."]);
+  assert.deepEqual(р.claude, ["Claude пишет итог"]);
+});

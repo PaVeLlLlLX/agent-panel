@@ -77,6 +77,11 @@ export interface ClaudeOptions {
   /** Уровень рассуждения (--effort); "" или нет — по умолчанию. */
   readonly effort?: string;
   readonly onSessionId?: (id: string) => void;
+  /**
+   * Сколько ждать продолжения хода после того, как фоновые субагенты
+   * закончили, а Claude ещё не начал итоговый запрос (мс, по умолчанию 60 000).
+   */
+  readonly backgroundGraceMs?: number;
 }
 
 /**
@@ -185,6 +190,12 @@ export function текстРезультата(содержимое: unknown): s
     .join(String.fromCharCode(10));
 }
 
+/** Чей субагент: parent_tool_use_id записи, если она не от самого Claude. */
+function родительИз(запись: Record<string, unknown>): { parentCallId?: string } {
+  const id = запись["parent_tool_use_id"];
+  return typeof id === "string" && id ? { parentCallId: id } : {};
+}
+
 export class ClaudeAdapter implements Adapter {
   readonly id = "claude" as const;
 
@@ -197,6 +208,20 @@ export class ClaudeAdapter implements Adapter {
   readonly #запросы = new Map<string, ОткрытыйЗапрос>();
   /** tool_use_id вызовов, отклонённых человеком: в итоге хода это не отказ без спроса. */
   readonly #отклонённыеЧеловеком = new Set<string>();
+  /**
+   * Ход с фоновыми субагентами (живая трасса Claude Code 2.1.220, 28.09):
+   * result приходит, пока субагент ещё работает, а после него Claude сам
+   * начинает итоговый запрос — новый init, реплика, свой result. Ход
+   * кончается, когда субагентов нет, открытых запросов нет и продолжения не
+   * ждём. Фоновые Bash (task_type local_bash) ход не держат: сервер,
+   * запущенный в фоне, закончить его не дал бы никогда.
+   */
+  readonly #субагенты = new Set<string>();
+  #открытыхЗапросов = 0;
+  #ждёмПродолжения = false;
+  #ходДержится = false;
+  #отложенныеОтказы: string[] = [];
+  #срокПродолжения: NodeJS.Timeout | undefined;
   readonly #останавливаемые = new WeakSet<object>();
   readonly #отчитанные = new WeakSet<object>();
   /** Выбор человека и выбор, с которым запущен текущий процесс. */
@@ -307,6 +332,7 @@ export class ClaudeAdapter implements Adapter {
       message: { role: "user", content: [{ type: "text", text: this.#оформить(prompt) }] },
     };
     this.#занят = true;
+    this.#открытыхЗапросов = 0;
     this.#записать(процесс, запись);
   }
 
@@ -445,6 +471,7 @@ export class ClaudeAdapter implements Adapter {
     const процесс = this.#процесс;
     this.#процесс = undefined;
     this.#занят = false;
+    this.#сброситьФон();
     if (!процесс) return;
     this.#останавливаемые.add(процесс);
     // Карточки закрываются сразу: после остановки ответ уже некому отдать,
@@ -490,10 +517,16 @@ export class ClaudeAdapter implements Adapter {
 
     const вид = запись["type"];
     if (вид === "system" && запись["subtype"] === "init") {
+      // Начало запроса модели: первого на сообщение или итогового после субагентов.
+      this.#открытыхЗапросов += 1;
+      this.#ждёмПродолжения = false;
+      this.#отменитьСрок();
       this.#выдать("diagnostic", "stream", {
         text: `сессия ${String(запись["session_id"]).slice(0, 8)}, модель ${String(запись["model"])}`,
         raw: запись,
       });
+    } else if (вид === "system") {
+      this.#задача(запись);
     } else if (вид === "stream_event") {
       this.#дельта(запись);
     } else if (вид === "assistant") {
@@ -503,19 +536,98 @@ export class ClaudeAdapter implements Adapter {
     } else if (вид === "control_request") {
       this.#запросАгента(запись);
     } else if (вид === "result") {
-      this.#занят = false;
-      this.#ходИдёт = undefined;
+      this.#открытыхЗапросов = Math.max(0, this.#открытыхЗапросов - 1);
       const ошибка = запись["is_error"] === true;
-      const отказы = разобратьОтказы(запись["permission_denials"], this.#отклонённыеЧеловеком);
-      this.#выдать("turn_completed", "turn", {
-        ...(отказы.length > 0 ? { denials: отказы } : {}),
-        text: ошибка
+      this.#отложенныеОтказы.push(...разобратьОтказы(запись["permission_denials"], this.#отклонённыеЧеловеком));
+      if (!ошибка && (this.#субагенты.size > 0 || this.#открытыхЗапросов > 0 || this.#ждёмПродолжения)) {
+        if (!this.#ходДержится) {
+          this.#ходДержится = true;
+          this.#выдать("diagnostic", "stream", {
+            text:
+              `ход продолжается: Claude ждёт субагентов (${this.#субагенты.size}) — ` +
+              "итог и проверка будут после их работы",
+          });
+        }
+        this.#назначитьСрок();
+        return;
+      }
+      this.#закончитьХод(
+        ошибка
           ? `ход завершён с ошибкой: ${String(запись["stop_reason"] ?? запись["subtype"] ?? "причина не указана")}`
           : `ход завершён, реплик ${String(запись["num_turns"])}`,
-        raw: запись,
-        ...(ошибка ? { failed: true } : {}),
-      });
+        ошибка,
+        запись,
+      );
     }
+  }
+
+  /** Фоновые задачи: следим только за субагентами (task_type local_agent). */
+  #задача(запись: Record<string, unknown>): void {
+    const вид = запись["subtype"];
+    const id = typeof запись["task_id"] === "string" ? запись["task_id"] : undefined;
+    const закончить = (задача: string | undefined) => {
+      if (задача && this.#субагенты.delete(задача)) {
+        // Субагент кончил — Claude сам начнёт итоговый запрос.
+        this.#ждёмПродолжения = true;
+        this.#назначитьСрок();
+      }
+    };
+    if (вид === "task_started") {
+      if (id && запись["task_type"] === "local_agent") this.#субагенты.add(id);
+    } else if (вид === "task_notification") {
+      закончить(id);
+    } else if (вид === "task_updated") {
+      const статус = (запись["patch"] as Record<string, unknown> | undefined)?.["status"];
+      if (typeof статус === "string" && ["completed", "failed", "killed", "stopped", "cancelled"].includes(статус)) {
+        закончить(id);
+      }
+    } else if (вид === "background_tasks_changed" && Array.isArray(запись["tasks"])) {
+      const идут = new Set(
+        (запись["tasks"] as Record<string, unknown>[])
+          .filter((з) => з?.["task_type"] === "local_agent" && typeof з["task_id"] === "string")
+          .map((з) => з["task_id"] as string),
+      );
+      for (const задача of [...this.#субагенты]) if (!идут.has(задача)) закончить(задача);
+      for (const задача of идут) this.#субагенты.add(задача);
+    }
+  }
+
+  /** Срок ожидания продолжения — только когда ход держится и субагентов уже нет. */
+  #назначитьСрок(): void {
+    if (!this.#ходДержится || this.#субагенты.size > 0 || this.#срокПродолжения) return;
+    this.#срокПродолжения = setTimeout(() => {
+      this.#срокПродолжения = undefined;
+      if (this.#ходДержится) {
+        this.#закончитьХод("ход завершён: субагенты закончили, продолжения от Claude не было", false);
+      }
+    }, this.опции.backgroundGraceMs ?? 60_000);
+  }
+
+  #отменитьСрок(): void {
+    if (this.#срокПродолжения) clearTimeout(this.#срокПродолжения);
+    this.#срокПродолжения = undefined;
+  }
+
+  #сброситьФон(): void {
+    this.#отменитьСрок();
+    this.#субагенты.clear();
+    this.#открытыхЗапросов = 0;
+    this.#ждёмПродолжения = false;
+    this.#ходДержится = false;
+    this.#отложенныеОтказы = [];
+  }
+
+  #закончитьХод(текст: string, ошибка: boolean, запись?: Record<string, unknown>): void {
+    const отказы = this.#отложенныеОтказы;
+    this.#сброситьФон();
+    this.#занят = false;
+    this.#ходИдёт = undefined;
+    this.#выдать("turn_completed", "turn", {
+      ...(отказы.length > 0 ? { denials: отказы } : {}),
+      text: текст,
+      ...(запись ? { raw: запись } : {}),
+      ...(ошибка ? { failed: true } : {}),
+    });
   }
 
   /** Запрос агента к панели. Необслуживаемый получает ошибку: без ответа агент ждал бы вечно. */
@@ -569,6 +681,9 @@ export class ClaudeAdapter implements Adapter {
   }
 
   #дельта(запись: Record<string, unknown>): void {
+    // Поток субагента в живой пузырь Claude не идёт: его текст придёт целиком
+    // записью assistant с parent_tool_use_id.
+    if (родительИз(запись).parentCallId) return;
     const событие = запись["event"] as Record<string, unknown> | undefined;
     if (!событие) return;
     if (событие["type"] === "message_start") {
@@ -583,14 +698,16 @@ export class ClaudeAdapter implements Adapter {
   }
 
   #блокиАссистента(запись: Record<string, unknown>): void {
+    const родитель = родительИз(запись);
     for (const блок of this.#блоки(запись)) {
       if (блок["type"] === "text" && typeof блок["text"] === "string") {
-        this.#выдать("message", "turn", { text: clamp(блок["text"]) });
+        this.#выдать("message", "turn", { text: clamp(блок["text"]), ...родитель });
       } else if (блок["type"] === "tool_use") {
         const id = String(блок["id"] ?? "");
         const имя = String(блок["name"] ?? "?");
         this.#вызовы.set(id, имя);
         this.#выдать("tool_call", "turn", {
+          ...родитель,
           tool: имя,
           callId: id,
           text: clamp(JSON.stringify(блок["input"] ?? {}, null, 1)),
@@ -602,6 +719,7 @@ export class ClaudeAdapter implements Adapter {
   }
 
   #блокиПользователя(запись: Record<string, unknown>): void {
+    const родитель = родительИз(запись);
     for (const блок of this.#блоки(запись)) {
       if (блок["type"] !== "tool_result") continue;
       const id = String(блок["tool_use_id"] ?? "");
@@ -610,6 +728,7 @@ export class ClaudeAdapter implements Adapter {
       this.#выдать("tool_result", "turn", {
         tool: this.#вызовы.get(id) ?? "?",
         callId: id,
+        ...родитель,
         ...clampKeepingFull(текст),
         raw: блок,
       });

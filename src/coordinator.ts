@@ -709,8 +709,12 @@ function собрать(
   );
   const части: string[] = [];
   for (const е of материал) {
-    const вызов = е.callId ? ` · вызов ${е.callId}` : "";
-    if (е.kind === "message" && е.text) части.push(е.text);
+    const субагент = е.parentCallId ? ` · субагент вызова ${е.parentCallId}` : "";
+    const вызов = (е.callId ? ` · вызов ${е.callId}` : "") + субагент;
+    if (е.kind === "message" && е.text && е.parentCallId) {
+      // Слова субагента — не слова Claude.
+      части.push(`--- реплика субагента вызова ${е.parentCallId} ---${НС}${е.text}`);
+    } else if (е.kind === "message" && е.text) части.push(е.text);
     else if (сИнструментами && е.kind === "tool_call") {
       части.push(`--- вызов инструмента ${е.tool ?? "?"}${вызов} ---${НС}${е.text ?? ""}`);
     } else if (сИнструментами && е.kind === "tool_result") {

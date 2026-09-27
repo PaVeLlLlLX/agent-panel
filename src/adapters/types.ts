@@ -76,6 +76,11 @@ export interface PanelEvent {
    * окрашивает бусину вызова, когда человек отказал.
    */
   readonly toolCallId?: string;
+  /**
+   * Вызов инструмента, запустивший субагента, чьё это действие или реплика
+   * (у Claude — parent_tool_use_id). Нет — действие самого агента.
+   */
+  readonly parentCallId?: string;
   /** Ход, в который вошло событие. */
   readonly turnId?: string;
   /**
