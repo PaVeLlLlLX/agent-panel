@@ -255,6 +255,51 @@ test("Claude: субагент молчит — ход закрывается п
   }
 });
 
+test("Claude: второй субагент молчит после итогового запроса — срок тишины всё равно идёт", async () => {
+  // Рецензия Codex 28.09: init продолжения снимал и таймер тишины.
+  const с = собиратель();
+  const а = claude(с, { backgroundGraceMs: 200, backgroundIdleMs: 400 });
+  try {
+    await а.send({ text: "ОДИН-МОЛЧИТ", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода по тишине", 5000);
+    assert.match(с.события.find((е) => е.kind === "turn_completed").text, /не сообщил/);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: срок тишины не закрывает открытый запрос модели", async () => {
+  const с = собиратель();
+  const а = claude(с, { backgroundGraceMs: 200, backgroundIdleMs: 300 });
+  try {
+    await а.send({ text: "ДОЛГИЙ-ЗАПРОС", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "message" && е.text === "поздний"), "поздний ответ", 5000);
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода");
+    await new Promise((r) => setTimeout(r, 300));
+    const концы = с.события.filter((е) => е.kind === "turn_completed");
+    assert.equal(концы.length, 1);
+    const порядок = с.события.filter((е) => е.kind === "message" || е.kind === "turn_completed").map((е) => е.kind === "message" ? е.text : "конец");
+    assert.deepEqual(порядок, ["жду", "поздний", "конец"]);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: после закрытия по тишине процесс остановлен — поздних концов хода нет", async () => {
+  const с = собиратель();
+  const а = claude(с, { backgroundGraceMs: 200, backgroundIdleMs: 300 });
+  try {
+    await а.send({ text: "МОЛЧАЛИВЫЙ-СУБАГЕНТ", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец по тишине", 5000);
+    await дождаться(() => с.события.some((е) => е.kind === "diagnostic" && /остановлен/.test(е.text ?? "")), "остановка процесса");
+    await а.send({ text: "здравствуй", from: "human" });
+    await дождаться(() => с.события.filter((е) => е.kind === "turn_completed").length === 2, "следующий ход");
+    assert.equal(с.события.filter((е) => е.kind === "error").length, 0, "плановая остановка — не ошибка");
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: фоновый Bash ход не держит — ждут только субагентов", async () => {
   const с = собиратель();
   const а = claude(с);
@@ -904,6 +949,18 @@ test("Codex: расход хода — по своему turnId, с нескол
     await а.send({ text: "РАСХОД-СЛОЖНЫЙ", from: "claude" });
     await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода");
     assert.deepEqual(с.события.find((е) => е.kind === "turn_completed").usage, { input: 1200, cached: 0, output: 30 });
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Codex: расход без известного хода не приписывается текущему", async () => {
+  const с = собиратель();
+  const а = codex(с);
+  try {
+    await а.send({ text: "РАСХОД-БЕЗ-ХОДА", from: "claude" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода");
+    assert.equal(с.события.find((е) => е.kind === "turn_completed").usage, undefined);
   } finally {
     await а.stop();
   }

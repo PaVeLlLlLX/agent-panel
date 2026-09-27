@@ -161,7 +161,10 @@ export class CodexAdapter implements Adapter {
   }
 
   #учестьРасход(сведения: unknown, ходУведомления: unknown): void {
-    if (typeof ходУведомления === "string" && this.#ход !== undefined && ходУведомления !== this.#ход) return;
+    // Расход — только своего хода: с turnId — если он совпадает с известным
+    // текущим; без turnId — если ход идёт (рецензия Codex 28.09).
+    const ход = typeof ходУведомления === "string" ? ходУведомления : undefined;
+    if (ход !== undefined ? ход !== this.#ход : !this.#занят) return;
     const с = (сведения ?? {}) as Record<string, unknown>;
     const разобрать = (о: unknown): TurnUsage | undefined => {
       const з = о as Record<string, unknown> | undefined;

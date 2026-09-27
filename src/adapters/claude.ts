@@ -648,9 +648,13 @@ export class ClaudeAdapter implements Adapter {
     }, this.опции.backgroundGraceMs ?? 15_000);
   }
 
+  /** Срок продолжения. Срок тишины — отдельно: итоговый init его не снимает (рецензия Codex 28.09). */
   #отменитьСрок(): void {
     if (this.#срокПродолжения) clearTimeout(this.#срокПродолжения);
     this.#срокПродолжения = undefined;
+  }
+
+  #отменитьТишину(): void {
     if (this.#срокТишины) clearTimeout(this.#срокТишины);
     this.#срокТишины = undefined;
   }
@@ -662,12 +666,18 @@ export class ClaudeAdapter implements Adapter {
       this.#срокТишины = undefined;
       if (!this.#ходДержится) return;
       const прошло = Date.now() - this.#последняяЗапись;
-      if (прошло >= предел) {
+      // Открытый запрос модели кончится своим result — тишина его не закрывает.
+      if (прошло >= предел && this.#открытыхЗапросов === 0) {
         this.#субагенты.clear();
         this.#закончитьХод(
           `ход завершён: субагенты не сообщили о завершении за ${Math.round(предел / 1000)} с тишины`,
           false,
         );
+        // Процесс останавливается: его поздние init и result иначе закончили бы
+        // следующий ход. Сессия сохранена — следующее сообщение её продолжит.
+        void this.stop();
+      } else if (прошло >= предел) {
+        this.#срокТишины = setTimeout(проверить, предел);
       } else {
         this.#срокТишины = setTimeout(проверить, предел - прошло);
       }
@@ -691,6 +701,7 @@ export class ClaudeAdapter implements Adapter {
    */
   #сброситьХод(): void {
     this.#отменитьСрок();
+    this.#отменитьТишину();
     this.#открытыхЗапросов = 0;
     this.#ждёмПродолжения = false;
     this.#ходДержится = false;

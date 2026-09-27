@@ -92,7 +92,9 @@ const строки = createInterface({ input: process.stdin });
       process.stderr.write(`ПАРАМЕТРЫ-ХОДА ${JSON.stringify({ model: з.params.model, effort: з.params.effort })}\n`);
       ответ({ turn: { id: turnId, status: "inProgress" } });
       const текст = (з.params.input ?? []).map((в) => в.text ?? "").join("");
-      уведомить("turn/started", { threadId: ВЕТКА, turn: { id: turnId, status: "inProgress" } });
+      if (!текст.includes("РАСХОД-БЕЗ-ХОДА")) {
+        уведомить("turn/started", { threadId: ВЕТКА, turn: { id: turnId, status: "inProgress" } });
+      }
 
       if (текст.includes("ЗАПИСАТЬ")) {
         отправить({
@@ -110,6 +112,16 @@ const строки = createInterface({ input: process.stdin });
           threadId: ВЕТКА,
           turnId,
         });
+      }
+      if (текст.includes("РАСХОД-БЕЗ-ХОДА")) {
+        // Повтор расхода прежнего хода, а turn/started для текущего не пришёл.
+        уведомить("thread/tokenUsage/updated", {
+          threadId: ВЕТКА,
+          turnId: "turn-old",
+          tokenUsage: { total: { inputTokens: 5000, cachedInputTokens: 0, outputTokens: 400 }, last: { inputTokens: 900, cachedInputTokens: 0, outputTokens: 40 } },
+        });
+        уведомить("turn/completed", { threadId: ВЕТКА, turn: { id: turnId, status: "completed" } });
+        return;
       }
       if (текст.includes("РАСХОД-СЛОЖНЫЙ")) {
         const расход = (ход, вход, выход, последнийВход, последнийВыход) =>
