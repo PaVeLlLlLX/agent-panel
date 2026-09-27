@@ -216,6 +216,12 @@ const строки = createInterface({ input: process.stdin });
     }, 100);
     return;
   }
+  // МОЛЧАЛИВЫЙ-СУБАГЕНТ: субагент запущен и больше о себе не сообщает.
+  if (текст.includes("МОЛЧАЛИВЫЙ-СУБАГЕНТ")) {
+    субагентЗапущен("t1");
+    итог("жду");
+    return;
+  }
   // СНИМОК-БЕЗ-ТИПА: background_tasks_changed с известным id без task_type.
   if (текст.includes("СНИМОК-БЕЗ-ТИПА")) {
     субагентЗапущен("t1");
@@ -242,7 +248,8 @@ const строки = createInterface({ input: process.stdin });
   // УПАСТЬ-ПРИ-СУБАГЕНТЕ: процесс умирает, пока субагент работает.
   if (текст.includes("УПАСТЬ-ПРИ-СУБАГЕНТЕ")) {
     субагентЗапущен("t1");
-    итог("жду");
+    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "жду" }] }, session_id: СЕССИЯ });
+    записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ, usage: { input_tokens: 777, output_tokens: 7 } });
     setTimeout(() => process.exit(3), 50);
     return;
   }

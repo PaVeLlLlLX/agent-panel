@@ -86,6 +86,12 @@ export interface ClaudeOptions {
    * закончили, а Claude ещё не начал итоговый запрос (мс, по умолчанию 15 000: итоговый запрос по живой трассе начинается через 0,1 с).
    */
   readonly backgroundGraceMs?: number;
+  /**
+   * Сколько ждать хоть одной записи от процесса, пока ход держится ради
+   * субагентов (мс, по умолчанию 10 минут). Субагент, не сообщивший о
+   * завершении, иначе держал бы ход вечно (рецензия Codex 28.09).
+   */
+  readonly backgroundIdleMs?: number;
 }
 
 /**
@@ -241,6 +247,9 @@ export class ClaudeAdapter implements Adapter {
   /** Расход хода — сумма по всем его result; лимит — последнее сведение CLI. */
   #расходХода: TurnUsage = NO_USAGE;
   #лимит: LimitInfo | undefined;
+  /** Время последней записи процесса и срок тишины удерживаемого хода. */
+  #последняяЗапись = 0;
+  #срокТишины: NodeJS.Timeout | undefined;
   readonly #останавливаемые = new WeakSet<object>();
   readonly #отчитанные = new WeakSet<object>();
   /** Выбор человека и выбор, с которым запущен текущий процесс. */
@@ -523,6 +532,7 @@ export class ClaudeAdapter implements Adapter {
   #разобрать(строка: string): void {
     const обрезанная = строка.trim();
     if (!обрезанная) return;
+    this.#последняяЗапись = Date.now();
     let запись: Record<string, unknown>;
     try {
       запись = JSON.parse(обрезанная) as Record<string, unknown>;
@@ -572,6 +582,7 @@ export class ClaudeAdapter implements Adapter {
       if (!ошибка && (this.#субагенты.size > 0 || this.#открытыхЗапросов > 0 || this.#ждёмПродолжения)) {
         if (!this.#ходДержится) {
           this.#ходДержится = true;
+          this.#следитьЗаТишиной();
           this.#выдать("diagnostic", "stream", {
             text:
               `ход продолжается: Claude ждёт субагентов (${this.#субагенты.size}) — ` +
@@ -640,11 +651,36 @@ export class ClaudeAdapter implements Adapter {
   #отменитьСрок(): void {
     if (this.#срокПродолжения) clearTimeout(this.#срокПродолжения);
     this.#срокПродолжения = undefined;
+    if (this.#срокТишины) clearTimeout(this.#срокТишины);
+    this.#срокТишины = undefined;
+  }
+
+  /** Держится ход, а процесс молчит дольше backgroundIdleMs — ход закрывается. */
+  #следитьЗаТишиной(): void {
+    const предел = this.опции.backgroundIdleMs ?? 600_000;
+    const проверить = () => {
+      this.#срокТишины = undefined;
+      if (!this.#ходДержится) return;
+      const прошло = Date.now() - this.#последняяЗапись;
+      if (прошло >= предел) {
+        this.#субагенты.clear();
+        this.#закончитьХод(
+          `ход завершён: субагенты не сообщили о завершении за ${Math.round(предел / 1000)} с тишины`,
+          false,
+        );
+      } else {
+        this.#срокТишины = setTimeout(проверить, предел - прошло);
+      }
+    };
+    if (this.#срокТишины) clearTimeout(this.#срокТишины);
+    this.#срокТишины = setTimeout(проверить, предел);
   }
 
   /** Всё состояние фона — при остановке и смерти процесса. */
   #сброситьФон(): void {
     this.#субагенты.clear();
+    // Расход умершего процесса к следующему ходу не относится (рецензия Codex 28.09).
+    this.#расходХода = NO_USAGE;
     this.#сброситьХод();
   }
 

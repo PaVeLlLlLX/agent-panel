@@ -228,6 +228,33 @@ test("Claude: процесс умер при работающем субаген
   }
 });
 
+test("Claude: расход умершего процесса не переходит в следующий ход", async () => {
+  const с = собиратель();
+  const а = claude(с, { backgroundGraceMs: 200 });
+  try {
+    await а.send({ text: "УПАСТЬ-ПРИ-СУБАГЕНТЕ", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "error"), "ошибка процесса");
+    await а.send({ text: "здравствуй", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец нового хода");
+    assert.equal(с.события.find((е) => е.kind === "turn_completed").usage, undefined, "в ход попал расход умершего процесса");
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: субагент молчит — ход закрывается по сроку тишины, а не висит", async () => {
+  const с = собиратель();
+  const а = claude(с, { backgroundGraceMs: 200, backgroundIdleMs: 300 });
+  try {
+    await а.send({ text: "МОЛЧАЛИВЫЙ-СУБАГЕНТ", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода по тишине", 5000);
+    assert.match(с.события.find((е) => е.kind === "turn_completed").text, /не сообщил/);
+    assert.equal(а.busy, false);
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: фоновый Bash ход не держит — ждут только субагентов", async () => {
   const с = собиратель();
   const а = claude(с);
@@ -863,6 +890,20 @@ test("Codex: расход хода и недельный лимит из уве�
     const конец = с.события.find((е) => е.kind === "turn_completed");
     assert.deepEqual(конец.usage, { input: 17522, cached: 7936, output: 5 });
     assert.deepEqual(конец.limit, { percent: 8, window: "week", resetsAt: 1791057755000 });
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Codex: расход хода — по своему turnId, с несколькими запросами и сбросом итога", async () => {
+  // Рецензия Codex 28.09: повтор расхода прежнего хода при возобновлении,
+  // несколько запросов модели в ходе и сброс накопительного итога после сжатия.
+  const с = собиратель();
+  const а = codex(с);
+  try {
+    await а.send({ text: "РАСХОД-СЛОЖНЫЙ", from: "claude" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода");
+    assert.deepEqual(с.события.find((е) => е.kind === "turn_completed").usage, { input: 1200, cached: 0, output: 30 });
   } finally {
     await а.stop();
   }

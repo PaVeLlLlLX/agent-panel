@@ -126,18 +126,42 @@ interface Контекст {
   отчитан: boolean;
 }
 
+function сложить(а: TurnUsage, б: TurnUsage): TurnUsage {
+  return { input: а.input + б.input, cached: а.cached + б.cached, output: а.output + б.output };
+}
+
+function вычесть(а: TurnUsage, б: TurnUsage): TurnUsage {
+  return { input: а.input - б.input, cached: а.cached - б.cached, output: а.output - б.output };
+}
+
+function неОтрицательно(а: TurnUsage): TurnUsage {
+  return { input: Math.max(0, а.input), cached: Math.max(0, а.cached), output: Math.max(0, а.output) };
+}
+
 export class CodexAdapter implements Adapter {
   /**
    * Расход хода. app-server шлёт накопительный итог по ветке (total) и итог
-   * последнего запроса модели (last); ход — разность итогов до и после. Для
-   * первого хода возобновлённой ветки итога «до» нет — тогда last.
+   * последнего запроса модели (last), с turnId. Ход считается от основы
+   * «итог минус последний запрос» в первом уведомлении хода: так верно и для
+   * первого хода возобновлённой ветки, и для хода из нескольких запросов.
+   * Уведомления чужого хода (повтор при возобновлении) не учитываются; сброс
+   * итога после сжатия контекста переносит набранное (рецензия Codex 28.09).
    */
-  #последнийИтог: TurnUsage | undefined;
-  #итогДоХода: TurnUsage | undefined;
+  #основа: TurnUsage | undefined;
+  #перенос: TurnUsage = { input: 0, cached: 0, output: 0 };
+  #прежнийИтог: TurnUsage | undefined;
   #расходХода: TurnUsage | undefined;
   #лимит: LimitInfo | undefined;
 
-  #учестьРасход(сведения: unknown): void {
+  #новыйХодРасхода(): void {
+    this.#основа = undefined;
+    this.#перенос = { input: 0, cached: 0, output: 0 };
+    this.#прежнийИтог = undefined;
+    this.#расходХода = undefined;
+  }
+
+  #учестьРасход(сведения: unknown, ходУведомления: unknown): void {
+    if (typeof ходУведомления === "string" && this.#ход !== undefined && ходУведомления !== this.#ход) return;
     const с = (сведения ?? {}) as Record<string, unknown>;
     const разобрать = (о: unknown): TurnUsage | undefined => {
       const з = о as Record<string, unknown> | undefined;
@@ -149,18 +173,21 @@ export class CodexAdapter implements Adapter {
       };
     };
     const итог = разобрать(с["total"]);
-    const последний = разобрать(с["last"]);
-    const до = this.#итогДоХода;
-    if (итог && до) {
-      this.#расходХода = {
-        input: итог.input - до.input,
-        cached: итог.cached - до.cached,
-        output: итог.output - до.output,
-      };
-    } else if (последний) {
-      this.#расходХода = последний;
+    const последний = разобрать(с["last"]) ?? { input: 0, cached: 0, output: 0 };
+    if (!итог) {
+      if (с["last"]) this.#расходХода = сложить(this.#расходХода ?? this.#перенос, последний);
+      return;
     }
-    if (итог) this.#последнийИтог = итог;
+    const прежний = this.#прежнийИтог;
+    if (!this.#основа) {
+      this.#основа = неОтрицательно(вычесть(итог, последний));
+    } else if (прежний && (итог.input < прежний.input || итог.output < прежний.output)) {
+      // Итог сброшен (сжатие контекста): набранное до сброса переносится.
+      this.#перенос = сложить(this.#перенос, неОтрицательно(вычесть(прежний, this.#основа)));
+      this.#основа = неОтрицательно(вычесть(итог, последний));
+    }
+    this.#прежнийИтог = итог;
+    this.#расходХода = сложить(this.#перенос, неОтрицательно(вычесть(итог, this.#основа)));
   }
 
   readonly id = "codex" as const;
@@ -516,12 +543,13 @@ export class CodexAdapter implements Adapter {
       case "turn/started": {
         const ход = (п["turn"] as { id?: string } | undefined)?.id;
         this.#ход = typeof ход === "string" ? ход : undefined;
+        this.#новыйХодРасхода();
         this.#занят = true;
         this.#выдать("turn_started", "turn", {});
         return;
       }
       case "thread/tokenUsage/updated": {
-        this.#учестьРасход(п["tokenUsage"]);
+        this.#учестьРасход(п["tokenUsage"], п["turnId"]);
         return;
       }
       case "account/rateLimits/updated": {
@@ -542,8 +570,7 @@ export class CodexAdapter implements Adapter {
         this.#ход = undefined;
         const провал = ход.status === "failed" || ход.status === "interrupted";
         const расход = this.#расходХода;
-        this.#расходХода = undefined;
-        this.#итогДоХода = this.#последнийИтог;
+        this.#новыйХодРасхода();
         this.#выдать("turn_completed", "turn", {
           ...(расход ? { usage: расход } : {}),
           ...(this.#лимит ? { limit: this.#лимит } : {}),

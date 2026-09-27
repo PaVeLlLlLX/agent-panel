@@ -1038,11 +1038,16 @@ test("память: заметки названы только для сообщ
 // --- Расход задачи -------------------------------------------------------------
 
 test("расход: токены копятся по задаче, новая задача начинает счёт заново", async () => {
-  const { к, журнал } = комната();
-  await к.fromHuman("задача", "claude");
+  const { к, claude, codex, журнал } = комната();
+  await к.fromHuman("задача", "review");
+  к.handle(событие("claude", "message", { text: "сделал" }));
   к.handle(событие("claude", "turn_completed", { usage: { input: 1000, cached: 800, output: 50 }, limit: { status: "allowed", window: "five_hour" } }));
+  await дождаться(() => codex.полученное.length === 1, "передача рецензенту");
+  к.handle(событие("codex", "message", { text: "Поправь.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ" }));
   к.handle(событие("codex", "turn_completed", { usage: { input: 500, cached: 100, output: 20 }, limit: { percent: 8, window: "week" } }));
+  await дождаться(() => claude.полученное.length === 2, "возврат разработчику");
   к.handle(событие("claude", "turn_completed", { usage: { input: 10, cached: 0, output: 5 } }));
+  await дождаться(() => к.state.usage.task.claude.input === 1010, "второй ход Claude учтён");
   assert.deepEqual(к.state.usage.task.claude, { input: 1010, cached: 800, output: 55 });
   assert.deepEqual(к.state.usage.task.codex, { input: 500, cached: 100, output: 20 });
   assert.equal(к.state.usage.limits.codex.percent, 8);
@@ -1061,5 +1066,19 @@ test("расход: предел токенов задачи останавли�
   assert.equal(codex.полученное.length, 0);
   assert.match(к.state.held.reason, /предел/);
   assert.equal(к.state.held.to, "codex");
+  журнал.close();
+});
+
+test("расход: поздний ход прежней задачи и прямой вопрос не идут в расход текущей", async () => {
+  const { к, журнал } = комната();
+  await к.fromHuman("задача А", "review");
+  await к.fromHuman("задача Б", "review");
+  // Первый конец хода Claude относится к задаче А — она уже не текущая.
+  к.handle(событие("claude", "turn_completed", { usage: { input: 1000, cached: 0, output: 10 } }));
+  assert.deepEqual(к.state.usage.task.claude, { input: 0, cached: 0, output: 0 });
+  await к.fromHuman("прямой вопрос", "codex");
+  к.handle(событие("codex", "turn_completed", { usage: { input: 50, cached: 0, output: 5 }, limit: { percent: 9, window: "week" } }));
+  assert.deepEqual(к.state.usage.task.codex, { input: 0, cached: 0, output: 0 });
+  assert.equal(к.state.usage.limits.codex.percent, 9, "сведения о лимите обновляются с любого хода");
   журнал.close();
 });

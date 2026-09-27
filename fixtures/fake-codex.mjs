@@ -111,6 +111,23 @@ const строки = createInterface({ input: process.stdin });
           turnId,
         });
       }
+      if (текст.includes("РАСХОД-СЛОЖНЫЙ")) {
+        const расход = (ход, вход, выход, последнийВход, последнийВыход) =>
+          уведомить("thread/tokenUsage/updated", {
+            threadId: ВЕТКА,
+            turnId: ход,
+            tokenUsage: {
+              total: { inputTokens: вход, cachedInputTokens: 0, outputTokens: выход },
+              last: { inputTokens: последнийВход, cachedInputTokens: 0, outputTokens: последнийВыход },
+            },
+          });
+        расход("turn-old", 5000, 400, 900, 40); // повтор прежнего хода при возобновлении
+        расход(turnId, 1000, 10, 300, 10); // первый запрос хода; ветка возобновлена — базы нет
+        расход(turnId, 1500, 25, 500, 15); // второй запрос
+        расход(turnId, 400, 5, 400, 5); // сжатие контекста: итог сброшен
+        уведомить("turn/completed", { threadId: ВЕТКА, turn: { id: turnId, status: "completed" } });
+        return;
+      }
       if (текст.includes("ОШИБКА-ХОДА")) {
         уведомить("turn/completed", {
           threadId: ВЕТКА,

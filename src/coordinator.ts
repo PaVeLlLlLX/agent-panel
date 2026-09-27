@@ -230,9 +230,8 @@ export class Coordinator {
       this.#запросы.delete(сПометкой.callId);
       this.#обновить();
     } else if (сПометкой.kind === "turn_completed") {
-      if (сПометкой.usage) this.#расход[агент] = addUsage(this.#расход[агент], сПометкой.usage);
       if (сПометкой.limit) this.#лимиты[агент] = сПометкой.limit;
-      void this.#ходЗакончен(агент, сПометкой.failed === true, сПометкой.denials ?? []);
+      void this.#ходЗакончен(агент, сПометкой.failed === true, сПометкой.denials ?? [], сПометкой.usage);
     } else if (сПометкой.kind === "error" && сПометкой.failed) {
       for (const [id, кто] of this.#запросы) if (кто === агент) this.#запросы.delete(id);
       void this.#агентУпал(агент);
@@ -429,8 +428,18 @@ export class Coordinator {
     return убрано;
   }
 
-  async #ходЗакончен(агент: AgentId, провал: boolean, отказы: readonly string[]): Promise<void> {
+  async #ходЗакончен(
+    агент: AgentId,
+    провал: boolean,
+    отказы: readonly string[],
+    расход?: TurnUsage,
+  ): Promise<void> {
     const цель = this.#цели.get(агент)?.shift() ?? { роль: "direct", цикл: undefined };
+    // Расход — задаче, к циклу которой относится ход: поздний ход прежней
+    // задачи и прямой вопрос в неё не идут (рецензия Codex 28.09).
+    if (расход && (агент === "claude" || агент === "codex") && цель.цикл !== undefined && цель.цикл === this.#цикл) {
+      this.#расход[агент] = addUsage(this.#расход[агент], расход);
+    }
     const материал = this.#забрать(агент);
     const цикл = цель.цикл;
     const текущий = цикл !== undefined && this.#текущий(цикл);
