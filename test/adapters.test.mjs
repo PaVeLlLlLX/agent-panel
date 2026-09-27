@@ -318,6 +318,52 @@ test("Claude: фоновый Bash ход не держит — ждут толь
   }
 });
 
+test("Claude: фоновая команда кончилась после хода — Claude продолжает сам, ход помечен самостоятельным", async () => {
+  // Живая трасса 28.09 (CLI 2.1.220): Bash с run_in_background, result, через
+  // 20 с task_notification, init и новый ход — панель ничего не отправляла.
+  // Такой ход не должен выглядеть ответом на следующее сообщение панели.
+  const события = [];
+  const занятость = [];
+  const а = new ClaudeAdapter({ command: "node", commandArgs: [ФАЛЬШИВЫЙ_CLAUDE], cwd: каталог() }, (е) => {
+    события.push(е);
+    занятость.push([е.kind, а.busy]);
+  });
+  try {
+    await а.send({ text: "ФОНОВЫЙ-BASH-ПОЗЖЕ", from: "human" });
+    await дождаться(() => события.filter((е) => е.kind === "turn_completed").length === 2, "два конца хода");
+    const [первый, второй] = события.filter((е) => е.kind === "turn_completed");
+    assert.equal(первый.unsolicited, undefined);
+    assert.equal(второй.unsolicited, true);
+    assert.deepEqual(второй.usage, { input: 503, cached: 500, output: 4 });
+
+    const начало = события.find((е) => е.kind === "turn_started");
+    assert.equal(начало?.unsolicited, true);
+    assert.match(начало.text, /sleep 20 в фоне/);
+    // Пока идёт самостоятельный ход, адаптер занят: координатор копит
+    // сообщения в очереди, а не пишет их в чужой ход.
+    const i = занятость.findIndex(([вид]) => вид === "turn_started");
+    assert.deepEqual(занятость[i], ["turn_started", true]);
+    assert.ok(события.some((е) => е.kind === "message" && е.text === "Команда завершена успешно."));
+    assert.equal(а.busy, false);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: фоновая команда без продолжения — ход кончается сразу и не ждёт её", async () => {
+  // Фоновая команда (сервер) может не кончиться никогда: держать ход ради неё нельзя.
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await а.send({ text: "ФОНОВЫЙ-BASH", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода");
+    assert.equal(с.события.some((е) => е.kind === "turn_started"), false);
+    assert.equal(а.busy, false);
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: субагент кончился, а продолжения нет — ход закрывается по сроку", async () => {
   const с = собиратель();
   const а = claude(с, { backgroundGraceMs: 200 });

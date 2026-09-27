@@ -239,6 +239,14 @@ export class ClaudeAdapter implements Adapter {
    * запущенный в фоне, закончить его не дал бы никогда.
    */
   readonly #субагенты = new Set<string>();
+  /**
+   * Ход, начатый самим Claude без сообщения панели: кончилась фоновая
+   * команда, и CLI сам запускает запрос модели (init без send). Пока он идёт,
+   * адаптер занят — сообщения панели ждут в очереди координатора.
+   */
+  #самостоятельный = false;
+  /** Что сообщил CLI о последней кончившейся фоновой задаче не-субагенте. */
+  #последняяФоновая: string | undefined;
   #открытыхЗапросов = 0;
   #ждёмПродолжения = false;
   #ходДержится = false;
@@ -557,6 +565,8 @@ export class ClaudeAdapter implements Adapter {
     const вид = запись["type"];
     if (вид === "system" && запись["subtype"] === "init") {
       // Начало запроса модели: первого на сообщение или итогового после субагентов.
+      // Без сообщения панели и вне удерживаемого хода — Claude начал ход сам.
+      if (!this.#занят) this.#начатьСамостоятельный();
       this.#открытыхЗапросов += 1;
       this.#ждёмПродолжения = false;
       this.#отменитьСрок();
@@ -623,6 +633,10 @@ export class ClaudeAdapter implements Adapter {
     if (вид === "task_started") {
       if (id && запись["task_type"] === "local_agent") this.#субагенты.add(id);
     } else if (вид === "task_notification") {
+      if (id && !this.#субагенты.has(id)) {
+        const суть = запись["summary"] ?? запись["description"];
+        this.#последняяФоновая = typeof суть === "string" && суть ? суть : undefined;
+      }
       закончить(id);
     } else if (вид === "task_updated") {
       const статус = (запись["patch"] as Record<string, unknown> | undefined)?.["status"];
@@ -709,12 +723,24 @@ export class ClaudeAdapter implements Adapter {
    * следующий ход, а не закончить его своим result (рецензия Codex 28.09).
    */
   #сброситьХод(): void {
+    this.#самостоятельный = false;
     this.#отменитьСрок();
     this.#отменитьТишину();
     this.#открытыхЗапросов = 0;
     this.#ждёмПродолжения = false;
     this.#ходДержится = false;
     this.#отложенныеОтказы = [];
+  }
+
+  #начатьСамостоятельный(): void {
+    this.#самостоятельный = true;
+    this.#занят = true;
+    const причина = this.#последняяФоновая;
+    this.#последняяФоновая = undefined;
+    this.#выдать("turn_started", "turn", {
+      unsolicited: true,
+      text: причина ? `фоновая задача закончилась: ${причина}` : "Claude начал ход без сообщения панели",
+    });
   }
 
   #закончитьХод(текст: string, ошибка: boolean, запись?: Record<string, unknown>): void {
@@ -726,11 +752,13 @@ export class ClaudeAdapter implements Adapter {
 
   /** Поля конца хода; состояние хода сбрасывается. */
   #итогХода(текст: string, ошибка: boolean, запись?: Record<string, unknown>): Partial<PanelEvent> {
+    const сам = this.#самостоятельный;
     const отказы = this.#отложенныеОтказы;
     const расход = this.#расходХода;
     this.#расходХода = NO_USAGE;
     this.#сброситьХод();
     return {
+      ...(сам ? { unsolicited: true } : {}),
       ...(отказы.length > 0 ? { denials: отказы } : {}),
       ...(расход.input + расход.output > 0 ? { usage: расход } : {}),
       ...(this.#лимит ? { limit: this.#лимит } : {}),

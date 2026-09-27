@@ -105,6 +105,42 @@ const системные = (события) => события.filter((е) => е.
 // Рецензия: строгая очерёдность и завершение по вердикту
 // ---------------------------------------------------------------------------
 
+test("самостоятельный ход Claude не занимает цель задачи и не идёт рецензенту", async () => {
+  // Фоновая команда кончилась, и Claude сам начал ход (живая трасса 28.09).
+  // Если его конец придёт, пока ждём работу по задаче, он не должен стать
+  // этой работой: итог настоящего хода иначе ушёл бы в никуда.
+  const { к, claude, codex, события } = комната();
+  await к.fromHuman("сделай отчёт", "review");
+  await дождаться(() => claude.полученное.length === 1, "задача у Claude");
+  claude.busy = true;
+  к.handle(событие("claude", "turn_started", { unsolicited: true, text: "фоновая команда «pytest» закончилась" }));
+  ход(к, "claude", "Команда завершена успешно.", { unsolicited: true, usage: { input: 900, cached: 0, output: 9 } });
+  await пауза(50);
+  assert.equal(codex.полученное.length, 0);
+  assert.equal(к.state.stage, "working");
+  assert.equal(к.state.usage.task.claude.input, 0);
+  assert.ok(системные(события).some((е) => /продолжил сам/.test(е.text) && /pytest/.test(е.text)));
+
+  claude.busy = false;
+  ход(к, "claude", "отчёт готов");
+  await дождаться(() => codex.полученное.length === 1, "рецензия");
+  assert.match(codex.полученное[0].text, /отчёт готов/);
+  assert.doesNotMatch(codex.полученное[0].text, /Команда завершена успешно/);
+});
+
+test("сообщение Claude во время его самостоятельного хода ждёт конца этого хода", async () => {
+  const { к, claude } = комната();
+  claude.busy = true;
+  к.handle(событие("claude", "turn_started", { unsolicited: true, text: "фоновая команда закончилась" }));
+  await к.fromHuman("вопрос", "claude");
+  assert.equal(claude.полученное.length, 0);
+  assert.equal(к.state.queued, 1);
+  claude.busy = false;
+  ход(к, "claude", "итог фоновой", { unsolicited: true });
+  await дождаться(() => claude.полученное.length === 1, "отправка из очереди");
+  assert.match(claude.полученное[0].text, /вопрос/);
+});
+
 test("задача с рецензией уходит только разработчику", async () => {
   const { к, claude, codex, журнал } = комната();
   await к.fromHuman("сделай отчёт", "review");

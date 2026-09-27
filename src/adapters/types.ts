@@ -81,6 +81,12 @@ export interface PanelEvent {
    * (у Claude — parent_tool_use_id). Нет — действие самого агента.
    */
   readonly parentCallId?: string;
+  /**
+   * У turn_started и turn_completed: ход начат агентом без сообщения панели.
+   * Claude так продолжает, когда кончилась его фоновая команда (живая трасса
+   * 28.09, CLI 2.1.220). К задаче и к рецензии такой ход не относится.
+   */
+  readonly unsolicited?: boolean;
   /** У turn_completed: токены хода. */
   readonly usage?: TurnUsage;
   /** У turn_completed: последнее сведение о лимите агента. */

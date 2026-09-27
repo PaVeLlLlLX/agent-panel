@@ -290,7 +290,10 @@ const строки = createInterface({ input: process.stdin });
       message: { content: [{ type: "tool_use", id: "toolu_agent", name: bash ? "Bash" : "Agent", input: { description: "фон" } }] },
       session_id: СЕССИЯ,
     });
-    записать({ type: "system", subtype: "task_started", task_id: "t1", tool_use_id: "toolu_agent", task_type: bash ? "local_bash" : "local_agent", session_id: СЕССИЯ });
+    записать({
+      type: "system", subtype: "task_started", task_id: "t1", tool_use_id: "toolu_agent",
+      task_type: bash ? "local_bash" : "local_agent", description: bash ? "sleep 20 в фоне" : "фон", session_id: СЕССИЯ,
+    });
     записать({
       type: "user",
       parent_tool_use_id: null,
@@ -303,6 +306,26 @@ const строки = createInterface({ input: process.stdin });
       type: "result", subtype: "success", is_error: false, num_turns: 2, session_id: СЕССИЯ,
       usage: { input_tokens: 10, cache_read_input_tokens: 1000, cache_creation_input_tokens: 100, output_tokens: 20 },
     });
+    // ФОНОВЫЙ-BASH-ПОЗЖЕ: команда кончается после result, и Claude сам
+    // начинает новый ход — без сообщения панели (живая трасса 28.09, 2.1.220).
+    if (bash && текст.includes("ФОНОВЫЙ-BASH-ПОЗЖЕ")) {
+      setTimeout(() => {
+        записать({ type: "system", subtype: "background_tasks_changed", tasks: [], session_id: СЕССИЯ });
+        записать({ type: "system", subtype: "task_updated", task_id: "t1", patch: { status: "completed" }, session_id: СЕССИЯ });
+        записать({
+          type: "system", subtype: "task_notification", task_id: "t1", tool_use_id: "toolu_agent", status: "completed",
+          summary: "Background command \"sleep 20 в фоне\" completed (exit code 0)", session_id: СЕССИЯ,
+        });
+        записать({ type: "system", subtype: "init", session_id: СЕССИЯ, model: "fake", tools: [], argv, pid: process.pid });
+        записать({ type: "system", subtype: "thinking_tokens", session_id: СЕССИЯ });
+        записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "Команда завершена успешно." }] }, session_id: СЕССИЯ });
+        записать({
+          type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ,
+          usage: { input_tokens: 3, cache_read_input_tokens: 500, cache_creation_input_tokens: 0, output_tokens: 4 },
+        });
+      }, 300);
+      return;
+    }
     if (bash) return;
     setTimeout(() => {
       записать({
