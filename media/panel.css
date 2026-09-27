@@ -1,11 +1,51 @@
-/* Оформление комнаты. Цвета — из темы VS Code. Беседа на всю ширину:
-   в живом прогоне отдельная колонка действий заняла пол-панели. */
+/* Облик «язык нитей» (docs/specs/2026-09-27-облик-язык-нитей.md).
+   Интерфейс почти серый; цвет только у агентов (Claude тёплый, Codex
+   холодный), у внимания, ошибок и уровня рассуждения. Поверхности выводятся
+   из темы VS Code, поэтому панель живёт в любой теме. */
 
 :root {
-  --щель: 8px;
-  --рамка: var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
-  --тихий: var(--vscode-descriptionForeground, rgba(128, 128, 128, 0.9));
+  --фон: var(--vscode-editor-background);
+  --текст: var(--vscode-foreground);
+  --сильный: var(--vscode-editor-foreground, var(--vscode-foreground));
+  --тихий: var(--vscode-descriptionForeground);
+  --едва: color-mix(in srgb, var(--vscode-descriptionForeground) 70%, transparent);
+  --поверхность: color-mix(in srgb, var(--vscode-foreground) 5%, var(--vscode-editor-background));
+  --приподнятая: color-mix(in srgb, var(--vscode-foreground) 10%, var(--vscode-editor-background));
+  --вдавленная: var(--vscode-textCodeBlock-background, color-mix(in srgb, var(--vscode-foreground) 4%, var(--vscode-editor-background)));
+  --пилюля: color-mix(in srgb, var(--vscode-foreground) 12%, var(--vscode-editor-background));
+  --пилюля-наведение: color-mix(in srgb, var(--vscode-foreground) 18%, var(--vscode-editor-background));
+  --линия: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+  --главная: var(--vscode-foreground);
+  --главная-текст: var(--vscode-editor-background);
+  --фокус: var(--vscode-focusBorder);
+  --моно: var(--vscode-editor-font-family, Consolas, monospace);
+
+  --claude: #DE9C60;
+  --codex: #4CB9C3;
+  --человек: var(--vscode-foreground);
+  --внимание: #E6B450;
+  --успех: #7CC98A;
+  --ошибка: var(--vscode-errorForeground, #F2877A);
+
+  --нить-основа: color-mix(in srgb, var(--vscode-foreground) 16%, transparent);
+  --нить-пусто: color-mix(in srgb, var(--vscode-foreground) 22%, var(--vscode-editor-background));
+  --нить-край: color-mix(in srgb, var(--vscode-foreground) 30%, transparent);
+  --частица: #FFFFFF;
+  /* Доля цвета уровня в подписи: светлые тона гаммы на белом не читаются. */
+  --нить-доля-подписи: 100%;
 }
+
+body.vscode-light {
+  --claude: #B8702F;
+  --codex: #1E8C96;
+  --внимание: #8A5A00;
+  --успех: #2E7D32;
+  --частица: color-mix(in srgb, var(--vscode-foreground) 70%, transparent);
+  --нить-доля-подписи: 55%;
+}
+
+/* Гаммы агентов подобраны под тёмный фон; на светлом нить темнеет целиком. */
+body.vscode-light .нить-полоса { filter: brightness(0.8) saturate(1.5); }
 
 * { box-sizing: border-box; }
 
@@ -13,278 +53,606 @@ body {
   margin: 0;
   height: 100vh;
   display: grid;
-  grid-template-rows: auto 1fr auto auto auto;
+  grid-template-rows: auto 1fr auto auto;
   /* Без явной колонки её ширину задаёт содержимое: строка задачи с логом
      растянула панель в 28 раз шире окна. */
   grid-template-columns: minmax(0, 1fr);
   font-family: var(--vscode-font-family);
   font-size: var(--vscode-font-size);
-  color: var(--vscode-foreground);
-  background: var(--vscode-editor-background);
+  line-height: 1.5;
+  color: var(--текст);
+  background: var(--фон);
 }
 
-/* --- состояние --- */
+button, select, textarea, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: default; opacity: 0.55; }
+:focus-visible { outline: 1px solid var(--фокус); outline-offset: 2px; }
+[hidden] { display: none !important; }
 
-#состояние {
-  border-bottom: 1px solid var(--рамка);
-  padding: 6px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.строка-состояния { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .распорка { flex: 1; }
+.тихо { color: var(--тихий); }
 
-.значок {
-  font-size: 0.85em;
-  padding: 1px 8px;
-  border: 1px solid var(--рамка);
-  border-radius: 10px;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-#этап[data-этап="working"] { border-color: var(--vscode-charts-green); }
-#этап[data-этап="reviewing"] { border-color: var(--vscode-charts-orange); }
-#этап[data-этап="held"] { border-color: var(--vscode-charts-yellow); }
-#этап[data-этап="accepted"] { border-color: var(--vscode-charts-green); background: color-mix(in srgb, var(--vscode-charts-green) 15%, transparent); }
-#этап[data-этап="stopped"] { color: var(--тихий); }
-#этап[data-этап="approval"] {
-  border-color: var(--vscode-charts-yellow);
-  background: color-mix(in srgb, var(--vscode-charts-yellow) 15%, transparent);
-}
+/* --- кнопки ------------------------------------------------------------ */
 
-/* Запрос разрешения: ход агента стоит, пока человек не ответит. */
-.разрешение {
-  border: 1px solid var(--vscode-charts-yellow);
-  border-left-width: 3px;
-  border-radius: 4px;
-  padding: 6px 10px;
-  max-width: 80ch;
-  display: flex;
-  flex-direction: column;
+.пилюля {
+  display: inline-flex;
+  align-items: center;
   gap: 6px;
+  height: 28px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--пилюля);
+  font-size: 0.92em;
+  white-space: nowrap;
 }
-.разрешение .кнопки { display: flex; flex-wrap: wrap; gap: var(--щель); }
-.разрешение .итог { font-size: 0.85em; color: var(--тихий); overflow-wrap: anywhere; }
-.разрешение.решено { border-color: var(--рамка); }
-.разрешение.отклонено .итог { color: var(--vscode-errorForeground); }
-#вердикт[data-вердикт="accepted"] { color: var(--vscode-charts-green); }
-#вердикт[data-вердикт="remarks"] { color: var(--vscode-charts-orange); }
-#вердикт[data-вердикт="missing"],
-#вердикт[data-вердикт="human"] { color: var(--vscode-charts-yellow); }
+.пилюля:hover:not(:disabled) { background: var(--пилюля-наведение); }
+.пилюля.главная { background: var(--главная); color: var(--главная-текст); font-weight: 600; }
+.пилюля.главная:hover:not(:disabled) { opacity: 0.9; background: var(--главная); }
+.пилюля.прозрачная { background: transparent; color: var(--тихий); }
+.пилюля.прозрачная:hover:not(:disabled) { background: var(--пилюля); color: var(--текст); }
+.пилюля.опасно { background: transparent; color: var(--ошибка); }
+.пилюля[aria-pressed="true"] { color: var(--текст); }
+
+.круглая {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--пилюля);
+  flex-shrink: 0;
+}
+.круглая:hover:not(:disabled) { background: var(--пилюля-наведение); }
+.круглая.опасно { color: var(--ошибка); }
+.круглая.отправить { width: 32px; height: 32px; background: var(--главная); color: var(--главная-текст); }
+.круглая.отправить:hover:not(:disabled) { background: var(--главная); opacity: 0.9; }
+
+svg { flex-shrink: 0; }
+
+/* --- переливающийся текст: агент работает ----------------------------- */
+
+.перелив {
+  background: linear-gradient(90deg, var(--тихий) 0%, var(--сильный) 45%, var(--тихий) 90%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: перелив 2.4s linear infinite;
+}
+@keyframes перелив { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+
+/* --- шапка: «Эстафета», счёт проверок, задача, «Дорожка цикла» ---------- */
+
+.шапка { display: flex; flex-direction: column; gap: 6px; padding: 10px 14px 8px; }
+.шапка-строка { display: flex; align-items: center; gap: 8px; min-width: 0; }
+
+.эстафета {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 4px 8px 4px 6px;
+  margin-left: -6px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  text-align: left;
+}
+.эстафета:hover { background: var(--пилюля); }
+
+.нить-статус { position: relative; flex-shrink: 0; width: 92px; height: 14px; }
+.ст-нить { position: absolute; left: 7px; right: 7px; top: 6px; height: 2px; border-radius: 1px; background: var(--нить-основа); }
+.ст-поток { position: absolute; left: 12px; right: 12px; top: 7px; height: 0; }
+.ст-частица {
+  position: absolute;
+  top: -1.5px;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--частица);
+  opacity: 0;
+  box-shadow: 0 0 6px var(--ст-цвет, transparent);
+}
+.ст-частица:nth-child(2) { animation-delay: -0.32s !important; }
+.ст-частица:nth-child(3) { animation-delay: -0.64s !important; }
+.ст-частица:nth-child(4) { animation-delay: -0.96s !important; }
+.ст-частица:nth-child(5) { animation-delay: -1.28s !important; }
+.нить-статус[data-flow="to-codex"] .ст-частица,
+.нить-статус[data-flow="to-claude"] .ст-частица { animation: поток 1.6s linear infinite; }
+.нить-статус[data-flow="to-claude"] .ст-частица { animation-direction: reverse; }
+
+.ст-огонёк { position: absolute; top: 0; width: 14px; height: 14px; border-radius: 50%; opacity: 0.4; transition: opacity 0.3s, box-shadow 0.3s; }
+.ст-огонёк.claude { left: 0; background: var(--claude); }
+.ст-огонёк.codex { right: 0; background: var(--codex); }
+.нить-статус[data-active="claude"] .ст-огонёк.claude,
+.нить-статус[data-active="codex"] .ст-огонёк.codex,
+.нить-статус[data-active="accepted"] .ст-огонёк { opacity: 1; }
+.нить-статус[data-active="claude"] .ст-огонёк.claude { box-shadow: 0 0 12px var(--claude); }
+.нить-статус[data-active="codex"] .ст-огонёк.codex { box-shadow: 0 0 12px var(--codex); }
+.нить-статус[data-active="claude"] { --ст-цвет: var(--claude); }
+.нить-статус[data-active="codex"] { --ст-цвет: var(--codex); }
+.нить-статус[data-active="accepted"] .ст-нить { background: linear-gradient(90deg, var(--claude), var(--codex)); }
+
+.ст-кольцо {
+  position: absolute;
+  top: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--ст-цвет, transparent);
+  opacity: 0;
+  pointer-events: none;
+}
+.нить-статус[data-active="claude"] .ст-кольцо { left: 0; animation: пульс 1.8s ease-out infinite; }
+.нить-статус[data-active="codex"] .ст-кольцо { right: 0; animation: пульс 1.8s ease-out infinite; }
+
+.ст-человек {
+  position: absolute;
+  left: 39px;
+  top: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--человек);
+  display: none;
+}
+.нить-статус[data-active="human"] .ст-человек { display: block; animation: дыхание 2s ease-in-out infinite; }
+
+.ст-галочка { position: absolute; left: 36px; top: -3px; width: 20px; height: 20px; display: none; align-items: center; justify-content: center; border-radius: 50%; background: var(--фон); color: var(--успех); }
+.нить-статус[data-active="accepted"] .ст-галочка { display: inline-flex; }
+
+.статус-текст { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+#этап { font-weight: 600; color: var(--сильный); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#этап[data-active="human"] { color: var(--внимание); }
+#этап[data-active="accepted"] { color: var(--успех); }
+#этап-пояснение { font-size: 0.85em; color: var(--тихий); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#этап-пояснение:empty { display: none; }
+
+.раунды { display: inline-flex; gap: 4px; flex-shrink: 0; padding: 0 2px; }
+.раунды span { width: 6px; height: 6px; border-radius: 50%; background: var(--нить-пусто); }
+.раунды span.пройдена { background: var(--тихий); }
+
+.очередь { flex-shrink: 0; font-size: 0.85em; color: var(--тихий); white-space: nowrap; }
 
 .задача {
-  font-size: 0.9em;
+  font-size: 0.88em;
   color: var(--тихий);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.удержано {
+.дорожка {
   display: flex;
   align-items: center;
-  gap: var(--щель);
-  padding: 6px 8px;
-  border: 1px solid var(--vscode-charts-yellow);
-  border-radius: 4px;
-  font-size: 0.9em;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--поверхность);
+  overflow-x: auto;
 }
-.удержано span {
-  flex: 1;
-  min-width: 0;
-  max-height: 6em;
-  overflow-y: auto;
-  overflow-wrap: anywhere;
+.шаг { display: inline-flex; align-items: center; flex-shrink: 0; }
+.шаг-связь { width: 20px; height: 2px; background: var(--нить-основа); }
+.шаг-связь.пустая { background: var(--линия); }
+.шаг-узел { position: relative; width: 10px; height: 10px; border-radius: 50%; background: var(--тихий); }
+.шаг-узел.claude { background: var(--claude); }
+.шаг-узел.codex { background: var(--codex); }
+.шаг-узел.you { background: var(--человек); }
+.шаг-узел.текущий { width: 14px; height: 14px; }
+.шаг-узел.текущий.claude { box-shadow: 0 0 10px var(--claude); }
+.шаг-узел.текущий.codex { box-shadow: 0 0 10px var(--codex); }
+.шаг-узел.текущий.you { animation: дыхание 2s ease-in-out infinite; }
+.шаг-узел.пустой { background: transparent; border: 1.5px solid var(--нить-край); }
+.шаг-отметка {
+  position: absolute;
+  right: -8px;
+  top: -9px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 2px;
+  border-radius: 6px;
+  background: var(--поверхность);
+  color: var(--внимание);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 12px;
+  text-align: center;
 }
+.шаг-отметка.принято { color: var(--успех); }
 
-.переключатель { font-size: 0.85em; display: flex; align-items: center; gap: 4px; }
-
-button {
-  font: inherit;
-  padding: 3px 10px;
-  border: 1px solid var(--рамка);
-  border-radius: 4px;
-  color: var(--vscode-button-secondaryForeground, inherit);
-  background: var(--vscode-button-secondaryBackground, transparent);
-  cursor: pointer;
-}
-button:hover { background: var(--vscode-toolbar-hoverBackground); }
-button.главная {
-  color: var(--vscode-button-foreground);
-  background: var(--vscode-button-background);
-  border-color: transparent;
-}
-button.опасно { color: var(--vscode-errorForeground); }
-
-/* --- беседа --- */
+/* --- беседа ------------------------------------------------------------- */
 
 #беседа {
   overflow-y: auto;
-  padding: 10px;
+  padding: 8px 14px 16px;
   display: flex;
   flex-direction: column;
-  gap: var(--щель);
+  gap: 16px;
   min-height: 0;
 }
 
-.пузырь {
-  border: 1px solid var(--рамка);
-  border-left-width: 3px;
-  border-radius: 4px;
-  padding: 6px 10px;
-  max-width: 80ch;
+.пузырь { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.автор { display: flex; align-items: baseline; gap: 6px; font-size: 0.85em; }
+.автор .имя { font-weight: 600; color: var(--сильный); }
+.автор .пишет { display: none; }
+.пузырь.идёт .автор .пишет { display: inline; }
+.пузырь.human {
+  align-self: flex-end;
+  max-width: 86%;
+  padding: 9px 13px;
+  border-radius: 16px;
+  background: var(--приподнятая);
+  color: var(--сильный);
 }
-.пузырь.human { align-self: flex-end; border-left-color: var(--vscode-charts-blue); }
-.пузырь.claude { border-left-color: var(--vscode-charts-green); }
-.пузырь.codex { border-left-color: var(--vscode-charts-orange); }
-.пузырь.ошибка { border-left-color: var(--vscode-errorForeground); }
+.пузырь.human .автор { display: none; }
+.пузырь.ошибка .автор .имя { color: var(--ошибка); }
+.пузырь.ошибка .текст { color: var(--ошибка); }
 
-.автор { font-size: 0.8em; color: var(--тихий); margin-bottom: 2px; }
 .текст { white-space: pre-wrap; word-break: break-word; }
 
 /* Реплика агента в Markdown: переносы задаёт разметка, а не исходные строки. */
 .текст.разметка { white-space: normal; word-break: normal; overflow-wrap: anywhere; }
 .разметка > :first-child { margin-top: 0; }
 .разметка > :last-child { margin-bottom: 0; }
-.разметка p, .разметка ul, .разметка ol, .разметка pre, .разметка table, .разметка blockquote { margin: 0.45em 0; }
+.разметка p, .разметка ul, .разметка ol, .разметка pre, .разметка table, .разметка blockquote { margin: 0.5em 0; }
 .разметка ul, .разметка ol { padding-left: 1.4em; }
-.разметка h1, .разметка h2, .разметка h3, .разметка h4 { margin: 0.7em 0 0.3em; line-height: 1.25; }
+.разметка h1, .разметка h2, .разметка h3, .разметка h4 { margin: 0.8em 0 0.3em; line-height: 1.25; color: var(--сильный); }
 .разметка h1 { font-size: 1.3em; }
 .разметка h2 { font-size: 1.18em; }
 .разметка h3, .разметка h4 { font-size: 1.05em; }
+.разметка strong { color: var(--сильный); }
 .разметка a { color: var(--vscode-textLink-foreground); }
 .разметка code {
-  font-family: var(--vscode-editor-font-family);
-  font-size: 0.95em;
-  padding: 0 3px;
-  border-radius: 3px;
-  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
+  font-family: var(--моно);
+  font-size: 0.92em;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--вдавленная);
 }
 .разметка pre {
-  padding: 6px 8px;
+  padding: 10px 12px;
   overflow-x: auto;
   white-space: pre;
-  border-radius: 3px;
-  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
+  border-radius: 12px;
+  background: var(--вдавленная);
+  border: 1px solid var(--линия);
 }
 .разметка pre code { padding: 0; background: none; }
-.разметка blockquote { margin-left: 0; padding-left: 8px; border-left: 3px solid var(--рамка); color: var(--тихий); }
-.разметка table { display: block; overflow-x: auto; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-.разметка th, .разметка td { padding: 2px 8px; border: 1px solid var(--рамка); }
-.разметка hr { border: none; border-top: 1px solid var(--рамка); }
+.разметка blockquote { margin-left: 0; padding-left: 10px; border-left: 2px solid var(--линия); color: var(--тихий); }
+.разметка table { display: block; overflow-x: auto; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 0.92em; }
+.разметка th { text-align: left; font-weight: 500; color: var(--тихий); }
+.разметка th, .разметка td { padding: 5px 12px 5px 0; border-bottom: 1px solid var(--линия); }
+.разметка tr:last-child td { border-bottom: 0; }
+.разметка hr { border: none; border-top: 1px solid var(--линия); }
 .разметка .формула { overflow-x: auto; overflow-y: hidden; }
 
-.пузырь.идёт .текст::after { content: "▌"; animation: мигание 1s steps(2) infinite; opacity: 0.6; }
-@keyframes мигание { 50% { opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .пузырь.идёт .текст::after { animation: none; } }
+/* Вердикт рецензента: значок и слова, под ними — исходная строка. */
+.вердикт-строка { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+.вердикт-строка .слово { font-weight: 600; }
+.вердикт-строка .исходная { font-family: var(--моно); font-size: 0.8em; color: var(--едва); }
+.вердикт-строка.accepted { color: var(--успех); }
+.вердикт-строка.remarks, .вердикт-строка.human { color: var(--внимание); }
+.вердикт-строка.missing { color: var(--тихий); }
 
 .уведомление {
   align-self: center;
+  max-width: 80ch;
   font-size: 0.85em;
-  color: var(--тихий);
+  color: var(--едва);
   text-align: center;
-  max-width: 70ch;
 }
-.уведомление::before { content: "Панель · "; font-weight: 600; }
-.уведомление.ошибка { color: var(--vscode-errorForeground); }
+.уведомление.ошибка { color: var(--ошибка); }
 
-/* Действия за ход — одна строка, подробности по клику. */
-details.действия { font-size: 0.85em; color: var(--тихий); }
-details.действия > summary { cursor: pointer; }
-details.действия .список {
-  margin: 4px 0 0 12px;
+/* --- действия хода: «Чётки» слева, «Счётчики» справа -------------------- */
+
+details.действия { font-size: 0.88em; }
+details.действия > summary {
+  list-style: none;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 4px 0;
+  color: var(--тихий);
+  cursor: pointer;
 }
+details.действия > summary::-webkit-details-marker { display: none; }
+details.действия > summary:hover { color: var(--текст); }
+.чётки { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
+.счётчики { display: inline-flex; align-items: center; gap: 12px; flex-shrink: 0; margin-left: auto; }
+.счётчик { display: inline-flex; align-items: center; gap: 4px; }
+.счётчик.отказы { color: var(--ошибка); }
+.идёт-сейчас { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.шеврон { transition: transform 0.15s; }
+details.действия[open] > summary .шеврон { transform: rotate(90deg); }
 
-.вызов { border-left: 3px solid var(--рамка); padding-left: 6px; }
-.вызов > summary { cursor: pointer; display: flex; gap: 8px; }
-.вызов .имя { font-family: var(--vscode-editor-font-family); color: var(--vscode-foreground); }
-.вызов .метка { color: var(--тихий); }
-.вызов.сформирован { border-left-color: var(--vscode-charts-yellow); }
-.вызов.выполняется { border-left-color: var(--vscode-charts-blue); }
-.вызов.готов { border-left-color: var(--vscode-charts-green); }
-.вызов.отказ { border-left-color: var(--vscode-errorForeground); color: var(--vscode-errorForeground); }
+.бусина {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 2.5px;
+  background: var(--агент-цвет, var(--тихий));
+}
+.бусина.ring { border-radius: 50%; background: transparent; border: 1.5px solid var(--агент-цвет, var(--тихий)); }
+.бусина.diamond { border-radius: 1.5px; transform: rotate(45deg) scale(0.85); }
+.бусина.dot { border-radius: 50%; width: 6px; height: 6px; }
+.бусина.formed { background: transparent; border: 1.5px solid var(--нить-край); }
+.бусина.running { --агент-цвет: var(--сильный); animation: бусина 1.1s ease-in-out infinite; }
+.бусина.denied { --агент-цвет: var(--ошибка); }
+.действия.claude { --агент-цвет: var(--claude); }
+.действия.codex { --агент-цвет: var(--codex); }
+
+.список { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 0; }
+.вызов > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 26px;
+  cursor: pointer;
+}
+.вызов > summary::-webkit-details-marker { display: none; }
+.вызов .имя { flex-shrink: 0; font-family: var(--моно); color: var(--сильный); }
+.вызов .кратко { flex: 1; min-width: 0; font-family: var(--моно); color: var(--едва); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.вызов .метка { flex-shrink: 0; color: var(--едва); }
+.вызов.отказ .метка { color: var(--ошибка); }
+.вызов.выполняется .метка { color: var(--сильный); }
+.отказ-строка { color: var(--ошибка); }
 
 .аргументы, .вывод, #диагностика-строки {
-  margin: 4px 0;
-  padding: 6px;
-  max-height: 14em;
+  margin: 4px 0 6px;
+  padding: 8px 10px;
+  max-height: 16em;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: var(--vscode-editor-font-family);
-  font-size: 0.95em;
-  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
-  border-radius: 3px;
+  font-family: var(--моно);
+  font-size: 0.92em;
+  background: var(--вдавленная);
+  border: 1px solid var(--линия);
+  border-radius: 10px;
 }
+.вывод-подпись { font-size: 0.85em; color: var(--едва); }
 
-/* --- диагностика --- */
+/* --- запрос разрешения ---------------------------------------------------- */
 
-#диагностика {
-  border-top: 1px solid var(--рамка);
-  padding: 4px 10px;
-  font-size: 0.85em;
-  color: var(--тихий);
-}
-#диагностика > summary { cursor: pointer; }
-
-/* --- ввод --- */
-
-footer {
-  border-top: 1px solid var(--рамка);
-  padding: 8px 10px;
+.разрешение {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
+  max-width: 80ch;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: var(--поверхность);
+  border: 1px solid var(--линия);
+}
+.разрешение .заголовок { display: flex; align-items: center; gap: 8px; font-size: 0.88em; color: var(--тихий); }
+.разрешение .заголовок .кто { font-weight: 600; color: var(--сильный); }
+.разрешение .инструмент { padding: 1px 7px; border-radius: 6px; background: var(--пилюля); font-family: var(--моно); font-size: 0.92em; }
+.разрешение .кнопки { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.разрешение .итог { font-size: 0.88em; color: var(--тихий); overflow-wrap: anywhere; }
+.разрешение .итог:empty { display: none; }
+.разрешение.решено { background: transparent; padding: 6px 0; border-color: transparent; }
+.разрешение.решено .аргументы { display: none; }
+.разрешение.отклонено .итог { color: var(--ошибка); }
+
+/* --- низ: удержание, «Модели», поле ввода --------------------------------- */
+
+.низ { display: flex; flex-direction: column; gap: 8px; padding: 0 12px 10px; }
+
+.удержано {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 10px 10px 12px;
+  border-radius: 16px;
+  background: var(--поверхность);
+  border: 1px solid var(--линия);
+}
+.удержано .значок-паузы {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--внимание) 16%, transparent);
+  color: var(--внимание);
+}
+.удержано .суть { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.удержано .суть b { color: var(--сильный); }
+#удержано-причина {
+  font-size: 0.88em;
+  color: var(--тихий);
+  max-height: 6em;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
 }
 
-textarea {
-  font: inherit;
+.модели {
+  align-self: flex-end;
+  width: min(100%, 360px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+#модели-состояние { font-size: 0.85em; color: var(--тихий); padding: 0 4px; }
+#модели-состояние:empty { display: none; }
+
+.нить-карточка {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 12px;
+  border-radius: 18px;
+  background: var(--поверхность);
+  border: 1px solid var(--линия);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+.нить-заголовок { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.нить-уровень { flex: 1; min-width: 0; font-size: 1.1em; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.нить-модель {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 55%;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--пилюля);
+  font-size: 0.85em;
+}
+.нить-агент { font-size: 0.85em; color: var(--тихий); flex-shrink: 0; }
+.нить-полоса { position: relative; height: 44px; }
+/* Пустая полоса не скрывается, а схлопывается: ширина нужна для раскладки узлов. */
+.нить-полоса:empty { height: 0; }
+.нить-пусто-текст { font-size: 0.88em; color: var(--тихий); }
+
+.нить-основа, .нить-свет, .нить-режим { position: absolute; border-radius: 2px; }
+.нить-основа { top: 21px; height: 2px; background: var(--нить-основа); }
+.нить-поток { position: absolute; top: 22px; height: 0; }
+.нить-частица {
+  position: absolute;
+  top: -1.5px;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--частица);
+  animation-name: поток;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+.нить-узел {
+  position: absolute;
+  top: 8px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.нить-узел span { display: block; border-radius: 50%; }
+.нить-кольцо-обёртка { position: absolute; top: 15px; width: 14px; height: 14px; pointer-events: none; }
+.нить-кольцо { position: absolute; inset: 0; border-radius: 50%; border: 2px solid; animation-name: пульс; animation-timing-function: ease-out; animation-iteration-count: infinite; }
+.нить-по-умолчанию { position: absolute; top: 36px; width: 2px; height: 4px; border-radius: 1px; background: var(--нить-край); }
+.нить-ветвь-обёртка { position: absolute; top: 22px; width: 0; height: 0; }
+.нить-ветвь { position: absolute; left: 0; top: -0.75px; width: 34px; height: 1.5px; transform-origin: 0 50%; }
+.нить-ветвь .нить-частица { top: -0.75px; animation-name: поток; animation-duration: 1.1s; }
+.нить-субагент { position: absolute; right: -3px; top: -2.25px; width: 6px; height: 6px; border-radius: 50%; animation: субагент 1.6s ease-in-out infinite; }
+
+.поле {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 10px 8px 14px;
+  border-radius: 18px;
+  background: var(--поверхность);
+  border: 1px solid var(--линия);
+}
+.поле:focus-within { border-color: color-mix(in srgb, var(--фокус) 60%, transparent); }
+#ввод {
   width: 100%;
-  resize: vertical;
-  color: var(--vscode-input-foreground);
-  background: var(--vscode-input-background);
-  border: 1px solid var(--vscode-input-border, var(--рамка));
-  border-radius: 4px;
-  padding: 6px 8px;
+  min-height: 2.6em;
+  max-height: 40vh;
+  /* Высоту задаёт panel.js по содержимому: ручка в углу скруглённого поля лишняя. */
+  resize: none;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--сильный);
+}
+#ввод::placeholder { color: var(--едва); }
+.поле-кнопки { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; }
+
+.режимы { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: var(--пилюля); flex-shrink: 0; }
+.режимы button { width: 34px; height: 26px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 999px; background: transparent; }
+.режимы button[aria-checked="true"] { background: var(--пилюля-наведение); }
+/* Ряд кнопок поля сжимается за счёт названия режима и подписи щита. */
+.режим-название, #без-вопросов { min-width: 0; flex-shrink: 1; }
+.режим-название span, #без-вопросов .подпись { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.режимы, #модели-кнопка, .отправить { flex-shrink: 0; }
+
+.меню {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 240px;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--поверхность);
+  border: 1px solid var(--линия);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+}
+.меню button { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border: 0; border-radius: 9px; background: transparent; text-align: left; color: var(--тихий); }
+.меню button:hover, .меню button[aria-checked="true"] { background: var(--пилюля); color: var(--сильный); }
+.меню button .галка { margin-left: auto; visibility: hidden; }
+.меню button[aria-checked="true"] .галка { visibility: visible; }
+
+/* Значки режимов: огоньки агентов и нить между ними. */
+.ик-линия { fill: none; stroke: var(--тихий); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.ик-claude { fill: var(--claude); }
+.ик-codex { fill: var(--codex); }
+.ик-человек { fill: var(--человек); }
+.ик-кольцо-claude, .ик-кольцо-codex { fill: none; stroke-width: 1.5; stroke-opacity: 0.35; }
+.ик-кольцо-claude { stroke: var(--claude); }
+.ик-кольцо-codex { stroke: var(--codex); }
+
+.полоски { display: inline-flex; gap: 2px; }
+.полоски span { width: 9px; height: 6px; border-radius: 3px; }
+.полоски span:first-child { background: var(--claude); }
+.полоски span:last-child { background: var(--codex); }
+
+/* На узкой панели переключатель режимов уступает место меню. */
+@media (max-width: 560px) {
+  #без-вопросов .подпись { display: none; }
+}
+@media (max-width: 420px) {
+  .режимы { display: none; }
 }
 
-.строка { display: flex; align-items: center; gap: var(--щель); }
-
-/* Модель и уровень рассуждения: скрыто, пока не нужно. */
-.модели { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; font-size: 0.9em; }
-.модели .подсказка { flex-basis: 100%; }
-.модели .подсказка:empty { display: none; }
-.модель { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.модель select { max-width: 15em; min-width: 0; }
-#модели-кнопка[aria-expanded="true"] { border-color: var(--vscode-focusBorder); }
-.подсказка { flex: 1; font-size: 0.8em; color: var(--тихий); }
-
-select {
-  font: inherit;
-  color: var(--vscode-dropdown-foreground);
-  background: var(--vscode-dropdown-background);
-  border: 1px solid var(--vscode-dropdown-border, var(--рамка));
-  border-radius: 4px;
-  padding: 3px 6px;
-}
-
-:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.под-полем { display: flex; align-items: center; gap: 14px; min-width: 0; padding: 0 6px; font-size: 0.85em; color: var(--тихий); }
+.под-полем label { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+#модели-сводка { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--едва); }
+.ссылка-кнопка { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: var(--тихий); flex-shrink: 0; }
+.ссылка-кнопка:hover { color: var(--текст); }
+#диагностика { padding: 0 12px 10px; }
+#диагностика-строки { margin: 0; color: var(--тихий); font-size: 0.85em; }
 
 /* Кнопка «К последнему»: висит над низом беседы, пока человек читает выше.
    Якорь нулевой высоты стоит сразу под беседой и не сдвигает раскладку. */
 .якорь-низа { position: relative; height: 0; }
 #к-последнему {
   position: absolute;
-  right: 14px;
+  right: 16px;
   bottom: 10px;
-  z-index: 1;
-  padding: 4px 12px;
-  border-radius: 999px;
-  font-size: 0.9em;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  z-index: 2;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+/* --- анимации ------------------------------------------------------------ */
+
+@keyframes поток { 0% { left: 0%; opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { left: 100%; opacity: 0; } }
+@keyframes пульс { 0% { transform: scale(1); opacity: 0.6; } 100% { transform: scale(2.6); opacity: 0; } }
+@keyframes дыхание { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--внимание) 0%, transparent); } 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--внимание) 30%, transparent); } }
+@keyframes субагент { 0%, 100% { transform: scale(0.7); opacity: 0.6; } 50% { transform: scale(1.15); opacity: 1; } }
+@keyframes бусина { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.35); opacity: 0.6; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .перелив, .ст-кольцо, .ст-человек, .шаг-узел, .нить-кольцо, .нить-субагент, .бусина { animation: none !important; }
+  .ст-частица, .нить-частица { display: none; }
 }

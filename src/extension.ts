@@ -316,69 +316,80 @@ function разметка(webview: vscode.Webview, контекст: vscode.Exte
 <title>Общая комната</title>
 </head>
 <body>
-<header id="состояние">
-  <div class="строка-состояния">
-    <span id="этап" class="значок" title="Что сейчас происходит: кто работает, или панель ждёт вашего решения">ожидание</span>
-    <span id="раунд" class="значок" title="Проверка — один раз, когда Codex посмотрел работу Claude. Предел — сколько проверок разрешено на одну задачу, чтобы агенты не спорили бесконечно за ваши деньги">проверок 0 из 0</span>
-    <span id="вердикт" class="значок" hidden title="Итог последней проверки. «Принято» — задача закрыта. «Есть замечания» — работа вернулась Claude. «Нужно ваше решение» — рецензент остановил обмен. «Не вынесен» — решаете вы"></span>
-    <span id="очередь" class="значок" hidden title="Сообщения, которые ждут, пока агент закончит текущий ход"></span>
+<header id="состояние" class="шапка">
+  <div class="шапка-строка">
+    <button id="эстафета" class="эстафета" aria-expanded="false" aria-controls="дорожка" title="Кто сейчас работает. Нажмите — история текущего цикла">
+      <span id="нить-статус" class="нить-статус" data-active="idle" data-flow="none" aria-hidden="true">
+        <span class="ст-нить"></span>
+        <span class="ст-поток"><span class="ст-частица"></span><span class="ст-частица"></span><span class="ст-частица"></span><span class="ст-частица"></span><span class="ст-частица"></span></span>
+        <span class="ст-огонёк claude"></span>
+        <span class="ст-огонёк codex"></span>
+        <span class="ст-кольцо"></span>
+        <span class="ст-человек"></span>
+        <span class="ст-галочка"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5 6.5 11.5 12.5 4.5"/></svg></span>
+      </span>
+      <span class="статус-текст">
+        <span id="этап" data-active="idle">Ожидание</span>
+        <span id="этап-пояснение"></span>
+      </span>
+    </button>
     <span class="распорка"></span>
-    <label class="переключатель" title="Включено — Claude и Codex передают работу друг другу сами. Выключено — каждую передачу вы подтверждаете кнопкой">
-      <input type="checkbox" id="авто" checked> автопересылка
-    </label>
-    <button id="прервать" title="Прервать текущий ход агентов. Следующее сообщение продолжит те же сессии">Прервать</button>
-    <button id="стоп" class="опасно" title="Завершить процессы обоих агентов вместе с их командами">Остановить</button>
+    <span id="очередь" class="очередь" hidden title="Сообщения, которые ждут, пока агент закончит текущий ход"></span>
+    <span id="раунд" class="раунды" role="img" aria-label="проверок 0 из 0" title="Проверка — один раз, когда Codex посмотрел работу Claude. Предел — сколько проверок разрешено на одну задачу, чтобы агенты не спорили бесконечно"></span>
+    <button id="прервать" class="круглая" aria-label="Прервать ход" title="Прервать текущий ход агентов. Следующее сообщение продолжит те же сессии"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 4v8M10 4v8"/></svg></button>
+    <button id="стоп" class="круглая опасно" aria-label="Остановить агентов" title="Завершить процессы обоих агентов вместе с их командами"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5"/></svg></button>
   </div>
-  <div id="задача" class="задача" hidden title="Задача, над которой идёт текущий цикл рецензии"></div>
-  <div id="удержано" class="удержано" hidden title="Панель остановила передачу и ждёт вашего решения">
-    <span id="удержано-причина"></span>
-    <button id="отпустить">Отправить</button>
-  </div>
+  <div id="задача" class="задача" hidden></div>
+  <div id="дорожка" class="дорожка" hidden aria-label="Дорожка цикла"></div>
 </header>
 <main id="беседа" aria-label="Беседа"></main>
-<div class="якорь-низа"><button id="к-последнему" hidden title="Прокрутить к последнему сообщению">↓ К последнему</button></div>
-<details id="диагностика">
-  <summary title="Служебные логи процессов агентов — не часть разговора">Диагностика <span id="диагностика-счёт">0</span></summary>
-  <pre id="диагностика-строки"></pre>
-</details>
-<footer>
-  <div class="строка">
-    <button id="модели-кнопка" aria-expanded="false" aria-controls="модели-панель" title="Модель и уровень рассуждения каждого агента. Меняются со следующего хода">Модели</button>
-    <span id="модели-сводка" class="подсказка"></span>
-  </div>
+<div class="якорь-низа"><button id="к-последнему" class="пилюля" hidden title="Прокрутить к последнему сообщению">↓ К последнему</button></div>
+<footer class="низ">
+  <section id="удержано" class="удержано" hidden aria-label="Ждёт вашего решения">
+    <span class="значок-паузы" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 4v8M10 4v8"/></svg></span>
+    <div class="суть"><b>Обмен остановлен</b><span id="удержано-причина"></span></div>
+    <button id="отпустить" class="пилюля главная">Отправить</button>
+  </section>
   <div id="модели-панель" class="модели" hidden>
-    <span id="модели-состояние" class="подсказка"></span>
-    <div class="модель">
-      <span>Claude</span>
-      <select id="модель-claude" disabled aria-label="Модель Claude"></select>
-      <select id="уровень-claude" disabled aria-label="Уровень рассуждения Claude" title="Уровень рассуждения: чем выше, тем дольше и дороже ход"></select>
+    <span id="модели-состояние"></span>
+    <div class="нить-карточка" data-agent="claude">
+      <div class="нить-заголовок">
+        <span id="нить-уровень-claude" class="нить-уровень">По умолчанию</span>
+        <span class="нить-агент">Claude</span>
+        <select id="модель-claude" class="нить-модель" disabled aria-label="Модель Claude"></select>
+      </div>
+      <div id="нить-claude" class="нить-полоса" role="radiogroup" aria-label="Уровень рассуждения Claude"></div>
     </div>
-    <div class="модель">
-      <span>Codex</span>
-      <select id="модель-codex" disabled aria-label="Модель Codex"></select>
-      <select id="уровень-codex" disabled aria-label="Уровень рассуждения Codex" title="Уровень рассуждения: чем выше, тем дольше и дороже ход"></select>
-    </div>
-    <div class="модель">
-      <span>Разрешения Claude</span>
-      <select id="режим-claude" aria-label="Режим разрешений Claude" title="Без вопросов — Claude выполняет команды сам (bypassPermissions). Спрашивать — каждое действие, требующее согласия, приходит карточкой. Действует для этой папки">
-        <option value="bypassPermissions">без вопросов</option>
-        <option value="default">спрашивать</option>
-      </select>
+    <div class="нить-карточка" data-agent="codex">
+      <div class="нить-заголовок">
+        <span id="нить-уровень-codex" class="нить-уровень">По умолчанию</span>
+        <span class="нить-агент">Codex</span>
+        <select id="модель-codex" class="нить-модель" disabled aria-label="Модель Codex"></select>
+      </div>
+      <div id="нить-codex" class="нить-полоса" role="radiogroup" aria-label="Уровень рассуждения Codex"></div>
     </div>
   </div>
-  <textarea id="ввод" rows="3" placeholder="Сообщение… Ctrl+Enter отправляет"></textarea>
-  <div class="строка">
-    <select id="маршрут" title="Как отправить">
-      <option value="review">Задача с рецензией</option>
-      <option value="both">Спросить обоих</option>
-      <option value="claude">Только Claude</option>
-      <option value="codex">Только Codex</option>
-    </select>
-    <span id="подсказка" class="подсказка"></span>
-    <button id="отправить" class="главная">Отправить</button>
+  <div class="поле">
+    <textarea id="ввод" rows="2" aria-label="Сообщение" placeholder="Поручите задачу или задайте вопрос"></textarea>
+    <div class="поле-кнопки">
+      <div id="режимы" class="режимы" role="radiogroup" aria-label="Режим"></div>
+      <button id="маршрут" class="пилюля прозрачная режим-название" aria-haspopup="menu" aria-expanded="false" aria-controls="маршрут-меню"><span id="маршрут-название">Задача с рецензией</span><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6"/></svg></button>
+      <div id="маршрут-меню" class="меню" role="menu" hidden></div>
+      <button id="без-вопросов" class="пилюля прозрачная" aria-pressed="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 13 3.6v4.1c0 3-2.1 5.3-5 6.4-2.9-1.1-5-3.4-5-6.4V3.6z"/></svg><span class="подпись">Без вопросов</span></button>
+      <span class="распорка"></span>
+      <button id="модели-кнопка" class="пилюля" aria-expanded="false" aria-controls="модели-панель"><span class="полоски" aria-hidden="true"><span></span><span></span></span>Модели</button>
+      <button id="отправить" class="круглая отправить" aria-label="Отправить" title="Отправить (Ctrl+Enter)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 12.5V3.5M4 7.5 8 3.5l4 4"/></svg></button>
+    </div>
   </div>
+  <div class="под-полем">
+    <label title="Включено — Claude и Codex передают работу друг другу сами. Выключено — каждую передачу вы подтверждаете кнопкой"><input type="checkbox" id="авто" checked>Автопересылка</label>
+    <span class="распорка"></span>
+    <button id="диагностика-кнопка" class="ссылка-кнопка" aria-expanded="false" aria-controls="диагностика" title="Служебные логи процессов агентов — не часть разговора">Диагностика <span id="диагностика-счёт">0</span><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg></button>
+  </div>
+  <div id="диагностика" hidden><pre id="диагностика-строки"></pre></div>
 </footer>
 <script nonce="${nonce}" src="${ресурс("format.js")}"></script>
+<script nonce="${nonce}" src="${ресурс("thread.js")}"></script>
 <script nonce="${nonce}" src="${ресурс("vendor/markdown.js")}"></script>
 <script nonce="${nonce}" src="${ресурс("panel.js")}"></script>
 </body>

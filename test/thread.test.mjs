@@ -22,6 +22,7 @@ const {
   trackSteps,
   beadFor,
   actionCounters,
+  verdictLine,
 } = require_("../media/thread.js");
 
 // --- Уровни ------------------------------------------------------------------
@@ -53,10 +54,11 @@ test("неизвестный уровень не теряется, а встаё
   assert.deepEqual(effortLevels("codex", ["low", "turbo"]).map((у) => у.id), ["low", "turbo"]);
 });
 
-test("уровень по умолчанию: из каталога, иначе «Высокое», иначе середина", () => {
+test("уровень по умолчанию — только из каталога; неизвестный не угадывается", () => {
   assert.equal(defaultEffort({ efforts: ["low", "high"], defaultEffort: "low" }), "low");
-  assert.equal(defaultEffort({ efforts: ["low", "medium", "high", "max"] }), "high");
-  assert.equal(defaultEffort({ efforts: ["low", "medium", "max"] }), "medium");
+  // Claude своего умолчания в каталоге не сообщает; «Высокое» было бы догадкой.
+  assert.equal(defaultEffort({ efforts: ["low", "medium", "high", "max"] }), "");
+  assert.equal(defaultEffort({ efforts: ["low"], defaultEffort: "max" }), "", "умолчание вне списка — не умолчание");
   assert.equal(defaultEffort({ efforts: [] }), "");
 });
 
@@ -102,6 +104,18 @@ test("режим за пунктиром: сплошная часть конча
   const р = threadLayout("claude", уровни, "high", "high");
   assert.ok(р.modeSegment);
   assert.equal(р.modeSegment.left, р.nodes[2].center);
+});
+
+test("пустой выбор при неизвестном умолчании: ни один узел не выбран, поток стоит", () => {
+  const уровни = effortLevels("claude", ["low", "medium", "high", "max"]);
+  const р = threadLayout("claude", уровни, "", "");
+  assert.equal(р.label, "По умолчанию");
+  assert.equal(р.nodes.some((у) => у.current), false);
+  assert.equal(р.litWidth, 0);
+  assert.equal(р.particles.length, 0);
+  assert.equal(р.ringLeft, null, "кольцо некому показывать");
+  assert.equal(р.defaultLeft, null, "чёрточка умолчания не ставится наугад");
+  assert.ok(р.nodes.every((у) => у.fill === "var(--нить-пусто)"));
 });
 
 test("нет уровней — нет нити", () => {
@@ -198,4 +212,28 @@ test("счётчики: команды, чтения, правки, прочее
     { kind: "denied", n: 1 },
   ]);
   assert.deepEqual(actionCounters([], 0), []);
+});
+
+// --- Строка вердикта ------------------------------------------------------------------
+
+/** Текст из строк: перевод строки кодом, а не escape-записью (см. hygiene.test.mjs). */
+const строки = (...с) => с.join(String.fromCharCode(10));
+
+test("вердикт: последняя строка отделяется от текста и остаётся видимой как есть", () => {
+  const р = verdictLine(строки("Замечаний два.", "", "1. Первое.", "", "ВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ", ""));
+  assert.equal(р.verdict, "remarks");
+  assert.equal(р.line, "ВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  assert.equal(р.body, строки("Замечаний два.", "", "1. Первое."));
+  assert.equal(verdictLine(строки("Всё хорошо.", "ВЕРДИКТ: ПРИНЯТО")).verdict, "accepted");
+  assert.equal(verdictLine(строки("Нужны данные.", "ВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА")).verdict, "human");
+});
+
+test("вердикт: строку не в конце, в коде, в цитате и неточную не отделяем", () => {
+  assert.equal(verdictLine(строки("ВЕРДИКТ: ПРИНЯТО", "а потом ещё текст")), null);
+  assert.equal(verdictLine(строки("```", "ВЕРДИКТ: ПРИНЯТО")), null, "незакрытый блок кода");
+  assert.equal(verdictLine("    ВЕРДИКТ: ПРИНЯТО"), null, "отступ кода");
+  assert.equal(verdictLine("> ВЕРДИКТ: ПРИНЯТО"), null);
+  assert.equal(verdictLine("ВЕРДИКТ: НЕПРИНЯТО"), null);
+  assert.equal(verdictLine("`ВЕРДИКТ: ПРИНЯТО`"), null);
+  assert.equal(verdictLine(""), null);
 });

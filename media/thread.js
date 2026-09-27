@@ -98,19 +98,21 @@
     return уровни;
   }
 
-  /** Уровень по умолчанию: из каталога модели, иначе «Высокое», иначе середина. */
+  /**
+   * Уровень по умолчанию — только если его сообщил каталог модели. Claude
+   * своего умолчания не сообщает (у Opus 5.5 это «Среднее», у прочих
+   * «Высокое» — но это документация, а не ответ CLI), и догадка показала бы
+   * неизвестное как известное.
+   */
   function defaultEffort(вариант) {
     const уровни = вариант?.efforts ?? [];
-    if (вариант?.defaultEffort && уровни.includes(вариант.defaultEffort)) return вариант.defaultEffort;
-    if (уровни.includes("high")) return "high";
-    if (уровни.length === 0) return "";
-    const упорядоченные = effortLevels("codex", уровни).map((у) => у.id);
-    return упорядоченные[Math.floor((упорядоченные.length - 1) / 2)];
+    return вариант?.defaultEffort && уровни.includes(вариант.defaultEffort) ? вариант.defaultEffort : "";
   }
 
   /**
    * Раскладка нити уровня рассуждения в полосе шириной width (px).
-   * selectedId "" — выбран уровень по умолчанию.
+   * selectedId "" — уровень по умолчанию; если и он неизвестен (defaultId ""),
+   * ни один узел не выбран: решает агент.
    */
   function threadLayout(агент, уровни, selectedId, defaultId, width = 328) {
     if (!уровни || уровни.length === 0) return null;
@@ -121,12 +123,13 @@
     const конец = width - (естьВетвление ? 44 : 10);
     const центр = (i) => (последний === 0 ? 10 : 10 + (i * (конец - 10)) / последний);
     const поИд = (id) => уровни.findIndex((у) => у.id === id);
-    const поУмолчанию = поИд(defaultId) >= 0 ? поИд(defaultId) : 0;
+    const поУмолчанию = поИд(defaultId);
     const выбран = поИд(selectedId) >= 0 ? поИд(selectedId) : поУмолчанию;
+    if (выбран < 0) return безВыбора(уровни, центр, концоСплошной(уровни, центр));
     const уровень = уровни[выбран];
     const ранг = УРОВНИ.indexOf(уровень.id) >= 0 ? УРОВНИ.indexOf(уровень.id) : уровень.mode ? 5 : выбран;
     const режим = уровни.findIndex((у) => у.mode);
-    const концоСплошной = режим > 0 ? центр(режим - 1) : центр(последний);
+    const конецСплошной = концоСплошной(уровни, центр);
     const глубина = уровень.id === "max";
     const длительность = 3.2 - ранг * 0.42;
     const частиц = ранг === 0 ? 0 : 4 + ранг * 2;
@@ -135,12 +138,12 @@
       label: уровень.name,
       color: уровень.color,
       tipColor: палитра.tip,
-      baseWidth: концоСплошной - 10,
+      baseWidth: конецСплошной - 10,
       modeSegment:
         режим > 0
           ? { left: центр(режим - 1), width: центр(режим) - центр(режим - 1), lit: выбран >= режим }
           : null,
-      litWidth: Math.min(центр(выбран), концоСплошной) - 10,
+      litWidth: Math.min(центр(выбран), конецСплошной) - 10,
       litTop: глубина ? 20.5 : 21,
       litHeight: глубина ? 3 : 2,
       litFill: уровень.fork ? палитра.flare : `linear-gradient(90deg, ${палитра.start} 0%, ${уровень.color} 100%)`,
@@ -156,7 +159,7 @@
       ringLeft: центр(выбран) - 7,
       ringDur: кольцо.toFixed(2) + "s",
       ringDelay: (-кольцо / 2).toFixed(2) + "s",
-      defaultLeft: центр(поУмолчанию) - 1,
+      defaultLeft: поУмолчанию >= 0 ? центр(поУмолчанию) - 1 : null,
       nodes: уровни.map((у, i) => ({
         id: у.id,
         name: у.name,
@@ -169,6 +172,51 @@
         fill: i === выбран && уровень.fork ? палитра.flare : i <= выбран ? у.color : у.mode ? "transparent" : "var(--нить-пусто)",
         border: у.mode && i > выбран ? "1.5px solid var(--нить-край)" : "0",
         glow: i === выбран ? `0 0 12px ${у.color}` : "none",
+      })),
+    };
+  }
+
+  /** Сплошная часть нити кончается на последнем уровне; режим (Ultracode) — за пунктиром. */
+  function концоСплошной(уровни, центр) {
+    const режим = уровни.findIndex((у) => у.mode);
+    return режим > 0 ? центр(режим - 1) : центр(уровни.length - 1);
+  }
+
+  /** Нить, на которой ничего не выбрано: тусклые узлы, поток стоит, кольца нет. */
+  function безВыбора(уровни, центр, конецСплошной) {
+    const режим = уровни.findIndex((у) => у.mode);
+    return {
+      label: "По умолчанию",
+      color: "",
+      tipColor: "",
+      baseWidth: конецСплошной - 10,
+      modeSegment: режим > 0 ? { left: центр(режим - 1), width: центр(режим) - центр(режим - 1), lit: false } : null,
+      litWidth: 0,
+      litTop: 21,
+      litHeight: 2,
+      litFill: "none",
+      flowWidth: 0,
+      particles: [],
+      fork: false,
+      forkLeft: 0,
+      branches: [],
+      deep: false,
+      ringLeft: null,
+      ringDur: "0s",
+      ringDelay: "0s",
+      defaultLeft: null,
+      nodes: уровни.map((у, i) => ({
+        id: у.id,
+        name: у.name,
+        tip: у.tip,
+        mode: у.mode,
+        current: false,
+        center: центр(i),
+        left: центр(i) - 14,
+        size: 8,
+        fill: у.mode ? "transparent" : "var(--нить-пусто)",
+        border: у.mode ? "1.5px solid var(--нить-край)" : "0",
+        glow: "none",
       })),
     };
   }
@@ -242,7 +290,36 @@
     return итог;
   }
 
-  const api = { effortLevels, defaultEffort, threadLayout, relayView, trackSteps, beadFor, actionCounters };
+  const ЗНАЧЕНИЯ = { "ПРИНЯТО": "accepted", "ЕСТЬ ЗАМЕЧАНИЯ": "remarks", "НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА": "human" };
+  const ОГРАДА = /^ {0,3}(`{3,}|~{3,})/;
+
+  /**
+   * Строка вердикта для показа: значок и слова, под ними исходная строка.
+   * Только оформление — вердикт для цикла читает src/verdict.ts из исходного
+   * текста. Здесь правило уже: строка должна быть последней, точной, вне кода
+   * и вне цитаты; сомнительное остаётся обычным текстом, ничего не теряется.
+   */
+  function verdictLine(текст) {
+    if (!текст) return null;
+    // Перевод строки кодом, а не escape-записью: инструменты правки превращают её в настоящий знак.
+    const строки = текст.split(String.fromCharCode(10)).map((с) => с.trimEnd());
+    let конец = строки.length - 1;
+    while (конец >= 0 && строки[конец].trim() === "") конец -= 1;
+    if (конец < 0) return null;
+    const последняя = строки[конец];
+    const м = /^ВЕРДИКТ: (.+?)\s*$/u.exec(последняя);
+    if (!м || !ЗНАЧЕНИЯ[м[1]]) return null;
+    // Нечётное число оград выше — строка внутри незакрытого блока кода.
+    const оград = строки.slice(0, конец).filter((с) => ОГРАДА.test(с)).length;
+    if (оград % 2 === 1) return null;
+    return {
+      verdict: ЗНАЧЕНИЯ[м[1]],
+      line: последняя.trim(),
+      body: строки.slice(0, конец).join(String.fromCharCode(10)).replace(/\s+$/u, ""),
+    };
+  }
+
+  const api = { effortLevels, defaultEffort, threadLayout, relayView, trackSteps, beadFor, actionCounters, verdictLine };
   globalThis.PanelThread = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();
