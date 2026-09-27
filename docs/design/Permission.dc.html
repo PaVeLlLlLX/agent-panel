@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Запрос разрешения</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+.t-dark{--bg:#1F1F1F;--bg2:#181818;--surface:#252526;--raised:#2D2D2D;--line:#2B2B2B;--line2:#3C3C3C;--fg:#CCCCCC;--fg-strong:#EDEDED;--muted:#9D9D9D;--accent:#0078D4;--accent-fg:#FFFFFF;--btn2:#313131;--btn2-fg:#CCCCCC;--code:#2B2B2B;--claude:#89D185;--codex:#E8A04C;--warn:#E2C04A;--danger:#F48771;--ok:#89D185;--run:#6CB6FF;--tint-warn:rgba(204,167,0,.14);--tint-run:rgba(55,148,255,.14);--tint-codex:rgba(232,160,76,.14);--tint-claude:rgba(137,209,133,.12);--tint-danger:rgba(244,135,113,.14)}
+button,select,textarea,input{font:inherit}
+</style>
+</helmet>
+<div class="t-dark" style="width: 560px; height: 640px; box-sizing: border-box; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; font-size: 13px; line-height: 1.45">
+<header style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--bg2)">
+<span style="display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border-radius: 999px; background: var(--tint-run); color: var(--fg-strong); font-weight: 600"><span style="width: 8px; height: 8px; border-radius: 50%; background: var(--run)"></span>ждёт разрешения</span>
+<span style="font-size: 12px; color: var(--muted)">Claude работает · проверок 0 из 3</span>
+<span style="flex-grow: 1"></span>
+<button style="height: 28px; padding: 0 10px; border: 1px solid var(--line2); border-radius: 6px; background: var(--btn2); color: var(--btn2-fg); cursor: pointer">Прервать</button>
+</header>
+<main style="flex-grow: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 14px; padding: 16px 14px">
+<div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg2); font-size: 12px; color: var(--muted)">
+<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true" style="color: var(--ok)"><path d="M3 8.5 6.5 12 13 4.5"></path></svg>
+<span style="font-family: Consolas, 'Cascadia Mono', monospace; color: var(--fg)">git show 1880426 --stat</span>
+<span style="flex-grow: 1"></span>
+<span title="Правило Bash(git show *) до остановки Claude">разрешено в этой сессии</span>
+</div>
+<article style="display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; align-items: center; gap: 8px; font-size: 12px"><span style="width: 8px; height: 8px; border-radius: 50%; background: var(--claude)"></span><span style="font-weight: 600; color: var(--fg-strong)">Claude</span></div>
+<p style="margin: 0; padding-left: 16px">Покажу рецензенту сам файл из коммита — это чтение, файлы не меняются.</p>
+</article>
+<section aria-label="Запрос разрешения" style="display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--line2); border-radius: 10px; background: var(--surface)">
+<div style="display: flex; align-items: center; gap: 8px">
+<span style="display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; background: var(--tint-run); color: var(--run)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 4.5 6.5 8 3 11.5M8.5 12h4.5"></path></svg></span>
+<span style="font-weight: 600; color: var(--fg-strong)">Claude просит разрешение</span>
+<span style="padding: 1px 7px; border-radius: 4px; background: var(--btn2); font-family: Consolas, 'Cascadia Mono', monospace; font-size: 12px">Bash</span>
+</div>
+<pre style="margin: 0; padding: 8px 10px; border-radius: 6px; background: var(--code); font-family: Consolas, 'Cascadia Mono', monospace; font-size: 12px; white-space: pre-wrap; color: var(--fg-strong)">git show d748e88:src/verdict.ts</pre>
+<div style="display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted)"><span>Показать файл из коммита</span><span>папка: …/source/agent-panel</span></div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px">
+<button style="height: 30px; padding: 0 14px; border: 0; border-radius: 6px; background: var(--accent); color: var(--accent-fg); font-weight: 600; cursor: pointer">Разрешить</button>
+<button style="height: 30px; padding: 0 12px; border: 1px solid var(--line2); border-radius: 6px; background: var(--btn2); color: var(--btn2-fg); cursor: pointer">Разрешить в этой сессии</button>
+<button style="height: 30px; padding: 0 12px; border: 1px solid var(--line2); border-radius: 6px; background: var(--btn2); color: var(--btn2-fg); cursor: pointer">Больше не спрашивать</button>
+<button style="height: 30px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--danger); cursor: pointer">Отклонить</button>
+</div>
+<p style="margin: 0; font-size: 12px; color: var(--muted)">«В этой сессии» — правило Bash(git show *) до остановки Claude. В файлы настроек ничего не пишется.</p>
+</section>
+</main>
+<footer style="display: flex; align-items: flex-end; gap: 8px; padding: 10px 14px 12px; border-top: 1px solid var(--line); background: var(--bg2)">
+<textarea aria-label="Сообщение" rows="2" placeholder="Сообщение… Ctrl+Enter отправляет" style="flex-grow: 1; box-sizing: border-box; resize: none; padding: 8px 10px; border: 1px solid var(--line2); border-radius: 8px; background: var(--bg); color: var(--fg)"></textarea>
+<button style="height: 30px; padding: 0 14px; border: 0; border-radius: 6px; background: var(--accent); color: var(--accent-fg); font-weight: 600; cursor: pointer">Отправить</button>
+</footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":560,"height":640}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

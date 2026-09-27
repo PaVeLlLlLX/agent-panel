@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Статус цикла — два варианта</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+@keyframes ст-поток{0%{left:0%;opacity:0}15%{opacity:1}85%{opacity:1}100%{left:100%;opacity:0}}
+@keyframes ст-пульс{0%{transform:scale(1);opacity:.55}100%{transform:scale(2.4);opacity:0}}
+@keyframes ст-дыхание{0%,100%{box-shadow:0 0 0 0 rgba(230,180,80,.0)}50%{box-shadow:0 0 0 5px rgba(230,180,80,.25)}}
+.ст-перелив{background:linear-gradient(90deg,#8E8E8E 0%,#F4F4F4 45%,#8E8E8E 90%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:ст-перелив 2.4s linear infinite}
+@keyframes ст-перелив{from{background-position:150% 0}to{background-position:-50% 0}}
+@media (prefers-reduced-motion:reduce){.ст-частица{display:none}.ст-кольцо,.ст-перелив,.ст-человек{animation:none!important}}
+</style>
+</helmet>
+<div style="width: 560px; height: 300px; box-sizing: border-box; display: flex; flex-direction: column; gap: 16px; padding: 20px; background: #1B1B1B; color: #D6D6D6; font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; font-size: 13px">
+<section aria-label="Статус: Эстафета" style="display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-radius: 16px; background: #202020; border: 1px solid rgba(255, 255, 255, 0.07)">
+<div style="position: relative; flex-shrink: 0; width: 140px; height: 16px">
+<span style="position: absolute; left: 8px; right: 8px; top: 7px; height: 2px; border-radius: 1px; background: {{threadFill}}"></span>
+<div style="position: absolute; left: 14px; right: 14px; top: 8px; height: 0">
+<sc-for list="{{flow}}" as="p" hint-placeholder-count="5">
+<span class="ст-частица" style="position: absolute; top: -1.5px; width: 3px; height: 3px; border-radius: 50%; background: #FFFFFF; box-shadow: 0 0 6px {{activeColor}}; animation: ст-поток 1.6s linear {{p.delay}} infinite; animation-direction: {{flowDirection}}"></span>
+</sc-for>
+</div>
+<span title="Claude" style="position: absolute; left: 0; top: 0; width: 16px; height: 16px; border-radius: 50%; background: #DE9C60; opacity: {{claudeOpacity}}; box-shadow: {{claudeGlow}}"></span>
+<span title="Codex" style="position: absolute; right: 0; top: 0; width: 16px; height: 16px; border-radius: 50%; background: #4CB9C3; opacity: {{codexOpacity}}; box-shadow: {{codexGlow}}"></span>
+<sc-if value="{{pulse}}" hint-placeholder-val="{{ true }}">
+<span class="ст-кольцо" style="position: absolute; top: 0; left: {{pulseLeft}}; width: 16px; height: 16px; box-sizing: border-box; border-radius: 50%; border: 2px solid {{activeColor}}; animation: ст-пульс 1.8s ease-out infinite"></span>
+</sc-if>
+<sc-if value="{{human}}" hint-placeholder-val="{{ false }}">
+<span class="ст-человек" title="Вы" style="position: absolute; left: 63px; top: 1px; width: 14px; height: 14px; border-radius: 50%; background: #ECECEC; animation: ст-дыхание 2s ease-in-out infinite"></span>
+</sc-if>
+<sc-if value="{{accepted}}" hint-placeholder-val="{{ false }}">
+<span style="position: absolute; left: 60px; top: -2px; width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: #1B1B1B; color: #7CC98A"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5"></path></svg></span>
+</sc-if>
+</div>
+<div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px">
+<span class="{{labelClass}}" style="font-weight: 600; color: {{labelColor}}">{{label}}</span>
+<span style="font-size: 12px; color: #7A7A7A">{{sub}}</span>
+</div>
+<div role="img" aria-label="{{roundsLabel}}" style="flex-shrink: 0; display: inline-flex; gap: 4px">
+<sc-for list="{{rounds}}" as="r" hint-placeholder-count="3"><span style="width: 6px; height: 6px; border-radius: 50%; background: {{r.fill}}"></span></sc-for>
+</div>
+</section>
+<section aria-label="Статус: Дорожка цикла" style="display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: 16px; background: #202020; border: 1px solid rgba(255, 255, 255, 0.07)">
+<div style="display: flex; align-items: center">
+<sc-for list="{{steps}}" as="s" hint-placeholder-count="7">
+<span style="display: inline-flex; align-items: center">
+<sc-if value="{{s.link}}" hint-placeholder-val="{{ true }}"><span style="width: 22px; height: 2px; background: {{s.linkFill}}"></span></sc-if>
+<span title="{{s.title}}" style="position: relative; width: {{s.size}}; height: {{s.size}}; box-sizing: border-box; border-radius: 50%; background: {{s.fill}}; border: {{s.border}}; box-shadow: {{s.glow}}">
+<sc-if value="{{s.hasMark}}" hint-placeholder-val="{{ false }}"><span style="position: absolute; right: -7px; top: -8px; min-width: 12px; height: 12px; padding: 0 2px; box-sizing: border-box; border-radius: 6px; background: #1B1B1B; color: {{s.markColor}}; font-size: 10px; font-weight: 700; line-height: 12px; text-align: center">{{s.mark}}</span></sc-if>
+</span>
+</span>
+</sc-for>
+</div>
+<div style="display: flex; align-items: baseline; gap: 8px"><span class="{{labelClass}}" style="font-weight: 600; color: {{labelColor}}">{{label}}</span><span style="font-size: 12px; color: #7A7A7A">{{sub}}</span></div>
+</section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"stage":{"editor":"enum","options":["claude","codex","human","accepted"],"default":"codex"},"$preview":{"width":560,"height":300}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const этап = this.props.stage ?? 'codex';
+    const тёплый = '#DE9C60', холодный = '#4CB9C3', янтарь = '#E6B450';
+    const активен = этап === 'claude' ? тёплый : этап === 'codex' ? холодный : '#ECECEC';
+    const подписи = {
+      claude: ['Claude исправляет', 'по замечаниям Codex'],
+      codex: ['Codex проверяет', 'работу Claude'],
+      human: ['Ждёт вашего решения', 'обмен остановлен'],
+      accepted: ['Работа принята', 'цикл завершён']
+    };
+    const раунд = этап === 'claude' ? 1 : 2;
+    const шаг = (kind, state, mark) => {
+      const цвет = kind === 'claude' ? тёплый : kind === 'codex' ? холодный : '#ECECEC';
+      const текущий = state === 'current', тень = state === 'ghost';
+      return {
+        kind, link: kind !== 'task',
+        title: kind === 'task' ? 'Задача' : kind === 'claude' ? 'Claude' : kind === 'codex' ? 'Codex' : 'Вы',
+        size: текущий ? '14px' : '10px',
+        fill: тень ? 'transparent' : kind === 'task' ? '#6A6A6A' : цвет,
+        border: тень ? '1.5px solid #3A3A3A' : '0',
+        glow: текущий ? (kind === 'you' ? '0 0 0 4px rgba(230,180,80,.25)' : '0 0 10px ' + цвет) : 'none',
+        linkFill: тень ? '#2E2E2E' : '#4A4A4A',
+        hasMark: !!mark, mark: mark || '',
+        markColor: mark === '✓' ? '#7CC98A' : mark === '?' ? янтарь : янтарь
+      };
+    };
+    const путь = {
+      claude: [шаг('task'), шаг('claude'), шаг('codex', 'done', '!'), шаг('claude', 'current'), шаг('codex', 'ghost'), шаг('claude', 'ghost'), шаг('codex', 'ghost')],
+      codex: [шаг('task'), шаг('claude'), шаг('codex', 'done', '!'), шаг('claude'), шаг('codex', 'current'), шаг('claude', 'ghost'), шаг('codex', 'ghost')],
+      human: [шаг('task'), шаг('claude'), шаг('codex', 'done', '!'), шаг('claude'), шаг('codex', 'done', '?'), шаг('you', 'current')],
+      accepted: [шаг('task'), шаг('claude'), шаг('codex', 'done', '!'), шаг('claude'), шаг('codex', 'done', '✓')]
+    }[этап];
+    return {
+      label: подписи[этап][0],
+      sub: подписи[этап][1],
+      labelClass: этап === 'claude' || этап === 'codex' ? 'ст-перелив' : '',
+      labelColor: этап === 'human' ? янтарь : этап === 'accepted' ? '#7CC98A' : '#F4F4F4',
+      activeColor: активен,
+      threadFill: этап === 'accepted' ? 'linear-gradient(90deg, ' + тёплый + ', ' + холодный + ')' : '#353535',
+      flow: этап === 'claude' || этап === 'codex' ? [0, 1, 2, 3, 4].map((k) => ({ delay: (-k * 0.32).toFixed(2) + 's' })) : [],
+      flowDirection: этап === 'claude' ? 'reverse' : 'normal',
+      claudeOpacity: этап === 'codex' ? '0.45' : '1',
+      codexOpacity: этап === 'claude' ? '0.45' : '1',
+      claudeGlow: этап === 'claude' ? '0 0 12px ' + тёплый : 'none',
+      codexGlow: этап === 'codex' ? '0 0 12px ' + холодный : 'none',
+      pulse: этап === 'claude' || этап === 'codex',
+      pulseLeft: этап === 'claude' ? '0px' : '124px',
+      human: этап === 'human',
+      accepted: этап === 'accepted',
+      roundsLabel: 'проверок ' + раунд + ' из 3',
+      rounds: [0, 1, 2].map((i) => ({ fill: i < раунд ? '#BDBDBD' : '#3A3A3A' })),
+      steps: путь
+    };
+  }
+}
+</script>
+</body>
+</html>

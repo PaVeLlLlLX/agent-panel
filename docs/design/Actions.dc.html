@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Действия агента</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+.t-dark{--bg:#1F1F1F;--bg2:#181818;--surface:#252526;--raised:#2D2D2D;--line:#2B2B2B;--line2:#3C3C3C;--fg:#CCCCCC;--fg-strong:#EDEDED;--muted:#9D9D9D;--accent:#0078D4;--accent-fg:#FFFFFF;--btn2:#313131;--btn2-fg:#CCCCCC;--code:#2B2B2B;--claude:#89D185;--codex:#E8A04C;--warn:#E2C04A;--danger:#F48771;--ok:#89D185;--run:#6CB6FF;--tint-warn:rgba(204,167,0,.14);--tint-run:rgba(55,148,255,.14);--tint-claude:rgba(137,209,133,.12);--tint-danger:rgba(244,135,113,.14)}
+button,select,textarea,input{font:inherit}
+</style>
+</helmet>
+<div class="t-dark" style="width: 560px; height: 620px; box-sizing: border-box; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; font-size: 13px; line-height: 1.45">
+<header style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--bg2)">
+<span style="display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border-radius: 999px; background: var(--tint-claude); color: var(--fg-strong); font-weight: 600"><span style="width: 8px; height: 8px; border-radius: 50%; background: var(--claude)"></span>Claude работает</span>
+<span style="font-size: 12px; color: var(--muted)">проверок 1 из 3</span>
+</header>
+<main style="flex-grow: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 12px; padding: 16px 14px">
+<section aria-label="Действия Claude за ход" style="display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px; background: var(--bg2); overflow: hidden">
+<button aria-expanded="true" style="display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--muted); font-size: 12px; text-align: left; cursor: pointer"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6"></path></svg><span style="color: var(--fg)">Claude</span><span>4 команды · 1 чтение · 1 правка</span></button>
+<div style="display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--line); font-size: 12px; min-width: 0"><span style="flex-shrink: 0; width: 132px; box-sizing: border-box; padding: 1px 7px; border-radius: 999px; background: var(--tint-claude); color: var(--ok); text-align: center">результат получен</span><span style="flex-shrink: 0; font-family: Consolas, 'Cascadia Mono', monospace; color: var(--fg-strong)">Read</span><span style="min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: Consolas, 'Cascadia Mono', monospace; color: var(--muted)">docs/2026-09-13-обсуждение-методологии-для-Claude.md</span></div>
+<div style="display: flex; flex-direction: column; border-bottom: 1px solid var(--line)">
+<div style="display: flex; align-items: center; gap: 8px; padding: 7px 12px; font-size: 12px; min-width: 0"><span style="flex-shrink: 0; width: 132px; box-sizing: border-box; padding: 1px 7px; border-radius: 999px; background: var(--tint-claude); color: var(--ok); text-align: center">результат получен</span><span style="flex-shrink: 0; font-family: Consolas, 'Cascadia Mono', monospace; color: var(--fg-strong)">Bash</span><span style="min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: Consolas, 'Cascadia Mono', monospace; color: var(--muted)">curl -s "https://iss.moex.com/iss/securities/SBER/dividends.json"</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 0 12px 10px">
+<pre style="margin: 0; padding: 8px 10px; border-radius: 6px; background: var(--code); font-family: Consolas, 'Cascadia Mono', monospace; font-size: 12px; white-space: pre-wrap; color: var(--fg)">{"securities": {"columns": ["SECID", "SHORTNAME", "ISIN", …],
+ "data": [["SBER", "Сбербанк", "RU0009029540", …]]}}</pre>
+<span style="font-size: 11px; color: var(--muted)">сырой вывод · уходит рецензенту как есть</span>
+</div>
+</div>
+<div style="display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--line); font-size: 12px; min-width: 0"><span style="flex-shrink: 0; width: 132px; box-sizing: border-box; padding: 1px 7px; border-radius: 999px; background: var(--tint-danger); color: var(--danger); text-align: center">отказано</span><span style="flex-shrink: 0; font-family: Consolas, 'Cascadia Mono', monospace; color: var(--fg-strong)">Bash</span><span style="min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: Consolas, 'Cascadia Mono', monospace; color: var(--muted)">git push</span></div>
+<div style="display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--line); font-size: 12px; min-width: 0"><span style="flex-shrink: 0; width: 132px; box-sizing: border-box; padding: 1px 7px; border-radius: 999px; background: var(--tint-run); color: var(--run); text-align: center">выполняется</span><span style="flex-shrink: 0; font-family: Consolas, 'Cascadia Mono', monospace; color: var(--fg-strong)">Bash</span><span style="min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: Consolas, 'Cascadia Mono', monospace; color: var(--muted)">python -m pytest -q -k moex</span></div>
+<div style="display: flex; align-items: center; gap: 8px; padding: 7px 12px; font-size: 12px; min-width: 0"><span style="flex-shrink: 0; width: 132px; box-sizing: border-box; padding: 1px 7px; border-radius: 999px; background: var(--tint-warn); color: var(--warn); text-align: center">вызов сформирован</span><span style="flex-shrink: 0; font-family: Consolas, 'Cascadia Mono', monospace; color: var(--fg-strong)">Edit</span><span style="min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: Consolas, 'Cascadia Mono', monospace; color: var(--muted)">docs/research/2026-09-26-проект-спецификации-моментума-и-данные.md</span></div>
+</section>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":560,"height":620}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

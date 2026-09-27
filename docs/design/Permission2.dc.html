@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Запрос разрешения — вариант 2</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+button,select,textarea,input{font:inherit}
+</style>
+</helmet>
+<div style="width: 560px; height: 560px; box-sizing: border-box; display: flex; flex-direction: column; justify-content: flex-end; gap: 16px; padding: 16px 12px 12px; background: #1B1B1B; color: #D6D6D6; font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; font-size: 13px; line-height: 1.5">
+<div style="display: flex; align-items: center; gap: 8px; padding: 0 4px; font-size: 12px; color: #8E8E8E"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true" style="color: #7CC98A"><path d="M3 8.5 6.5 12 13 4.5"></path></svg><span style="font-family: Consolas, 'Cascadia Mono', monospace; color: #B5B5B5">git show 1880426 --stat</span><span>· разрешено в этой сессии</span></div>
+<article style="display: flex; flex-direction: column; gap: 6px; padding: 0 4px">
+<span style="font-size: 12px; font-weight: 600; color: #F4F4F4">Claude</span>
+<p style="margin: 0">Покажу рецензенту сам файл из коммита — это чтение, файлы не меняются.</p>
+</article>
+<section aria-label="Запрос разрешения" style="display: flex; flex-direction: column; gap: 12px; padding: 14px; border-radius: 18px; background: #242424; border: 1px solid rgba(255, 255, 255, 0.08)">
+<div style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: #8E8E8E"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3 4.5 6.5 8 3 11.5M8.5 12h4.5"></path></svg><span><span style="font-weight: 600; color: #F4F4F4">Claude</span> хочет выполнить команду</span></div>
+<pre style="margin: 0; padding: 10px 12px; border-radius: 12px; background: #161616; border: 1px solid rgba(255, 255, 255, 0.08); font-family: Consolas, 'Cascadia Mono', monospace; font-size: 12.5px; white-space: pre-wrap; color: #F4F4F4">git show d748e88:src/verdict.ts</pre>
+<div style="font-size: 12px; color: #8E8E8E">Показать файл из коммита · …/source/agent-panel</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px">
+<button style="height: 32px; padding: 0 16px; border: 0; border-radius: 999px; background: #ECECEC; color: #161616; font-weight: 600; cursor: pointer">Разрешить</button>
+<button title="Правило Bash(git show *) до остановки Claude" style="height: 32px; padding: 0 14px; border: 0; border-radius: 999px; background: #333333; color: #D6D6D6; cursor: pointer">В этой сессии</button>
+<button style="height: 32px; padding: 0 14px; border: 0; border-radius: 999px; background: #333333; color: #D6D6D6; cursor: pointer">Больше не спрашивать</button>
+<span style="flex-grow: 1"></span>
+<button style="height: 32px; padding: 0 8px; border: 0; border-radius: 999px; background: transparent; color: #F2877A; cursor: pointer">Отклонить</button>
+</div>
+</section>
+<div style="display: flex; align-items: center; gap: 8px; padding: 10px 10px 10px 14px; border-radius: 20px; background: #242424; border: 1px solid rgba(255, 255, 255, 0.08)">
+<textarea aria-label="Сообщение" rows="1" placeholder="Поручите задачу или задайте вопрос" style="flex-grow: 1; box-sizing: border-box; resize: none; padding: 0; border: 0; background: transparent; color: #F4F4F4; outline: none"></textarea>
+<button aria-label="Отправить" style="width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 50%; background: #ECECEC; color: #161616; cursor: pointer"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 12.5V3.5M4 7.5 8 3.5l4 4"></path></svg></button>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":560,"height":560}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

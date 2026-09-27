@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Нить: Claude и Codex</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 400px; height: 540px; box-sizing: border-box; display: flex; flex-direction: column; gap: 16px; padding: 20px; background: #1B1B1B; font-family: -apple-system, 'Segoe UI', system-ui, sans-serif">
+<dc-import name="Filament" preset="claude" model="Claude · Opus 5" start="{{ two }}" default-index="{{ two }}" hint-size="360px,112px"></dc-import>
+<dc-import name="Filament" preset="claude" model="Claude · Opus 5" start="{{ five }}" default-index="{{ two }}" hint-size="360px,112px"></dc-import>
+<dc-import name="Filament" preset="codex" model="Codex · GPT-6 Sol" start="{{ four }}" default-index="{{ zero }}" hint-size="360px,112px"></dc-import>
+<dc-import name="Filament" preset="codex" model="Codex · GPT-6 Sol" start="{{ five }}" default-index="{{ zero }}" hint-size="360px,112px"></dc-import>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":400,"height":540}}'>
+class Component extends DCLogic {
+  renderVals() { return { zero: 0, two: 2, four: 4, five: 5 }; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Уровень рассуждения — «Нить»</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+button{font:inherit}
+@keyframes нить-поток{0%{left:0%;opacity:0}12%{opacity:1}88%{opacity:1}100%{left:100%;opacity:0}}
+@keyframes нить-пульс{0%{transform:scale(1);opacity:.6}100%{transform:scale(2.6);opacity:0}}
+@keyframes нить-ветка{0%{left:0%;opacity:0}15%{opacity:1}85%{opacity:1}100%{left:100%;opacity:0}}
+@keyframes нить-агент{0%,100%{transform:scale(.7);opacity:.6}50%{transform:scale(1.15);opacity:1}}
+@media (prefers-reduced-motion:reduce){.нить-частица{display:none}.нить-кольцо{animation:none!important;opacity:0}.нить-агент{animation:none!important}}
+</style>
+</helmet>
+<div style="width: 360px; height: 112px; box-sizing: border-box; display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 18px; background: #202020; border: 1px solid rgba(255, 255, 255, 0.08); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4); color: #D6D6D6; font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; font-size: 13px">
+<div style="display: flex; align-items: baseline; gap: 10px">
+<span style="flex-grow: 1; font-size: 15px; font-weight: 600; color: {{color}}">{{label}}</span>
+<span style="font-size: 12px; color: #7A7A7A">{{model}}</span>
+</div>
+<div style="position: relative; height: 44px">
+<span style="position: absolute; left: 10px; top: 21px; height: 2px; width: {{baseWidth}}; border-radius: 1px; background: #353535"></span>
+<sc-if value="{{hasMode}}" hint-placeholder-val="{{ false }}">
+<span style="position: absolute; left: {{modeLeft}}; top: 21px; height: 2px; width: {{modeWidth}}; background: repeating-linear-gradient(90deg, {{modeSegColor}} 0 4px, transparent 4px 8px)"></span>
+</sc-if>
+<span style="position: absolute; left: 10px; top: {{litTop}}; height: {{litHeight}}; width: {{litWidth}}; border-radius: 2px; background: {{litFill}}"></span>
+<div style="position: absolute; left: 10px; top: 22px; height: 0; width: {{flowWidth}}">
+<sc-for list="{{particles}}" as="p" hint-placeholder-count="6">
+<span class="нить-частица" style="position: absolute; top: -1.5px; width: 3px; height: 3px; border-radius: 50%; background: #FFFFFF; box-shadow: 0 0 6px {{color}}; animation: нить-поток {{p.dur}} linear {{p.delay}} infinite"></span>
+</sc-for>
+</div>
+<sc-if value="{{fork}}" hint-placeholder-val="{{ false }}">
+<div style="position: absolute; left: {{forkLeft}}; top: 22px; width: 0; height: 0">
+<sc-for list="{{branches}}" as="b" hint-placeholder-count="3">
+<div style="position: absolute; left: 0; top: -0.75px; width: 34px; height: 1.5px; transform-origin: 0 50%; transform: rotate({{b.angle}}); background: linear-gradient(90deg, {{color}}, rgba(255, 255, 255, 0.12))">
+<span class="нить-частица" style="position: absolute; top: -0.75px; width: 3px; height: 3px; border-radius: 50%; background: #FFFFFF; box-shadow: 0 0 6px {{color}}; animation: нить-ветка 1.1s linear {{b.delay}} infinite"></span>
+<span class="нить-агент" style="position: absolute; right: -3px; top: -2.25px; width: 6px; height: 6px; border-radius: 50%; background: {{tip}}; box-shadow: 0 0 8px {{tip}}; animation: нить-агент 1.6s ease-in-out {{b.delay}} infinite"></span>
+</div>
+</sc-for>
+</div>
+</sc-if>
+<span style="position: absolute; top: 36px; left: {{defaultLeft}}; width: 2px; height: 4px; border-radius: 1px; background: #5A5A5A" title="по умолчанию"></span>
+<sc-for list="{{nodes}}" as="node" hint-placeholder-count="6">
+<button aria-label="{{node.name}}" aria-pressed="{{node.current}}" title="{{node.tip}}" onClick="{{node.pick}}" style="position: absolute; top: 8px; left: {{node.left}}; width: 28px; height: 28px; padding: 0; border: 0; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: center"><span style="box-sizing: border-box; width: {{node.size}}; height: {{node.size}}; border-radius: 50%; background: {{node.fill}}; border: {{node.border}}; box-shadow: {{node.glow}}"></span></button>
+</sc-for>
+<div style="position: absolute; top: 15px; left: {{ringLeft}}; width: 14px; height: 14px; pointer-events: none">
+<span class="нить-кольцо" style="position: absolute; inset: 0; border-radius: 50%; border: 2px solid {{color}}; animation: нить-пульс {{ringDur}} ease-out infinite"></span>
+<sc-if value="{{deep}}" hint-placeholder-val="{{ false }}">
+<span class="нить-кольцо" style="position: absolute; inset: 0; border-radius: 50%; border: 2px solid {{color}}; animation: нить-пульс {{ringDur}} ease-out {{ringDelay}} infinite"></span>
+</sc-if>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"preset":{"editor":"enum","options":["codex","claude"],"default":"codex"},"model":{"editor":"text","default":"Codex · GPT-6 Sol"},"start":{"editor":"int","default":5,"min":0,"max":5},"defaultIndex":{"editor":"int","default":0,"min":0,"max":5},"$preview":{"width":360,"height":112}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const claude = (this.props.preset ?? 'codex') === 'claude';
+    const набор = claude ? [
+      { n: 'Низкое', c: '#8C7C70', t: 'Самое экономное: меньше рассуждений и вызовов инструментов. Для простых задач' },
+      { n: 'Среднее', c: '#AE8868', t: 'Баланс скорости, цены и качества. По умолчанию у Opus 5.5' },
+      { n: 'Высокое', c: '#C99264', t: 'Столько рассуждений, сколько нужно задаче. По умолчанию у Opus 5 и Sonnet 5' },
+      { n: 'Очень высокое', c: '#DE9C60', t: 'Для долгой агентной работы: задачи на полчаса и дольше' },
+      { n: 'Максимум', c: '#F0A862', t: 'Без ограничений на расход. Выигрыш часто невелик, возможен перебор' },
+      { n: 'Ultracode', c: '#FFC27A', t: 'Не уровень, а режим Claude Code: «Очень высокое» плюс рабочие процессы с несколькими агентами', mode: true }
+    ] : [
+      { n: 'Низкое', c: '#6F808C', t: 'Короткое рассуждение, быстрее всего' },
+      { n: 'Среднее', c: '#5B94A6', t: 'Обычная глубина рассуждения' },
+      { n: 'Высокое', c: '#4FA7B6', t: 'Рассуждает глубже' },
+      { n: 'Очень высокое', c: '#4CB9C3', t: 'Ещё глубже и дольше' },
+      { n: 'Максимум', c: '#5BCBD0', t: 'Больше времени на одну задачу: вся глубина в одном непрерывном рассуждении' },
+      { n: 'Ультра', c: '#9AE6EA', t: 'Максимум плюс автоматическая раздача частей задачи субагентам параллельно. Нет у GPT-6 Luna' }
+    ];
+    const последний = набор.length - 1;
+    const число = (v, запас) => Math.min(последний, Math.max(0, Number(v ?? запас)));
+    const исходный = число(this.props.start, последний);
+    const выбран = this.state && this.state.level != null ? this.state.level : исходный;
+    const поУмолчанию = число(this.props.defaultIndex, 0);
+    const центр = (i) => 10 + (i * 274) / последний;
+    const уровень = набор[выбран];
+    const ветвление = выбран === последний;
+    const глубина = уровень.n === 'Максимум';
+    const естьРежим = claude;
+    const конецСплошной = естьРежим ? центр(последний - 1) : центр(последний);
+    const начало = claude ? '#5E5249' : '#46525C';
+    const вспышка = claude
+      ? 'linear-gradient(90deg, #8C7C70 0%, #F0A862 70%, #FFD9A0 100%)'
+      : 'linear-gradient(90deg, #6F808C 0%, #4CB9C3 60%, #C8F4F6 100%)';
+    const длительность = (3.2 - выбран * 0.42).toFixed(2);
+    const частиц = 4 + выбран * 2;
+    const litEnd = Math.min(центр(выбран), конецСплошной);
+    return {
+      label: уровень.n,
+      color: уровень.c,
+      tip: claude ? '#FFD9A0' : '#C8F4F6',
+      model: this.props.model ?? 'Codex · GPT-6 Sol',
+      baseWidth: (конецСплошной - 10) + 'px',
+      hasMode: естьРежим,
+      modeLeft: конецСплошной + 'px',
+      modeWidth: (центр(последний) - конецСплошной) + 'px',
+      modeSegColor: ветвление ? уровень.c : '#3A3A3A',
+      litWidth: (litEnd - 10) + 'px',
+      litTop: глубина ? '20.5px' : '21px',
+      litHeight: глубина ? '3px' : '2px',
+      litFill: ветвление ? вспышка : 'linear-gradient(90deg, ' + начало + ' 0%, ' + уровень.c + ' 100%)',
+      flowWidth: (центр(выбран) - 10) + 'px',
+      particles: выбран === 0 ? [] : Array.from({ length: частиц }, (_, k) => ({
+        dur: длительность + 's',
+        delay: (-(k * parseFloat(длительность)) / частиц).toFixed(2) + 's'
+      })),
+      fork: ветвление,
+      forkLeft: (центр(выбран) + 7) + 'px',
+      branches: [-32, 0, 32].map((a, k) => ({ angle: a + 'deg', delay: (-k * 0.37).toFixed(2) + 's' })),
+      deep: глубина,
+      ringLeft: (центр(выбран) - 7) + 'px',
+      ringDur: (2.2 - выбран * 0.22).toFixed(2) + 's',
+      ringDelay: (-(2.2 - выбран * 0.22) / 2).toFixed(2) + 's',
+      defaultLeft: (центр(поУмолчанию) - 1) + 'px',
+      nodes: набор.map((l, i) => ({
+        name: l.n,
+        tip: l.t,
+        current: i === выбран,
+        left: (центр(i) - 14) + 'px',
+        size: i === выбран ? '14px' : '8px',
+        fill: i === выбран && ветвление ? вспышка : i <= выбран ? l.c : (l.mode ? 'transparent' : '#3E3E3E'),
+        border: l.mode && i > выбран ? '1.5px solid #4A4A4A' : '0',
+        glow: i === выбран ? '0 0 12px ' + l.c : 'none',
+        pick: () => this.setState({ level: i })
+      }))
+    };
+  }
+}
+</script>
+</body>
+</html>

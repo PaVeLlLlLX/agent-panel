@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Выбор режима — два варианта</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+button{font:inherit}
+</style>
+</helmet>
+<div style="width: 560px; height: 360px; box-sizing: border-box; display: flex; flex-direction: column; gap: 18px; padding: 20px; background: #1B1B1B; color: #D6D6D6; font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; font-size: 13px">
+<div style="display: flex; align-items: center; gap: 12px">
+<div role="radiogroup" aria-label="Режим" style="display: inline-flex; gap: 2px; padding: 3px; border-radius: 999px; background: #262626; border: 1px solid rgba(255, 255, 255, 0.07)">
+<sc-for list="{{routes}}" as="r" hint-placeholder-count="4">
+<button role="radio" aria-checked="{{r.on}}" aria-label="{{r.name}}" title="{{r.name}}" onClick="{{r.pick}}" style="width: 38px; height: 30px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 999px; background: {{r.bg}}; cursor: pointer">
+<sc-if value="{{r.review}}" hint-placeholder-val="{{ true }}"><svg width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><path d="M6 7h9" stroke="#7A7A7A" stroke-width="1.5" fill="none"></path><path d="M13 4.5 15.5 7 13 9.5" stroke="#7A7A7A" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"></path><circle cx="4" cy="7" r="3" fill="#DE9C60"></circle><circle cx="18.5" cy="7" r="3" fill="#4CB9C3"></circle></svg></sc-if>
+<sc-if value="{{r.both}}" hint-placeholder-val="{{ false }}"><svg width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><path d="M4 7 15 3M4 7 15 11" stroke="#7A7A7A" stroke-width="1.5" fill="none"></path><circle cx="4" cy="7" r="2" fill="#ECECEC"></circle><circle cx="17" cy="3" r="2.6" fill="#DE9C60"></circle><circle cx="17" cy="11" r="2.6" fill="#4CB9C3"></circle></svg></sc-if>
+<sc-if value="{{r.claude}}" hint-placeholder-val="{{ false }}"><svg width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><circle cx="11" cy="7" r="5.5" fill="none" stroke="#DE9C60" stroke-opacity="0.35" stroke-width="1.5"></circle><circle cx="11" cy="7" r="3.2" fill="#DE9C60"></circle></svg></sc-if>
+<sc-if value="{{r.codex}}" hint-placeholder-val="{{ false }}"><svg width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><circle cx="11" cy="7" r="5.5" fill="none" stroke="#4CB9C3" stroke-opacity="0.35" stroke-width="1.5"></circle><circle cx="11" cy="7" r="3.2" fill="#4CB9C3"></circle></svg></sc-if>
+</button>
+</sc-for>
+</div>
+<span style="font-weight: 600; color: #F4F4F4">{{current}}</span>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px; width: 260px; padding: 6px; border-radius: 16px; background: #262626; border: 1px solid rgba(255, 255, 255, 0.08); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45)">
+<sc-for list="{{routes}}" as="r" hint-placeholder-count="4">
+<button role="menuitemradio" aria-checked="{{r.on}}" onClick="{{r.pick}}" style="display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border: 0; border-radius: 10px; background: {{r.menuBg}}; color: {{r.menuColor}}; text-align: left; cursor: pointer">
+<span style="width: 22px; display: inline-flex; justify-content: center">
+<sc-if value="{{r.review}}" hint-placeholder-val="{{ true }}"><svg width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><path d="M6 7h9" stroke="#7A7A7A" stroke-width="1.5" fill="none"></path><path d="M13 4.5 15.5 7 13 9.5" stroke="#7A7A7A" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"></path><circle cx="4" cy="7" r="3" fill="#DE9C60"></circle><circle cx="18.5" cy="7" r="3" fill="#4CB9C3"></circle></svg></sc-if>
+<sc-if value="{{r.both}}" hint-placeholder-val="{{ false }}"><svg width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><path d="M4 7 15 3M4 7 15 11" stroke="#7A7A7A" stroke-width="1.5" fill="none"></path><circle cx="4" cy="7" r="2" fill="#ECECEC"></circle><circle cx="17" cy="3" r="2.6" fill="#DE9C60"></circle><circle cx="17" cy="11" r="2.6" fill="#4CB9C3"></circle></svg></sc-if>
+<sc-if value="{{r.claude}}" hint-placeholder-val="{{ false }}"><svg width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><circle cx="11" cy="7" r="3.2" fill="#DE9C60"></circle></svg></sc-if>
+<sc-if value="{{r.codex}}" hint-placeholder-val="{{ false }}"><svg width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><circle cx="11" cy="7" r="3.2" fill="#4CB9C3"></circle></svg></sc-if>
+</span>
+<span style="flex-grow: 1">{{r.name}}</span>
+<sc-if value="{{r.on}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5"></path></svg></sc-if>
+</button>
+</sc-for>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":560,"height":360}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const выбран = this.state && this.state.route ? this.state.route : 'review';
+    const все = [
+      { id: 'review', name: 'Задача с рецензией' },
+      { id: 'both', name: 'Спросить обоих' },
+      { id: 'claude', name: 'Только Claude' },
+      { id: 'codex', name: 'Только Codex' }
+    ];
+    return {
+      current: все.find((r) => r.id === выбран).name,
+      routes: все.map((r) => ({
+        name: r.name,
+        on: r.id === выбран,
+        review: r.id === 'review', both: r.id === 'both', claude: r.id === 'claude', codex: r.id === 'codex',
+        bg: r.id === выбран ? '#3A3A3A' : 'transparent',
+        menuBg: r.id === выбран ? '#333333' : 'transparent',
+        menuColor: r.id === выбран ? '#F4F4F4' : '#BDBDBD',
+        pick: () => this.setState({ route: r.id })
+      }))
+    };
+  }
+}
+</script>
+</body>
+</html>

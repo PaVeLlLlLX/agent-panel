@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Модели — вариант 2</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+button,select,textarea,input{font:inherit}
+</style>
+</helmet>
+<div style="width: 560px; height: 620px; box-sizing: border-box; display: flex; flex-direction: column; justify-content: flex-end; gap: 10px; padding: 16px 12px 12px; background: #1B1B1B; color: #D6D6D6; font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; font-size: 13px; line-height: 1.5">
+<div style="align-self: flex-end; display: flex; flex-direction: column; gap: 10px">
+<dc-import name="Filament" preset="claude" model="Claude · Opus 5" start="{{ two }}" default-index="{{ two }}" hint-size="360px,112px"></dc-import>
+<dc-import name="Filament" preset="codex" model="Codex · GPT-6 Sol" start="{{ five }}" default-index="{{ zero }}" hint-size="360px,112px"></dc-import>
+</div>
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 10px; border-radius: 20px; background: #242424; border: 1px solid rgba(255, 255, 255, 0.08)">
+<textarea aria-label="Сообщение" rows="2" placeholder="Поручите задачу или задайте вопрос" style="box-sizing: border-box; width: 100%; resize: none; padding: 0; border: 0; background: transparent; color: #F4F4F4; outline: none"></textarea>
+<div style="display: flex; align-items: center; gap: 6px">
+<button style="display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 0; border-radius: 999px; background: #333333; color: #D6D6D6; font-size: 12px; cursor: pointer">Задача с рецензией<svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6"></path></svg></button>
+<button aria-pressed="true" style="display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border: 0; border-radius: 999px; background: transparent; color: #8E8E8E; font-size: 12px; cursor: pointer"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 13 3.6v4.1c0 3-2.1 5.3-5 6.4-2.9-1.1-5-3.4-5-6.4V3.6z"></path></svg>Без вопросов</button>
+<span style="flex-grow: 1"></span>
+<button aria-expanded="true" style="display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 999px; background: #333333; color: #F4F4F4; font-size: 12px; cursor: pointer"><span style="display: inline-flex; gap: 2px"><span style="width: 9px; height: 6px; border-radius: 3px; background: #DE9C60"></span><span style="width: 9px; height: 6px; border-radius: 3px; background: #4CB9C3"></span></span>Модели<svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3.5 10 8 5.5 12.5 10"></path></svg></button>
+<button aria-label="Отправить" style="width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 50%; background: #ECECEC; color: #161616; cursor: pointer"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 12.5V3.5M4 7.5 8 3.5l4 4"></path></svg></button>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":560,"height":620}}'>
+class Component extends DCLogic {
+  renderVals() { return { zero: 0, two: 2, five: 5 }; }
+}
+</script>
+</body>
+</html>

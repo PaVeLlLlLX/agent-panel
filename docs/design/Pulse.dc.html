@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Уровень рассуждения — «Пульс»</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+button{font:inherit}
+@keyframes пульс-дыхание{0%,100%{transform:scaleY(.8)}50%{transform:scaleY(1)}}
+@keyframes пульс-перелив{0%{background-position:0% 100%}100%{background-position:0% 0%}}
+@keyframes пульс-подъём{0%{transform:translateY(0);opacity:0}20%{opacity:1}100%{transform:translateY(-34px);opacity:0}}
+@media (prefers-reduced-motion:reduce){.пульс-столбик,.пульс-частица{animation:none!important}.пульс-частица{display:none}}
+</style>
+</helmet>
+<div style="width: 360px; height: 132px; box-sizing: border-box; display: flex; align-items: center; gap: 16px; padding: 16px 14px 16px 18px; border-radius: 18px; background: #202020; border: 1px solid rgba(255, 255, 255, 0.08); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4); color: #D6D6D6; font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; font-size: 13px">
+<div style="position: relative; flex-shrink: 0; display: flex; align-items: flex-end; gap: 6px; height: 64px; padding-top: 12px; box-sizing: border-box">
+<sc-for list="{{bars}}" as="bar" hint-placeholder-count="6">
+<button aria-label="{{bar.name}}" aria-pressed="{{bar.current}}" onClick="{{bar.pick}}" style="position: relative; width: 14px; height: {{bar.height}}; padding: 0; border: 0; border-radius: 4px; background: #333333; cursor: pointer; overflow: hidden"><span class="пульс-столбик" style="position: absolute; inset: 0; border-radius: 4px; background: {{bar.fill}}; background-size: 100% 300%; opacity: {{bar.opacity}}; transform-origin: bottom; animation: {{bar.animation}}"></span></button>
+</sc-for>
+<sc-for list="{{rising}}" as="r" hint-placeholder-count="5">
+<span class="пульс-частица" style="position: absolute; bottom: 52px; left: {{r.left}}; width: 3px; height: 3px; border-radius: 50%; background: {{r.color}}; box-shadow: 0 0 6px {{r.color}}; animation: пульс-подъём 1.6s ease-out {{r.delay}} infinite"></span>
+</sc-for>
+</div>
+<div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+<span style="font-size: 16px; font-weight: 600; color: {{color}}">{{label}}</span>
+<span style="font-size: 12px; color: #8E8E8E">{{hint}}</span>
+<span style="font-size: 11px; color: #6E6E6E; padding-top: 4px">{{model}}</span>
+</div>
+<div style="flex-shrink: 0; display: flex; flex-direction: column; gap: 6px">
+<button aria-label="Выше" onClick="{{up}}" style="width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 50%; background: #303030; color: #D6D6D6; cursor: pointer"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3.5 10 8 5.5 12.5 10"></path></svg></button>
+<button aria-label="Ниже" onClick="{{down}}" style="width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 50%; background: #303030; color: #D6D6D6; cursor: pointer"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6"></path></svg></button>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"preset":{"editor":"enum","options":["codex","claude"],"default":"codex"},"model":{"editor":"text","default":"Codex · GPT-6 Sol"},"start":{"editor":"int","default":5,"min":0,"max":5},"$preview":{"width":360,"height":132}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const все = [
+      { n: 'Низкое', hint: 'быстро и коротко', c: '#8A97A3' },
+      { n: 'Среднее', hint: 'обычная глубина', c: '#4FB3BF' },
+      { n: 'Высокое', hint: 'вдумчиво', c: '#5CCB8F' },
+      { n: 'Очень высокое', hint: 'глубоко, дольше', c: '#E3B94F' },
+      { n: 'Максимум', hint: 'на пределе', c: '#F08A4B' },
+      { n: 'Ультра', hint: 'всё, что можно', c: '#F0508A' }
+    ];
+    const набор = (this.props.preset ?? 'codex') === 'claude' ? все.slice(0, 5) : все;
+    const последний = набор.length - 1;
+    const исходный = Math.min(последний, Math.max(0, Number(this.props.start ?? последний)));
+    const выбран = this.state && this.state.level != null ? this.state.level : исходный;
+    const уровень = набор[выбран];
+    const ультра = уровень.n === 'Ультра';
+    const вспышка = 'linear-gradient(0deg, #F0673F 0%, #E23C8E 33%, #9B5CF6 50%, #E23C8E 67%, #F0673F 100%)';
+    const дыхание = (2.4 - выбран * 0.32).toFixed(2);
+    const выбрать = (i) => this.setState({ level: Math.min(последний, Math.max(0, i)) });
+    return {
+      label: уровень.n,
+      hint: уровень.hint,
+      color: уровень.c,
+      model: this.props.model ?? 'Codex · GPT-6 Sol',
+      up: () => выбрать(выбран + 1),
+      down: () => выбрать(выбран - 1),
+      bars: набор.map((l, i) => ({
+        name: l.n,
+        current: i === выбран,
+        height: (14 + (i * 38) / последний) + 'px',
+        fill: ультра && i <= выбран ? вспышка : l.c,
+        opacity: i <= выбран ? '1' : '0',
+        animation: i > выбран ? 'none'
+          : (ультра
+            ? 'пульс-дыхание ' + дыхание + 's ease-in-out ' + (-i * 0.14).toFixed(2) + 's infinite, пульс-перелив 1.4s linear infinite'
+            : 'пульс-дыхание ' + дыхание + 's ease-in-out ' + (-i * 0.14).toFixed(2) + 's infinite'),
+        pick: () => выбрать(i)
+      })),
+      rising: выбран >= 4 ? Array.from({ length: ультра ? 7 : 4 }, (_, k) => ({
+        left: (4 + ((k * 23) % (набор.length * 20 - 10))) + 'px',
+        delay: (-(k * 0.23)).toFixed(2) + 's',
+        color: ультра ? ['#F0673F', '#E23C8E', '#9B5CF6', '#FFFFFF'][k % 4] : уровень.c
+      })) : []
+    };
+  }
+}
+</script>
+</body>
+</html>

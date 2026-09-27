@@ -1,0 +1,210 @@
+{
+  "v": 3,
+  "attachments": {},
+  "boards": {
+    "Actions.dc.html": {
+      "h": 620,
+      "title": "Действия агента раскрыты",
+      "w": 560,
+      "x": 1920,
+      "y": 1520
+    },
+    "Effort.dc.html": {
+      "h": 150,
+      "is_interactive": true,
+      "title": "Ползунок уровня рассуждения",
+      "w": 360,
+      "x": 3200,
+      "y": 2600
+    },
+    "EffortVariants.dc.html": {
+      "h": 540,
+      "is_interactive": true,
+      "title": "«Нить»: Claude и Codex — глубина и ветвление",
+      "w": 400,
+      "x": 0,
+      "y": 4100
+    },
+    "Filament.dc.html": {
+      "h": 112,
+      "is_interactive": true,
+      "title": "«Нить» — один компонент",
+      "w": 360,
+      "x": 480,
+      "y": 4100
+    },
+    "Held.dc.html": {
+      "h": 560,
+      "title": "Ждёт вашего решения",
+      "w": 560,
+      "x": 1280,
+      "y": 1520
+    },
+    "Held2.dc.html": {
+      "h": 480,
+      "title": "Вариант 2 — ждёт вашего решения",
+      "w": 560,
+      "x": 2560,
+      "y": 2600
+    },
+    "Light.dc.html": {
+      "h": 1120,
+      "title": "Комната в работе — светлая тема",
+      "w": 560,
+      "x": 640,
+      "y": 0
+    },
+    "Light2.dc.html": {
+      "h": 1120,
+      "title": "Вариант 2 — комната, светлая тема",
+      "w": 560,
+      "x": 640,
+      "y": 2600
+    },
+    "Main.dc.html": {
+      "h": 1120,
+      "title": "Комната в работе — тёмная тема",
+      "w": 560,
+      "x": 0,
+      "y": 0
+    },
+    "Main2.dc.html": {
+      "h": 1120,
+      "title": "Вариант 2 — комната, тёмная тема",
+      "w": 560,
+      "x": 0,
+      "y": 2600
+    },
+    "Models.dc.html": {
+      "h": 600,
+      "title": "Модели и разрешения",
+      "w": 560,
+      "x": 640,
+      "y": 1520
+    },
+    "Models2.dc.html": {
+      "h": 620,
+      "is_interactive": true,
+      "title": "Вариант 2 — модели и уровень рассуждения",
+      "w": 560,
+      "x": 1280,
+      "y": 2600
+    },
+    "Permission.dc.html": {
+      "h": 640,
+      "title": "Запрос разрешения",
+      "w": 560,
+      "x": 0,
+      "y": 1520
+    },
+    "Permission2.dc.html": {
+      "h": 560,
+      "title": "Вариант 2 — запрос разрешения",
+      "w": 560,
+      "x": 1920,
+      "y": 2600
+    },
+    "Pulse.dc.html": {
+      "h": 132,
+      "is_interactive": true,
+      "title": "Вариант «Пульс»",
+      "w": 360,
+      "x": 920,
+      "y": 4100
+    },
+    "Status.dc.html": {
+      "x": 0,
+      "y": 5060,
+      "w": 560,
+      "h": 300,
+      "title": "Статус: «Эстафета» и «Дорожка цикла»"
+    },
+    "Route.dc.html": {
+      "x": 640,
+      "y": 5060,
+      "w": 560,
+      "h": 360,
+      "title": "Выбор режима: переключатель и меню",
+      "is_interactive": true
+    },
+    "ActionsChain.dc.html": {
+      "x": 1280,
+      "y": 5060,
+      "w": 560,
+      "h": 380,
+      "title": "Действия: «Чётки» и «Счётчики»",
+      "is_interactive": true
+    }
+  },
+  "createdOnFiles": {
+    "at": "2026-09-27T03:40:00Z",
+    "v": 1
+  },
+  "designSystems": [],
+  "launch": {
+    "view": "canvas"
+  },
+  "notes": {
+    "row1": {
+      "kind": "title1",
+      "maxW": 1200,
+      "text": "Комната в работе",
+      "w": 240,
+      "x": 0,
+      "y": -300
+    },
+    "row2": {
+      "kind": "title1",
+      "maxW": 2480,
+      "text": "Состояния",
+      "w": 240,
+      "x": 0,
+      "y": 1220
+    },
+    "row3": {
+      "kind": "title1",
+      "maxW": 3560,
+      "text": "Вариант 2",
+      "w": 240,
+      "x": 0,
+      "y": 2300
+    },
+    "row4": {
+      "kind": "title1",
+      "maxW": 1280,
+      "text": "Уровень рассуждения — «Нить»",
+      "w": 240,
+      "x": 0,
+      "y": 3800
+    },
+    "row5": {
+      "kind": "title1",
+      "maxW": 1840,
+      "text": "Элементы на языке нитей",
+      "x": 0,
+      "y": 4760
+    }
+  },
+  "order": [
+    "Main.dc.html",
+    "Light.dc.html",
+    "Permission.dc.html",
+    "Models.dc.html",
+    "Held.dc.html",
+    "Actions.dc.html",
+    "Main2.dc.html",
+    "Light2.dc.html",
+    "Models2.dc.html",
+    "Permission2.dc.html",
+    "Held2.dc.html",
+    "Effort.dc.html",
+    "EffortVariants.dc.html",
+    "Filament.dc.html",
+    "Pulse.dc.html",
+    "Status.dc.html",
+    "Route.dc.html",
+    "ActionsChain.dc.html"
+  ],
+  "pages": [],
+  "title": "Agent Panel"
+}

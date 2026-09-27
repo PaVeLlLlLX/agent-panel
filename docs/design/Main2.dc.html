@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Комната в работе — вариант 2</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+.v-dark{--bg:#1B1B1B;--surface:#242424;--raised:#2F2F2F;--inset:#161616;--hair:rgba(255,255,255,0.08);--fg:#D6D6D6;--strong:#F4F4F4;--muted:#8E8E8E;--faint:#6A6A6A;--pill:#ECECEC;--pill-fg:#161616;--pill2:#333333;--attn:#E6B450;--ok:#7CC98A;--bad:#F2877A;--accent:#6AA5FF}
+.v-light{--bg:#FFFFFF;--surface:#F4F4F5;--raised:#EEEEEF;--inset:#FAFAFA;--hair:rgba(0,0,0,0.08);--fg:#2E2E2E;--strong:#111111;--muted:#6B6B6B;--faint:#8F8F8F;--pill:#161616;--pill-fg:#FFFFFF;--pill2:#E6E6E7;--attn:#8A5A00;--ok:#2E7D32;--bad:#B3261E;--accent:#1F6FEB}
+.shimmer{background:linear-gradient(90deg,var(--muted) 0%,var(--strong) 45%,var(--muted) 90%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:переливание 2.4s linear infinite}
+@keyframes переливание{from{background-position:150% 0}to{background-position:-50% 0}}
+@media (prefers-reduced-motion:reduce){.shimmer{animation:none}}
+button,select,textarea,input{font:inherit}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="width: 560px; height: 1120px; box-sizing: border-box; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; font-size: 13px; line-height: 1.5">
+<header style="display: flex; flex-direction: column; gap: 4px; padding: 12px 16px 10px">
+<div style="display: flex; align-items: center; gap: 8px">
+<span class="shimmer" style="font-weight: 600">Codex проверяет</span>
+<span style="font-size: 12px; color: var(--muted)">проверка 2 из 3</span>
+<span style="flex-grow: 1"></span>
+<button aria-label="Прервать ход" title="Прервать ход" style="width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 50%; background: var(--pill2); color: var(--fg); cursor: pointer"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 4v8M10 4v8"></path></svg></button>
+<button aria-label="Остановить агентов" title="Остановить агентов" style="width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 50%; background: var(--pill2); color: var(--bad); cursor: pointer"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5"></rect></svg></button>
+</div>
+<div style="font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Проект спецификации 3M-моментума MOEX и таблица доступности исторических данных, §11</div>
+</header>
+<main style="flex-grow: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 18px; padding: 8px 16px 16px">
+<div style="align-self: flex-end; max-width: 86%; padding: 10px 14px; border-radius: 18px; background: var(--raised); color: var(--strong)">Проект спецификации 3M-моментума и таблица доступности данных по §11. Доходность не считать, цены 2022 года и позже не открывать.</div>
+<article style="display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; align-items: baseline; gap: 6px; font-size: 12px"><span style="font-weight: 600; color: var(--strong)">Claude</span><span style="color: var(--faint)">3ac561c</span></div>
+<h3 style="margin: 0; font-size: 14px; color: var(--strong)">Что измерено пробами</h3>
+<ul style="margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px">
+<li>Уровня листинга на дату в ISS нет — только текущий.</li>
+<li>Капитализация и число акций — тоже только текущие.</li>
+<li>Дивидендов нет, и отказ замаскирован ответом HTTP 200.</li>
+</ul>
+<table style="border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums">
+<thead><tr><th style="text-align: left; padding: 6px 12px 6px 0; border-bottom: 1px solid var(--hair); color: var(--muted); font-weight: 500">Поле</th><th style="text-align: left; padding: 6px 12px 6px 0; border-bottom: 1px solid var(--hair); color: var(--muted); font-weight: 500">Эндпоинт</th><th style="text-align: left; padding: 6px 0; border-bottom: 1px solid var(--hair); color: var(--muted); font-weight: 500">История</th></tr></thead>
+<tbody>
+<tr><td style="padding: 6px 12px 6px 0; border-bottom: 1px solid var(--hair); font-family: Consolas, 'Cascadia Mono', monospace">LISTLEVEL</td><td style="padding: 6px 12px 6px 0; border-bottom: 1px solid var(--hair)">securities</td><td style="padding: 6px 0; border-bottom: 1px solid var(--hair)">нет</td></tr>
+<tr><td style="padding: 6px 12px 6px 0; border-bottom: 1px solid var(--hair); font-family: Consolas, 'Cascadia Mono', monospace">ISSUESIZE</td><td style="padding: 6px 12px 6px 0; border-bottom: 1px solid var(--hair)">securities</td><td style="padding: 6px 0; border-bottom: 1px solid var(--hair)">нет</td></tr>
+<tr><td style="padding: 6px 12px 6px 0; font-family: Consolas, 'Cascadia Mono', monospace">CLOSE, TQBR</td><td style="padding: 6px 12px 6px 0">history</td><td style="padding: 6px 0">с 25.03.2013</td></tr>
+</tbody>
+</table>
+<div>Поправка на длину ряда: <span style="font-family: 'Cambria Math', Cambria, Georgia, serif; font-style: italic; font-size: 14px; color: var(--strong)">σ · √(T − 1)</span></div>
+<pre style="margin: 0; padding: 10px 12px; border-radius: 12px; background: var(--inset); border: 1px solid var(--hair); font-family: Consolas, 'Cascadia Mono', monospace; font-size: 12px; white-space: pre-wrap">GET /iss/securities/SBER/dividends.json
+→ HTTP 200, блока dividends в ответе нет</pre>
+</article>
+<button aria-expanded="false" style="align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer">Выполнено 9 команд, 2 чтения, 1 правка<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"></path></svg></button>
+<article style="display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; align-items: baseline; gap: 6px; font-size: 12px"><span style="font-weight: 600; color: var(--strong)">Codex</span><span style="color: var(--faint)">проверка 2 из 3</span></div>
+<p style="margin: 0">По §12 проект пока нельзя принять как спецификацию для расчёта.</p>
+<ol style="margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px">
+<li><strong style="color: var(--strong)">Сигнал и единицы.</strong> Статья подтверждает ценовой сигнал, а проект задаёт полную доходность — это новая конструкция.</li>
+<li><strong style="color: var(--strong)">Выбывающие бумаги.</strong> Приостановленная позиция исчезает из вселенной, но не из портфеля.</li>
+</ol>
+<div style="display: flex; align-items: center; gap: 8px"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke-width="1.5" aria-hidden="true" style="color: var(--attn)"><circle cx="8" cy="8" r="6.2" stroke="currentColor"></circle><path d="M8 4.8v3.6M8 10.8v.3" stroke="currentColor" stroke-linecap="round"></path></svg><span style="font-weight: 600; color: var(--attn)">Есть замечания</span><span style="font-family: Consolas, 'Cascadia Mono', monospace; font-size: 11px; color: var(--faint)">ВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ</span></div>
+</article>
+<div style="align-self: center; font-size: 12px; color: var(--faint)">Замечания переданы Claude</div>
+<article style="display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; align-items: baseline; gap: 6px; font-size: 12px"><span style="font-weight: 600; color: var(--strong)">Claude</span><span class="shimmer">пишет</span></div>
+<p style="margin: 0">Все пять принимаю. Один из них требует переделки пробы, а не правки текста — сначала он.</p>
+</article>
+</main>
+<footer style="display: flex; flex-direction: column; gap: 8px; padding: 0 12px 12px">
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 10px; border-radius: 20px; background: var(--surface); border: 1px solid var(--hair)">
+<textarea aria-label="Сообщение" rows="2" placeholder="Поручите задачу или задайте вопрос" style="box-sizing: border-box; width: 100%; resize: none; padding: 0; border: 0; background: transparent; color: var(--strong); outline: none"></textarea>
+<div style="display: flex; align-items: center; gap: 6px">
+<button style="display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 0; border-radius: 999px; background: var(--pill2); color: var(--fg); font-size: 12px; cursor: pointer"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M3 5.5h9L9.5 3M13 10.5H4l2.5 2.5"></path></svg>Задача с рецензией<svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6"></path></svg></button>
+<button aria-pressed="true" title="Claude выполняет команды без запроса разрешения" style="display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border: 0; border-radius: 999px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 13 3.6v4.1c0 3-2.1 5.3-5 6.4-2.9-1.1-5-3.4-5-6.4V3.6z"></path></svg>Без вопросов</button>
+<span style="flex-grow: 1"></span>
+<button style="display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 0; border-radius: 999px; background: var(--pill2); color: var(--fg); font-size: 12px; cursor: pointer"><span style="display: inline-flex; gap: 2px"><span style="width: 9px; height: 6px; border-radius: 3px; background: #DE9C60"></span><span style="width: 9px; height: 6px; border-radius: 3px; background: #4CB9C3"></span></span>Модели<svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6"></path></svg></button>
+<button aria-label="Отправить" style="width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 50%; background: var(--pill); color: var(--pill-fg); cursor: pointer"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 12.5V3.5M4 7.5 8 3.5l4 4"></path></svg></button>
+</div>
+</div>
+<div style="display: flex; align-items: center; gap: 14px; padding: 0 6px; font-size: 12px; color: var(--muted)">
+<label style="display: inline-flex; align-items: center; gap: 6px"><input type="checkbox" checked="" style="margin: 0; accent-color: var(--accent)">Автопересылка</label>
+<span style="flex-grow: 1"></span>
+<button style="display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer">Диагностика 3<svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"></path></svg></button>
+</div>
+</footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":560,"height":1120}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const тема = this.props.theme ?? 'dark';
+    return { themeClass: тема === 'light' ? 'v-light' : 'v-dark' };
+  }
+}
+</script>
+</body>
+</html>

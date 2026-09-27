@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Панель ждёт вашего решения</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+.t-dark{--bg:#1F1F1F;--bg2:#181818;--surface:#252526;--raised:#2D2D2D;--line:#2B2B2B;--line2:#3C3C3C;--fg:#CCCCCC;--fg-strong:#EDEDED;--muted:#9D9D9D;--accent:#0078D4;--accent-fg:#FFFFFF;--btn2:#313131;--btn2-fg:#CCCCCC;--code:#2B2B2B;--claude:#89D185;--codex:#E8A04C;--warn:#E2C04A;--danger:#F48771;--ok:#89D185;--run:#6CB6FF;--tint-warn:rgba(204,167,0,.14)}
+button,select,textarea,input{font:inherit}
+</style>
+</helmet>
+<div class="t-dark" style="width: 560px; height: 560px; box-sizing: border-box; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; font-size: 13px; line-height: 1.45">
+<header style="display: flex; flex-direction: column; gap: 10px; padding: 10px 14px 12px; border-bottom: 1px solid var(--line); background: var(--bg2)">
+<div style="display: flex; align-items: center; gap: 10px">
+<span style="display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border-radius: 999px; background: var(--tint-warn); color: var(--fg-strong); font-weight: 600"><span style="width: 8px; height: 8px; border-radius: 50%; background: var(--warn)"></span>ждёт вашего решения</span>
+<span style="display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px"><span style="display: inline-flex; gap: 3px"><span style="width: 14px; height: 4px; border-radius: 2px; background: var(--fg)"></span><span style="width: 14px; height: 4px; border-radius: 2px; background: var(--fg)"></span><span style="width: 14px; height: 4px; border-radius: 2px; background: {{thirdBar}}"></span></span>{{rounds}}</span>
+<span style="flex-grow: 1"></span>
+<button style="height: 28px; padding: 0 10px; border: 1px solid var(--line2); border-radius: 6px; background: var(--btn2); color: var(--danger); cursor: pointer">Остановить</button>
+</div>
+<section aria-label="Ждёт вашего решения" style="display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--line2); border-radius: 10px; background: var(--surface)">
+<div style="display: flex; align-items: center; gap: 8px"><span style="width: 8px; height: 8px; border-radius: 50%; background: var(--warn)"></span><span style="font-weight: 600; color: var(--fg-strong)">{{title}}</span></div>
+<p style="margin: 0">{{text}}</p>
+<div style="display: flex; gap: 8px"><button style="height: 30px; padding: 0 14px; border: 0; border-radius: 6px; background: var(--accent); color: var(--accent-fg); font-weight: 600; cursor: pointer">{{action}}</button></div>
+</section>
+</header>
+<main style="flex-grow: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; gap: 12px; padding: 16px 14px">
+<article style="display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; align-items: center; gap: 8px; font-size: 12px"><span style="width: 8px; height: 8px; border-radius: 50%; background: {{authorColor}}"></span><span style="font-weight: 600; color: var(--fg-strong)">{{author}}</span></div>
+<div style="display: flex; flex-direction: column; gap: 8px; padding-left: 16px">
+<p style="margin: 0">{{lastText}}</p>
+<sc-if value="{{showVerdict}}" hint-placeholder-val="{{ true }}"><span style="align-self: flex-start; padding: 5px 10px; border-radius: 6px; background: var(--tint-warn); color: var(--warn); font-weight: 600; font-size: 12px; letter-spacing: 0.02em">ВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА</span></sc-if>
+</div>
+</article>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"reason":{"editor":"enum","options":["рецензент","предел"],"default":"рецензент"},"$preview":{"width":560,"height":560}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const предел = (this.props.reason ?? 'рецензент') === 'предел';
+    return предел ? {
+      rounds: 'проверок 3 из 3',
+      thirdBar: 'var(--fg)',
+      title: 'Предел проверок достигнут',
+      text: 'Предел проверок (3) достигнут: работа Claude не проверена рецензентом.',
+      action: 'Отправить Codex',
+      author: 'Claude',
+      authorColor: 'var(--claude)',
+      lastText: 'Исправлено, коммит 6e63cc1: право на выход, подтверждённые деньги и численные границы покрытия.',
+      showVerdict: false
+    } : {
+      rounds: 'проверок 2 из 3',
+      thirdBar: 'var(--line2)',
+      title: 'Рецензент просит вашего решения',
+      text: 'Обмен остановлен: без ваших данных продолжать бессмысленно. Ответ Codex можно отправить Claude.',
+      action: 'Отправить Claude',
+      author: 'Codex',
+      authorColor: 'var(--codex)',
+      lastText: 'Проверка старого коммита завершена. Для проверки исправлений нужны исходники текущей версии.',
+      showVerdict: true
+    };
+  }
+}
+</script>
+</body>
+</html>

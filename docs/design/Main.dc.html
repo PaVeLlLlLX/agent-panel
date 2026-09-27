@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Комната в работе</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+.t-dark{--bg:#1F1F1F;--bg2:#181818;--surface:#252526;--raised:#2D2D2D;--line:#2B2B2B;--line2:#3C3C3C;--fg:#CCCCCC;--fg-strong:#EDEDED;--muted:#9D9D9D;--accent:#0078D4;--accent-fg:#FFFFFF;--btn2:#313131;--btn2-fg:#CCCCCC;--code:#2B2B2B;--claude:#89D185;--codex:#E8A04C;--warn:#E2C04A;--danger:#F48771;--ok:#89D185;--run:#6CB6FF;--tint-warn:rgba(204,167,0,.14);--tint-run:rgba(55,148,255,.14);--tint-codex:rgba(232,160,76,.14);--tint-claude:rgba(137,209,133,.12);--tint-danger:rgba(244,135,113,.14)}
+.t-light{--bg:#FFFFFF;--bg2:#F8F8F8;--surface:#F8F8F8;--raised:#F3F3F3;--line:#E5E5E5;--line2:#CECECE;--fg:#3B3B3B;--fg-strong:#1F1F1F;--muted:#616161;--accent:#005FB8;--accent-fg:#FFFFFF;--btn2:#E5E5E5;--btn2-fg:#3B3B3B;--code:#F0F0F0;--claude:#2E7D32;--codex:#9A4D00;--warn:#7A5A00;--danger:#B3261E;--ok:#2E7D32;--run:#0B5CAD;--tint-warn:rgba(191,136,3,.14);--tint-run:rgba(26,115,232,.10);--tint-codex:rgba(163,82,0,.10);--tint-claude:rgba(46,125,50,.08);--tint-danger:rgba(179,38,30,.08)}
+button,select,textarea,input{font:inherit}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="width: 560px; height: 1120px; box-sizing: border-box; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; font-size: 13px; line-height: 1.45">
+<header style="display: flex; flex-direction: column; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--bg2)">
+<div style="display: flex; align-items: center; gap: 10px">
+<span style="display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border-radius: 999px; background: var(--tint-codex); color: var(--fg-strong); font-weight: 600"><span style="width: 8px; height: 8px; border-radius: 50%; background: var(--codex)"></span>Codex проверяет</span>
+<span style="display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px"><span style="display: inline-flex; gap: 3px"><span style="width: 14px; height: 4px; border-radius: 2px; background: var(--fg)"></span><span style="width: 14px; height: 4px; border-radius: 2px; background: var(--fg)"></span><span style="width: 14px; height: 4px; border-radius: 2px; background: var(--line2)"></span></span>проверок 2 из 3</span>
+<span style="flex-grow: 1"></span>
+<button style="height: 28px; padding: 0 10px; border: 1px solid var(--line2); border-radius: 6px; background: var(--btn2); color: var(--btn2-fg); cursor: pointer">Прервать</button>
+<button style="height: 28px; padding: 0 10px; border: 1px solid var(--line2); border-radius: 6px; background: var(--btn2); color: var(--danger); cursor: pointer">Остановить</button>
+</div>
+<div style="display: flex; align-items: center; gap: 8px; min-width: 0">
+<span style="flex-shrink: 0; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--codex); color: var(--codex); font-size: 12px">вердикт: есть замечания</span>
+<span style="flex-shrink: 0; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted)">Задача</span>
+<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Проект спецификации 3M-моментума MOEX и таблица доступности исторических данных, §11</span>
+<label style="flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted)"><input type="checkbox" checked="" style="margin: 0; accent-color: var(--accent)">автопересылка</label>
+</div>
+</header>
+<main style="flex-grow: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 14px; padding: 16px 14px">
+<div style="align-self: flex-end; max-width: 86%; display: flex; flex-direction: column; align-items: flex-end; gap: 4px">
+<span style="font-size: 11px; color: var(--muted)">Вы · задача с рецензией</span>
+<div style="padding: 9px 12px; border-radius: 10px; background: var(--raised); border: 1px solid var(--line); color: var(--fg-strong)">Проект спецификации 3M-моментума и таблица доступности данных по §11. Доходность не считать, цены 2022 года и позже не открывать.</div>
+</div>
+<article style="display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; align-items: center; gap: 8px; font-size: 12px"><span style="width: 8px; height: 8px; border-radius: 50%; background: var(--claude)"></span><span style="font-weight: 600; color: var(--fg-strong)">Claude</span><span style="color: var(--muted)">разработчик · версия 3ac561c</span></div>
+<div style="display: flex; flex-direction: column; gap: 8px; padding-left: 16px">
+<h3 style="margin: 0; font-size: 14px; color: var(--fg-strong)">Что измерено пробами</h3>
+<ul style="margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px">
+<li>Уровня листинга на дату в ISS нет — только текущий.</li>
+<li>Капитализация и число акций — тоже только текущие.</li>
+<li>Дивидендов нет, и отказ замаскирован ответом HTTP 200.</li>
+</ul>
+<table style="border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums">
+<thead><tr><th style="text-align: left; padding: 4px 8px; border: 1px solid var(--line); color: var(--muted); font-weight: 600">Поле</th><th style="text-align: left; padding: 4px 8px; border: 1px solid var(--line); color: var(--muted); font-weight: 600">Эндпоинт</th><th style="text-align: left; padding: 4px 8px; border: 1px solid var(--line); color: var(--muted); font-weight: 600">История</th></tr></thead>
+<tbody>
+<tr><td style="padding: 4px 8px; border: 1px solid var(--line); font-family: Consolas, 'Cascadia Mono', monospace">LISTLEVEL</td><td style="padding: 4px 8px; border: 1px solid var(--line)">securities</td><td style="padding: 4px 8px; border: 1px solid var(--line)">нет</td></tr>
+<tr><td style="padding: 4px 8px; border: 1px solid var(--line); font-family: Consolas, 'Cascadia Mono', monospace">ISSUESIZE</td><td style="padding: 4px 8px; border: 1px solid var(--line)">securities</td><td style="padding: 4px 8px; border: 1px solid var(--line)">нет</td></tr>
+<tr><td style="padding: 4px 8px; border: 1px solid var(--line); font-family: Consolas, 'Cascadia Mono', monospace">CLOSE, TQBR</td><td style="padding: 4px 8px; border: 1px solid var(--line)">history</td><td style="padding: 4px 8px; border: 1px solid var(--line)">с 25.03.2013</td></tr>
+</tbody>
+</table>
+<div>Поправка на длину ряда: <span style="font-family: 'Cambria Math', Cambria, Georgia, serif; font-style: italic; font-size: 14px; color: var(--fg-strong)">σ · √(T − 1)</span></div>
+<pre style="margin: 0; padding: 8px 10px; border-radius: 6px; background: var(--code); font-family: Consolas, 'Cascadia Mono', monospace; font-size: 12px; white-space: pre-wrap">GET /iss/securities/SBER/dividends.json
+→ HTTP 200, блока dividends в ответе нет</pre>
+</div>
+</article>
+<button aria-expanded="false" style="align-self: stretch; display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg2); color: var(--muted); font-size: 12px; text-align: left; cursor: pointer"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"></path></svg><span style="color: var(--fg)">Claude</span><span>9 команд · 2 чтения · 1 правка</span><span style="flex-grow: 1"></span><span>сырой вывод внутри</span></button>
+<article style="display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; align-items: center; gap: 8px; font-size: 12px"><span style="width: 8px; height: 8px; border-radius: 50%; background: var(--codex)"></span><span style="font-weight: 600; color: var(--fg-strong)">Codex</span><span style="color: var(--muted)">рецензент · проверка 2 из 3</span></div>
+<div style="display: flex; flex-direction: column; gap: 8px; padding-left: 16px">
+<p style="margin: 0">По §12 проект пока нельзя принять как спецификацию для расчёта.</p>
+<ol style="margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px">
+<li><strong style="color: var(--fg-strong)">Сигнал и единицы.</strong> Статья подтверждает ценовой сигнал, а проект задаёт полную доходность — это новая конструкция.</li>
+<li><strong style="color: var(--fg-strong)">Выбывающие бумаги.</strong> Приостановленная позиция исчезает из вселенной, но не из портфеля.</li>
+</ol>
+<span style="align-self: flex-start; padding: 5px 10px; border-radius: 6px; background: var(--tint-codex); color: var(--codex); font-weight: 600; font-size: 12px; letter-spacing: 0.02em">ВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ</span>
+</div>
+</article>
+<div style="display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px"><span style="flex-grow: 1; height: 1px; background: var(--line)"></span>Панель · замечания переданы Claude<span style="flex-grow: 1; height: 1px; background: var(--line)"></span></div>
+<article style="display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; align-items: center; gap: 8px; font-size: 12px"><span style="width: 8px; height: 8px; border-radius: 50%; background: var(--claude)"></span><span style="font-weight: 600; color: var(--fg-strong)">Claude</span><span style="color: var(--muted)">пишет…</span></div>
+<p style="margin: 0; padding-left: 16px">Все пять принимаю. Один из них требует переделки пробы, а не правки текста — сначала он.<span style="display: inline-block; width: 2px; height: 14px; margin-left: 2px; vertical-align: -2px; background: var(--claude)"></span></p>
+</article>
+</main>
+<footer style="display: flex; flex-direction: column; gap: 8px; padding: 10px 14px 12px; border-top: 1px solid var(--line); background: var(--bg2)">
+<div style="display: flex; align-items: center; gap: 8px; min-width: 0">
+<button aria-expanded="false" style="flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px; border: 1px solid var(--line2); border-radius: 6px; background: transparent; color: var(--fg); font-size: 12px; cursor: pointer"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 5h7M12.5 5h1M2.5 11h2M7.5 11h6"></path><circle cx="11" cy="5" r="1.5"></circle><circle cx="6" cy="11" r="1.5"></circle></svg>Модели</button>
+<span style="min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; color: var(--muted)">Claude: Opus · high · Codex: GPT-6-Sol · разрешения: без вопросов</span>
+</div>
+<textarea aria-label="Сообщение" rows="3" placeholder="Сообщение… Ctrl+Enter отправляет" style="box-sizing: border-box; width: 100%; resize: none; padding: 8px 10px; border: 1px solid var(--line2); border-radius: 8px; background: var(--bg); color: var(--fg)"></textarea>
+<div style="display: flex; align-items: center; gap: 8px">
+<label style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted)">Режим<select style="height: 28px; padding: 0 6px; border: 1px solid var(--line2); border-radius: 6px; background: var(--btn2); color: var(--fg)"><option>Задача с рецензией</option><option>Спросить обоих</option><option>Только Claude</option><option>Только Codex</option></select></label>
+<span style="flex-grow: 1; min-width: 0; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Claude сделает, Codex проверит</span>
+<button style="height: 28px; padding: 0 14px; border: 0; border-radius: 6px; background: var(--accent); color: var(--accent-fg); font-weight: 600; cursor: pointer">Отправить</button>
+</div>
+</footer>
+<details style="padding: 6px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted)"><summary style="cursor: pointer">Диагностика <span style="margin-left: 4px; padding: 0 6px; border-radius: 999px; background: var(--btn2); color: var(--fg)">3</span></summary></details>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":560,"height":1120}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const тема = this.props.theme ?? 'dark';
+    return { themeClass: тема === 'light' ? 't-light' : 't-dark' };
+  }
+}
+</script>
+</body>
+</html>

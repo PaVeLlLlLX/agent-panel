@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Ждёт вашего решения — вариант 2</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+button,select,textarea,input{font:inherit}
+</style>
+</helmet>
+<div style="width: 560px; height: 480px; box-sizing: border-box; display: flex; flex-direction: column; justify-content: flex-end; gap: 14px; padding: 16px 12px 12px; background: #1B1B1B; color: #D6D6D6; font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; font-size: 13px; line-height: 1.5">
+<article style="display: flex; flex-direction: column; gap: 8px; padding: 0 4px">
+<div style="display: flex; align-items: baseline; gap: 6px; font-size: 12px"><span style="font-weight: 600; color: #F4F4F4">Codex</span><span style="color: #6A6A6A">проверка 2 из 3</span></div>
+<p style="margin: 0">Проверка старого коммита завершена. Чтобы проверить исправления, нужны исходники текущей версии — продолжать обмен без них бессмысленно.</p>
+<div style="display: flex; align-items: center; gap: 8px"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke-width="1.5" aria-hidden="true" style="color: #E6B450"><circle cx="8" cy="8" r="6.2" stroke="currentColor"></circle><path d="M8 4.8v3.6M8 10.8v.3" stroke="currentColor" stroke-linecap="round"></path></svg><span style="font-weight: 600; color: #E6B450">Нужно ваше решение</span><span style="font-family: Consolas, 'Cascadia Mono', monospace; font-size: 11px; color: #6A6A6A">ВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА</span></div>
+</article>
+<section aria-label="Ждёт вашего решения" style="display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 14px; border-radius: 18px; background: #242424; border: 1px solid rgba(255, 255, 255, 0.08)">
+<span style="flex-shrink: 0; width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: rgba(230, 180, 80, 0.14); color: #E6B450"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M6 4v8M10 4v8"></path></svg></span>
+<div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px"><span style="font-weight: 600; color: #F4F4F4">Обмен остановлен</span><span style="font-size: 12px; color: #8E8E8E">Рецензент просит вашего решения. Его ответ можно отправить Claude.</span></div>
+<button style="flex-shrink: 0; height: 32px; padding: 0 16px; border: 0; border-radius: 999px; background: #ECECEC; color: #161616; font-weight: 600; cursor: pointer">Отправить Claude</button>
+</section>
+<div style="display: flex; align-items: center; gap: 8px; padding: 10px 10px 10px 14px; border-radius: 20px; background: #242424; border: 1px solid rgba(255, 255, 255, 0.08)">
+<textarea aria-label="Сообщение" rows="1" placeholder="Поручите задачу или задайте вопрос" style="flex-grow: 1; box-sizing: border-box; resize: none; padding: 0; border: 0; background: transparent; color: #F4F4F4; outline: none"></textarea>
+<button aria-label="Отправить" style="width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 50%; background: #ECECEC; color: #161616; cursor: pointer"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 12.5V3.5M4 7.5 8 3.5l4 4"></path></svg></button>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":560,"height":480}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

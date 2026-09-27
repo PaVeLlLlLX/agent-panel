@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Действия агента — два варианта</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+button{font:inherit}
+@keyframes бус-пульс{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.35);opacity:.6}}
+.бус-перелив{background:linear-gradient(90deg,#7A7A7A 0%,#E0E0E0 45%,#7A7A7A 90%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:бус-перелив 2.4s linear infinite}
+@keyframes бус-перелив{from{background-position:150% 0}to{background-position:-50% 0}}
+@media (prefers-reduced-motion:reduce){.бус-идёт,.бус-перелив{animation:none!important}}
+</style>
+</helmet>
+<div style="width: 560px; height: 380px; box-sizing: border-box; display: flex; flex-direction: column; gap: 16px; padding: 20px; background: #1B1B1B; color: #D6D6D6; font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; font-size: 13px">
+<section aria-label="Действия: чётки" style="display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: 16px; background: #202020; border: 1px solid rgba(255, 255, 255, 0.07)">
+<button aria-expanded="{{open}}" onClick="{{toggle}}" style="display: flex; align-items: center; gap: 10px; padding: 0; border: 0; background: transparent; color: #8E8E8E; font-size: 12px; text-align: left; cursor: pointer">
+<span style="display: inline-flex; align-items: center; gap: 5px">
+<sc-for list="{{beads}}" as="b" hint-placeholder-count="12"><span class="{{b.cls}}" title="{{b.title}}" style="width: 8px; height: 8px; box-sizing: border-box; border-radius: {{b.radius}}; background: {{b.fill}}; border: {{b.border}}; transform: {{b.rotate}}"></span></sc-for>
+</span>
+<span>12 действий</span>
+<span style="flex-grow: 1"></span>
+<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="{{chevron}}"></path></svg>
+</button>
+<sc-if value="{{open}}" hint-placeholder-val="{{ true }}">
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{rows}}" as="r" hint-placeholder-count="4">
+<div style="display: flex; align-items: center; gap: 10px; height: 26px; font-size: 12px; min-width: 0">
+<span class="{{r.cls}}" style="flex-shrink: 0; width: 8px; height: 8px; box-sizing: border-box; border-radius: {{r.radius}}; background: {{r.fill}}; border: {{r.border}}; transform: {{r.rotate}}"></span>
+<span style="flex-shrink: 0; font-family: Consolas, 'Cascadia Mono', monospace; color: #EDEDED">{{r.tool}}</span>
+<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: Consolas, 'Cascadia Mono', monospace; color: #7A7A7A">{{r.arg}}</span>
+<span style="flex-shrink: 0; color: {{r.stateColor}}">{{r.state}}</span>
+</div>
+</sc-for>
+</div>
+</sc-if>
+</section>
+<section aria-label="Действия: счётчики" style="display: flex; align-items: center; gap: 14px; padding: 12px 16px; border-radius: 16px; background: #202020; border: 1px solid rgba(255, 255, 255, 0.07); font-size: 12px; color: #BDBDBD">
+<span style="display: inline-flex; align-items: center; gap: 5px" title="Команды"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3 4.5 6.5 8 3 11.5M8.5 12h4.5"></path></svg>9</span>
+<span style="display: inline-flex; align-items: center; gap: 5px" title="Чтения"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M4 2h5.5L12 4.5V14H4z"></path><path d="M9.5 2v2.5H12"></path></svg>2</span>
+<span style="display: inline-flex; align-items: center; gap: 5px" title="Правки"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M3 13l1-3.5 6.5-6.5 2.5 2.5L6.5 12z"></path></svg>1</span>
+<span style="display: inline-flex; align-items: center; gap: 5px; color: #F2877A" title="Отказано"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"></circle><path d="M4.2 11.8 11.8 4.2"></path></svg>1</span>
+<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right" class="бус-перелив">выполняется: python -m pytest -q -k moex</span>
+</section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":560,"height":380}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const открыт = !(this.state && this.state.closed);
+    const тёплый = '#DE9C60';
+    const вид = (kind, state) => {
+      const форма = kind === 'read' ? { radius: '50%', rotate: 'none', hollow: true }
+        : kind === 'edit' ? { radius: '1.5px', rotate: 'rotate(45deg) scale(0.85)', hollow: false }
+        : { radius: '2.5px', rotate: 'none', hollow: false };
+      const цвет = state === 'denied' ? '#F2877A' : state === 'running' ? '#F4F4F4' : state === 'formed' ? '#5A5A5A' : тёплый;
+      return {
+        radius: форма.radius,
+        rotate: форма.rotate,
+        fill: форма.hollow || state === 'formed' ? 'transparent' : цвет,
+        border: форма.hollow || state === 'formed' ? '1.5px solid ' + цвет : '0',
+        cls: state === 'running' ? 'бус-идёт' : '',
+        stateColor: state === 'denied' ? '#F2877A' : state === 'running' ? '#F4F4F4' : '#6A6A6A',
+        state: { done: 'готово', running: 'выполняется', denied: 'отказано', formed: 'готовится' }[state]
+      };
+    };
+    const цепочка = [
+      ['read', 'done', 'Read', 'docs/2026-09-13-обсуждение-методологии-для-Claude.md'],
+      ['read', 'done', 'Read', 'tradingbot/moex/universe.py'],
+      ['cmd', 'done', 'Bash', 'curl -s "https://iss.moex.com/iss/history/…/TQBR/securities/SBER.json"'],
+      ['cmd', 'done', 'Bash', 'curl -s "https://iss.moex.com/iss/securities/SBER/dividends.json"'],
+      ['cmd', 'done', 'Bash', 'curl -s "https://iss.moex.com/iss/statistics/…/capitalization.json"'],
+      ['cmd', 'done', 'Bash', 'curl -s "https://iss.moex.com/iss/securities/SBER.json?iss.data=off"'],
+      ['cmd', 'done', 'Bash', 'curl -s "https://iss.moex.com/iss/history/…/EQBR/securities/SBER.json"'],
+      ['cmd', 'denied', 'Bash', 'git push'],
+      ['edit', 'done', 'Write', 'docs/research/2026-09-26-проект-спецификации…md'],
+      ['cmd', 'done', 'Bash', 'git add docs/research/… && git commit'],
+      ['cmd', 'running', 'Bash', 'python -m pytest -q -k moex'],
+      ['cmd', 'formed', 'Bash', 'git log --oneline -3']
+    ];
+    const бусины = цепочка.map(([k, s, t, a]) => ({ ...вид(k, s), title: t + ' · ' + a, tool: t, arg: a }));
+    return {
+      open: открыт,
+      toggle: () => this.setState({ closed: открыт }),
+      chevron: открыт ? 'M3.5 6 8 10.5 12.5 6' : 'M6 3.5 10.5 8 6 12.5',
+      beads: бусины,
+      rows: бусины.slice(6)
+    };
+  }
+}
+</script>
+</body>
+</html>
