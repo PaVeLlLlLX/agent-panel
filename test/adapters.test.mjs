@@ -343,6 +343,23 @@ test("Claude: после «новой сессии» процесс запуск
   }
 });
 
+test("Claude: отправка во время «новой сессии» не возобновляет прежнюю", async () => {
+  const с = собиратель();
+  const а = claude(с, { resumeSessionId: "старая-сессия" });
+  try {
+    await а.start();
+    await дождаться(() => с.события.some((е) => е.raw?.argv), "первый запуск");
+    с.события.length = 0;
+    const забыть = а.forgetSession();
+    await а.send({ text: "здравствуй", from: "human" });
+    await забыть;
+    await дождаться(() => с.события.some((е) => е.raw?.argv), "запуск после забвения");
+    assert.equal(с.события.find((е) => е.raw?.argv).raw.argv.includes("--resume"), false);
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: пользовательские настройки с хуками по умолчанию не загружаются", async () => {
   const с = собиратель();
   const а = claude(с);
@@ -978,6 +995,23 @@ test("Codex: расход без известного хода не припис
     await а.send({ text: "РАСХОД-БЕЗ-ХОДА", from: "claude" });
     await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода");
     assert.equal(с.события.find((е) => е.kind === "turn_completed").usage, undefined);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Codex: после «новой сессии» ветка из настроек комнаты не возобновляется", async () => {
+  const с = собиратель();
+  const а = codex(с, { resumeThreadId: "ветка-владельца" });
+  try {
+    await а.send({ text: "здравствуй", from: "claude" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "ход в прежней ветке");
+    assert.ok(с.события.some((е) => /ПАРАМЕТРЫ-ВЕТКИ .*"resume":true/.test(е.text ?? "")), "сначала ветка возобновлялась");
+    с.события.length = 0;
+    await а.forgetSession();
+    await а.send({ text: "здравствуй", from: "claude" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "ход в новой ветке");
+    assert.equal(с.события.some((е) => /ПАРАМЕТРЫ-ВЕТКИ .*"resume":true/.test(е.text ?? "")), false);
   } finally {
     await а.stop();
   }

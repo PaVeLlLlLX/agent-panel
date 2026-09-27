@@ -223,9 +223,10 @@ export class CodexAdapter implements Adapter {
   }
 
   async forgetSession(): Promise<void> {
-    await this.stop();
+    // Сначала забыть, потом останавливать — как у Claude.
     this.#ветка = undefined;
     this.#безВозобновления = true;
+    await this.stop();
   }
 
   get sessionId(): string | undefined {

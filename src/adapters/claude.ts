@@ -497,8 +497,10 @@ export class ClaudeAdapter implements Adapter {
   }
 
   async forgetSession(): Promise<void> {
-    await this.stop();
+    // Сначала забыть, потом останавливать: отправка, пришедшая во время
+    // остановки, запустит процесс уже без --resume (рецензия Codex 28.09).
     this.#сессия = undefined;
+    await this.stop();
   }
 
   async stop(): Promise<void> {

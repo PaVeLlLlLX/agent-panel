@@ -7,7 +7,9 @@
  * Codex → вердикт» виден только так. Дешёвые модели: haiku и низкий уровень
  * Codex. Временная папка; комнаты и ветки владельца не трогаются.
  *
- * Запуск: npm run build && node scripts/e2e-probe.mjs
+ * Запуск: npm run build && node scripts/e2e-probe.mjs [--subagent] [--memory <команда>]
+ *   --subagent — Claude поручают сделать работу фоновым субагентом;
+ *   --memory   — «Память по теме»: команда поиска с каталогом Trading.
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
@@ -21,6 +23,11 @@ const { CodexAdapter } = require("../out/adapters/codex.js");
 const { Coordinator } = require("../out/coordinator.js");
 const { Journal } = require("../out/journal.js");
 const { resolveCodexCommand } = require("../out/codexBinary.js");
+const { runMemorySearch } = require("../out/memory.js");
+
+const СУБАГЕНТ = process.argv.includes("--subagent");
+const iПамяти = process.argv.indexOf("--memory");
+const командаПамяти = iПамяти > 0 ? process.argv[iПамяти + 1] : "";
 
 const папка = mkdtempSync(join(tmpdir(), "agent-panel-e2e-"));
 writeFileSync(join(папка, "README.md"), "Проба agent-panel.\n");
@@ -51,10 +58,14 @@ let последнееСостояние;
   room: "e2e",
   cwd: папка,
   maxAutoRounds: 2,
+  ...(командаПамяти
+    ? { memory: (текст) => runMemorySearch(командаПамяти, "C:/Users/21435/source/Trading", текст) }
+    : {}),
   onEvent: (е) => {
-    if (["message", "turn_completed", "error"].includes(е.kind) || (е.kind === "tool_call" && !е.parentCallId)) {
+    if (["message", "turn_completed", "error"].includes(е.kind) || е.kind === "tool_call" || (е.kind === "diagnostic" && /субагент/.test(е.text ?? ""))) {
       const хвост = е.kind === "turn_completed" && е.usage ? ` usage=${JSON.stringify(е.usage)}` : "";
-      console.log(время(), е.agent, е.kind, (е.tool ? `[${е.tool}] ` : "") + (е.text ?? "").slice(0, 90).replace(/\s+/g, " ") + хвост);
+      const чей = е.parentCallId ? "(субагент) " : "";
+      console.log(время(), е.agent, е.kind, чей + (е.tool ? `[${е.tool}] ` : "") + (е.text ?? "").slice(0, 90).replace(/\s+/g, " ") + хвост);
     }
   },
   onState: (с) => {
@@ -64,7 +75,9 @@ let последнееСостояние;
 });
 
 await координатор.fromHuman(
-  "Создай файл hello.txt с одной строкой: привет. Покажи его содержимое командой cat. Больше ничего не делай.",
+  СУБАГЕНТ
+    ? "Поручи ровно одному субагенту (инструмент Agent, subagent_type general-purpose) создать файл hello.txt с одной строкой «привет» и показать его командой cat. Сам файлы не трогай. Когда субагент закончит, одной фразой скажи, что сделано. Для справки: почему в проекте отозвали эффект FOMC?"
+    : "Создай файл hello.txt с одной строкой: привет. Покажи его содержимое командой cat. Больше ничего не делай.",
   "review",
 );
 const конец = Date.now() + 6 * 60_000;

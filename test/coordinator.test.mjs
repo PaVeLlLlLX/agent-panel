@@ -1107,3 +1107,43 @@ test("новая сессия посреди хода агента остана�
   assert.equal(к.state.stage, "stopped");
   журнал.close();
 });
+
+test("новая сессия: очередь сброшенного агента уходит в новую сессию", async () => {
+  const { к, claude, журнал } = комната();
+  claude.forgetSession = async () => {
+    claude.busy = false;
+  };
+  claude.busy = true;
+  await к.fromHuman("вопрос в очереди", "claude");
+  assert.equal(claude.полученное.length, 0, "занятому агенту сообщение не уходит сразу");
+  await к.newSession("claude");
+  await дождаться(() => claude.полученное.length === 1, "очередь выгружена");
+  assert.equal(claude.полученное[0].text, "вопрос в очереди");
+  журнал.close();
+});
+
+test("новая сессия: привязка очищается раньше остановки — закрытие панели её не вернёт", async () => {
+  const { к, claude, журнал, каталог } = комната();
+  журнал.bindSessions("r", "claude-старая", "codex-ветка");
+  claude.forgetSession = async () => {
+    журнал.close(); // панель закрыли, пока останавливался процесс
+  };
+  await к.newSession("claude");
+  const заново = new Journal(join(каталог, "j.sqlite"));
+  assert.equal(заново.binding("r").claudeSessionId, undefined);
+  заново.close();
+});
+
+test("новая сессия: удержанная передача этому агенту снимается и названа", async () => {
+  const { к, codex, журнал, события } = комната();
+  codex.forgetSession = async () => {};
+  к.setAuto(false);
+  await к.fromHuman("задача", "review");
+  ход(к, "claude", "сделал");
+  await дождаться(() => к.state.stage === "held", "удержание для рецензента");
+  assert.equal(к.state.held.to, "codex");
+  await к.newSession("codex");
+  assert.equal(к.state.held, undefined);
+  assert.ok(системные(события).some((е) => /снята/.test(е.text ?? "")));
+  журнал.close();
+});
