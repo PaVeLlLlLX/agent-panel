@@ -67,11 +67,12 @@ export class Journal {
     // Колонки, добавленные позже: журнал прежней версии получает их при открытии.
     // Без них история после перезапуска теряла связь отказа с вызовом
     // (tool_call_id) и действия субагента (parent_call_id) — рецензия Codex 28.09;
-    // unsolicited — ход, начатый агентом без сообщения панели.
+    // unsolicited — ход, начатый агентом без сообщения панели; failed — ход не
+    // удался (иначе после перезапуска пропадало уведомление об этом).
     const есть = new Set(
       (this.#бд.prepare("PRAGMA table_info(events)").all() as Record<string, unknown>[]).map((к) => String(к["name"])),
     );
-    for (const колонка of ["tool_call_id", "parent_call_id", "unsolicited"]) {
+    for (const колонка of ["tool_call_id", "parent_call_id", "unsolicited", "failed"]) {
       if (!есть.has(колонка)) this.#бд.exec(`ALTER TABLE events ADD COLUMN ${колонка} TEXT`);
     }
   }
@@ -145,8 +146,8 @@ export class Journal {
       .prepare(
         `INSERT INTO events
            (room, id, agent, kind, visibility, at, text, tool, call_id,
-            turn_id, snapshot, raw, tool_call_id, parent_call_id, unsolicited)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            turn_id, snapshot, raw, tool_call_id, parent_call_id, unsolicited, failed)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         room,
@@ -164,6 +165,7 @@ export class Journal {
         событие.toolCallId ?? null,
         событие.parentCallId ?? null,
         событие.unsolicited ? "1" : null,
+        событие.failed ? "1" : null,
       );
   }
 
@@ -173,7 +175,7 @@ export class Journal {
     const строки = this.#бд
       .prepare(
         `SELECT id, agent, kind, visibility, at, text, tool, call_id, turn_id, snapshot,
-                tool_call_id, parent_call_id, unsolicited
+                tool_call_id, parent_call_id, unsolicited, failed
          FROM events WHERE room = ? ORDER BY seq DESC LIMIT ?`,
       )
       .all(room, limit) as Record<string, unknown>[];
@@ -191,6 +193,7 @@ export class Journal {
       ...(с["tool_call_id"] != null ? { toolCallId: String(с["tool_call_id"]) } : {}),
       ...(с["parent_call_id"] != null ? { parentCallId: String(с["parent_call_id"]) } : {}),
       ...(с["unsolicited"] != null ? { unsolicited: true } : {}),
+      ...(с["failed"] != null ? { failed: true } : {}),
     })) as PanelEvent[];
   }
 

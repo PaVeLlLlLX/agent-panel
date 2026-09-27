@@ -46,6 +46,19 @@ test("история помнит ход, начатый агентом без �
   журнал.close();
 });
 
+test("история помнит ход, кончившийся ошибкой", () => {
+  // Без отметки после повторного открытия пропадало уведомление «ход не удался».
+  const путь = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const журнал = new Journal(путь);
+  журнал.ensureRoom("r", "C:/x");
+  журнал.append("r", событие({ kind: "turn_completed", failed: true, text: "ход завершён с ошибкой: сбой модели" }));
+  журнал.append("r", событие({ kind: "turn_completed", text: "ход завершён" }));
+  const история = журнал.history("r");
+  assert.equal(история[0].failed, true);
+  assert.equal(история[1].failed, undefined);
+  журнал.close();
+});
+
 test("журнал прежней версии получает новые колонки при открытии", () => {
   const путь = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
   const старая = new DatabaseSync(путь);
