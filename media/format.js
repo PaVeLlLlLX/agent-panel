@@ -60,7 +60,15 @@
       .join(", ");
   }
 
-  const api = { plural, toolCategory, summarizeTools };
+  /**
+   * Следовать ли прокрутке за новым текстом: только если человек уже внизу.
+   * Иначе генерация утягивает его от текста, который он читает выше.
+   */
+  function stickToBottom(scrollHeight, scrollTop, clientHeight, порог = 48) {
+    return scrollHeight - scrollTop - clientHeight <= порог;
+  }
+
+  const api = { plural, toolCategory, summarizeTools, stickToBottom };
   globalThis.PanelFormat = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();

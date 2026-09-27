@@ -336,6 +336,7 @@ function разметка(webview: vscode.Webview, контекст: vscode.Exte
   </div>
 </header>
 <main id="беседа" aria-label="Беседа"></main>
+<div class="якорь-низа"><button id="к-последнему" hidden title="Прокрутить к последнему сообщению">↓ К последнему</button></div>
 <details id="диагностика">
   <summary title="Служебные логи процессов агентов — не часть разговора">Диагностика <span id="диагностика-счёт">0</span></summary>
   <pre id="диагностика-строки"></pre>

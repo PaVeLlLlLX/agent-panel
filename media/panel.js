@@ -12,7 +12,7 @@
  *   * сверху — чей ход, сколько проверок, вердикт, и что удержано.
  */
 const vscode = acquireVsCodeApi();
-const { summarizeTools } = globalThis.PanelFormat;
+const { summarizeTools, stickToBottom } = globalThis.PanelFormat;
 
 const $ = (id) => document.getElementById(id);
 const беседа = $("беседа");
@@ -55,8 +55,28 @@ function элемент(тег, класс, текст) {
   return э;
 }
 
-function вниз() {
-  беседа.scrollTop = беседа.scrollHeight;
+/**
+ * Прокрутка следует за новым текстом, только если человек уже внизу. Прежде
+ * каждый кусок потока прокручивал беседу к концу, и читать текст выше во время
+ * генерации было нельзя (жалоба владельца 27.09). Читает выше — появляется
+ * кнопка «К последнему».
+ */
+let прилип = true;
+const кПоследнему = $("к-последнему");
+беседа.addEventListener("scroll", () => {
+  прилип = stickToBottom(беседа.scrollHeight, беседа.scrollTop, беседа.clientHeight);
+  if (прилип) кПоследнему.hidden = true;
+});
+кПоследнему.addEventListener("click", () => вниз(true));
+
+function вниз(принудительно = false) {
+  if (принудительно) прилип = true;
+  if (прилип) {
+    беседа.scrollTop = беседа.scrollHeight;
+    кПоследнему.hidden = true;
+  } else {
+    кПоследнему.hidden = false;
+  }
 }
 
 /**
@@ -339,6 +359,8 @@ window.addEventListener("message", (событие) => {
 function отправить() {
   const текст = ввод.value.trim();
   if (!текст) return;
+  // Своё сообщение человек хочет видеть: беседа снова следует за концом.
+  вниз(true);
   vscode.postMessage({ type: "send", text: текст, route: маршрут.value });
   ввод.value = "";
 }

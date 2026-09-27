@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
 const require_ = createRequire(import.meta.url);
-const { plural, toolCategory, summarizeTools } = require_("../media/format.js");
+const { plural, toolCategory, summarizeTools, stickToBottom } = require_("../media/format.js");
 
 test("склонение числительных по правилам русского языка", () => {
   const формы = ["команда", "команды", "команд"];
@@ -76,4 +76,13 @@ test("единственное число и двадцать одно", () => {
 
 test("без вызовов — пустая сводка", () => {
   assert.equal(summarizeTools([]), "");
+});
+
+test("прокрутка следует за текстом, только если человек уже внизу", () => {
+  // Жалоба владельца 27.09: во время генерации прокрутка силой утягивала вниз,
+  // и нельзя было читать текст выше.
+  assert.equal(stickToBottom(2000, 1500, 500), true, "ровно внизу");
+  assert.equal(stickToBottom(2000, 1460, 500), true, "в 40 px от низа — ещё внизу");
+  assert.equal(stickToBottom(2000, 1200, 500), false, "читает выше — не трогать");
+  assert.equal(stickToBottom(400, 0, 500), true, "всё помещается — внизу");
 });
