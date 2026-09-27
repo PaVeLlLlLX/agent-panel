@@ -371,20 +371,20 @@ function разметка(webview: vscode.Webview, контекст: vscode.Exte
     <div class="нить-карточка" data-agent="claude">
       <div class="нить-заголовок">
         <span id="нить-уровень-claude" class="нить-уровень">По умолчанию</span>
-        <button id="нить-сброс-claude" class="ссылка-кнопка нить-сброс" hidden title="Вернуть уровень по умолчанию: решает агент">по умолчанию</button>
         <span class="нить-агент">Claude</span>
         <select id="модель-claude" class="нить-модель" disabled aria-label="Модель Claude"></select>
       </div>
       <div id="нить-claude" class="нить-полоса" role="radiogroup" aria-label="Уровень рассуждения Claude"></div>
+      <button id="нить-сброс-claude" class="ссылка-кнопка нить-сброс" hidden title="Вернуть уровень по умолчанию: решает агент">↺ вернуть по умолчанию</button>
     </div>
     <div class="нить-карточка" data-agent="codex">
       <div class="нить-заголовок">
         <span id="нить-уровень-codex" class="нить-уровень">По умолчанию</span>
-        <button id="нить-сброс-codex" class="ссылка-кнопка нить-сброс" hidden title="Вернуть уровень по умолчанию модели">по умолчанию</button>
         <span class="нить-агент">Codex</span>
         <select id="модель-codex" class="нить-модель" disabled aria-label="Модель Codex"></select>
       </div>
       <div id="нить-codex" class="нить-полоса" role="radiogroup" aria-label="Уровень рассуждения Codex"></div>
+      <button id="нить-сброс-codex" class="ссылка-кнопка нить-сброс" hidden title="Вернуть уровень по умолчанию модели">↺ вернуть по умолчанию</button>
     </div>
   </div>
   <div class="поле">
