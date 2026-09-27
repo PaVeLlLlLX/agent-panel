@@ -303,6 +303,8 @@ export class CodexAdapter implements Adapter {
       this.#запуск = undefined;
       this.#занят = false;
       this.#ход = undefined;
+      // Как в stop(): номера ходов нового процесса могут совпасть (рецензия Codex 28.09).
+      this.#прерванные.clear();
     }
     const беда = new Error(к.остановлен ? "адаптер Codex остановлен" : текстОшибки);
     for (const [, о] of к.ожидания) о.reject(беда);

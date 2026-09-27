@@ -685,6 +685,40 @@ test("Codex: поздний конец прерванного хода не вы
   }
 });
 
+test("Codex: метка прерванного хода не переживает и неожиданную смерть процесса", async () => {
+  // Рецензия Codex 28.09 (1c5e618): stop() набор очищал, #конец — нет.
+  const с = собиратель();
+  const а = codex(с);
+  try {
+    await а.send({ text: "ДОЛГИЙ-ХОД", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_started"), "начало долгого хода");
+    await а.interrupt();
+    await а.send({ text: "УПАСТЬ-ХОД", from: "human" }).catch(() => undefined);
+    await дождаться(() => с.события.some((е) => е.kind === "error" && е.failed), "смерть процесса");
+    с.события.length = 0;
+    await а.send({ text: "привет", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "конец хода нового процесса");
+    assert.equal(а.busy, false);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: относительный путь с пробелом — от каталога агента", { skip: process.platform !== "win32" }, async () => {
+  // Рецензия Codex 28.09 (1c5e618): путь проверялся от каталога расширения.
+  const корень = каталог();
+  mkdirSync(join(корень, "папка с пробелом"));
+  writeFileSync(join(корень, "папка с пробелом", "fake claude.cmd"), `@"${process.execPath}" "${ФАЛЬШИВЫЙ_CLAUDE}" %*\r\n`);
+  const с = собиратель();
+  const а = new ClaudeAdapter({ command: "папка с пробелом\\fake claude.cmd", cwd: корень }, с.sink);
+  try {
+    await а.send({ text: "привет", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "ход через обёртку");
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: команда с аргументом в строке не берётся в кавычки целиком", { skip: process.platform !== "win32" }, async () => {
   // Рецензия Codex 28.09 (fe9bce2): «node script.js» в кавычках — одно имя.
   const с = собиратель();

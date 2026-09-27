@@ -99,6 +99,12 @@ const строки = createInterface({ input: process.stdin });
       номерХода += 1;
       const turnId = `turn-${номерХода}`;
       const текстХода = (з.params.input ?? []).map((в) => в.text ?? "").join("");
+      // УПАСТЬ-ХОД: процесс умирает посреди хода.
+      if (текстХода.includes("УПАСТЬ-ХОД")) {
+        ответ({ turn: { id: turnId, status: "inProgress" } });
+        setTimeout(() => process.exit(3), 20);
+        return;
+      }
       // ДОЛГИЙ-ХОД: ход идёт, пока его не прервут; ПОЗЖЕ — кончается через 400 мс.
       if (текстХода.includes("ДОЛГИЙ-ХОД") || текстХода.includes("ПОЗЖЕ")) {
         ответ({ turn: { id: turnId, status: "inProgress" } });

@@ -22,6 +22,7 @@
  * Node и тестами на этой машине не покрыта.
  */
 import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
 
 export const ТАЙМАУТ_ОСТАНОВКИ = 5000;
@@ -39,7 +40,9 @@ export function запуститьПроцесс(
   // Строка вида «node script.js» — команда с аргументом, её не трогать:
   // кавычки нужны только пути к существующему файлу.
   const команда =
-    shell && WINDOWS && /\s/.test(command) && !command.startsWith('"') && existsSync(command) ? `"${command}"` : command;
+    shell && WINDOWS && /\s/.test(command) && !command.startsWith('"') && existsSync(resolve(cwd, command))
+      ? `"${command}"`
+      : command;
   return spawn(команда, [...args], {
     cwd,
     shell,
