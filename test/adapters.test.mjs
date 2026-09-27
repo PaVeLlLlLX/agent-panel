@@ -350,6 +350,80 @@ test("Claude: фоновая команда кончилась после ход
   }
 });
 
+test("Claude: гонка — CLI начал свой запрос раньше, чем принял сообщение панели", async () => {
+  // Рецензия Codex 28.09: сообщение ушло, когда CLI уже начал самостоятельный
+  // запрос, а его init ещё не дошёл. По занятости их не различить; различает
+  // эхо (--replay-user-messages): CLI повторяет сообщение внутри его запроса.
+  const события = [];
+  const занятость = [];
+  const а = new ClaudeAdapter({ command: "node", commandArgs: [ФАЛЬШИВЫЙ_CLAUDE], cwd: каталог() }, (е) => {
+    события.push(е);
+    if (е.kind === "turn_completed") занятость.push(а.busy);
+  });
+  try {
+    await а.send({ text: "привет", from: "human" });
+    await дождаться(() => события.some((е) => е.kind === "turn_completed"), "первый ход");
+    assert.ok(события.find((е) => е.raw?.argv)?.raw.argv.includes("--replay-user-messages"));
+    события.length = 0;
+    занятость.length = 0;
+
+    await а.send({ text: "ГОНКА", from: "human" });
+    await дождаться(() => события.filter((е) => е.kind === "turn_completed").length === 2, "два конца хода");
+    const [чужой, свой] = события.filter((е) => е.kind === "turn_completed");
+    assert.equal(чужой.unsolicited, true);
+    assert.deepEqual(чужой.usage, { input: 70, cached: 0, output: 7 });
+    assert.equal(свой.unsolicited, undefined);
+    assert.deepEqual(свой.usage, { input: 5, cached: 0, output: 5 });
+    const начало = события.find((е) => е.kind === "turn_started");
+    assert.equal(начало?.unsolicited, true);
+    assert.match(начало.text, /pytest/);
+    // Реплика чужого запроса — до его конца, ответ на сообщение — после.
+    const iОтвета = события.findIndex((е) => е.text === "ответ на сообщение");
+    assert.ok(события.findIndex((е) => е.text === "итог фоновой") < события.indexOf(чужой));
+    assert.ok(события.indexOf(чужой) < iОтвета);
+    // Между концами адаптер занят: сообщение панели ещё ждёт ответа.
+    assert.deepEqual(занятость, [true, false]);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: стартовый init без сообщения — не самостоятельный ход", async () => {
+  // Рецензия Codex 28.09: публичный start() без send. Фальшивый CLI пишет init
+  // сразу при запуске (настоящий 2.1.220 молчит до сообщения — проба 28.09).
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await а.start();
+    await дождаться(() => с.события.some((е) => е.raw?.argv), "init при запуске");
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(с.события.some((е) => е.kind === "turn_started"), false);
+    assert.equal(а.busy, false);
+  } finally {
+    await а.stop();
+  }
+});
+
+test("Claude: причина самостоятельного хода не переходит из прежнего процесса", async () => {
+  // Рецензия Codex 28.09: уведомление о фоновой задаче остановленного процесса
+  // не должно подписать ход нового.
+  const с = собиратель();
+  const а = claude(с);
+  try {
+    await а.send({ text: "ФОН-УВЕДОМЛЕНИЕ-БЕЗ-ХОДА", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_completed"), "ход");
+    await new Promise((r) => setTimeout(r, 150));
+    await а.stop();
+    с.события.length = 0;
+    await а.send({ text: "САМ-БЕЗ-ПРИЧИНЫ", from: "human" });
+    await дождаться(() => с.события.some((е) => е.kind === "turn_started"), "самостоятельный ход");
+    const начало = с.события.find((е) => е.kind === "turn_started");
+    assert.doesNotMatch(начало.text, /старая/);
+  } finally {
+    await а.stop();
+  }
+});
+
 test("Claude: фоновая команда без продолжения — ход кончается сразу и не ждёт её", async () => {
   // Фоновая команда (сервер) может не кончиться никогда: держать ход ради неё нельзя.
   const с = собиратель();

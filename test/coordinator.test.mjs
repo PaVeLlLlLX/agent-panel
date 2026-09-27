@@ -128,6 +128,24 @@ test("самостоятельный ход Claude не занимает цел�
   assert.doesNotMatch(codex.полученное[0].text, /Команда завершена успешно/);
 });
 
+test("«Прервать» доставляет прямые сообщения человека из очереди", async () => {
+  // Рецензия Codex 28.09: прямое сообщение ждало конца хода, а после
+  // прерывания конца хода не будет — очередь висела с «в очереди 1».
+  const { к, claude } = комната();
+  claude.busy = true;
+  claude.interrupt = async () => {
+    claude.прерван += 1;
+    claude.busy = false;
+  };
+  await к.fromHuman("вопрос", "claude");
+  assert.equal(к.state.queued, 1);
+  await к.interruptAll();
+  assert.equal(claude.прерван, 1);
+  assert.equal(к.state.queued, 0);
+  assert.equal(claude.полученное.length, 1);
+  assert.match(claude.полученное[0].text, /вопрос/);
+});
+
 test("сообщение Claude во время его самостоятельного хода ждёт конца этого хода", async () => {
   const { к, claude } = комната();
   claude.busy = true;

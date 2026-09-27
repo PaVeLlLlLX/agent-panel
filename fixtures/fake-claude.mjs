@@ -87,6 +87,50 @@ const строки = createInterface({ input: process.stdin });
   }
   if (запись.type !== "user") return;
   const текст = (запись.message?.content ?? []).map((б) => б.text ?? "").join("");
+  // --replay-user-messages: настоящий CLI повторяет сообщение с isReplay,
+  // когда начинает его обрабатывать — внутри своего запроса, после init
+  // (живая проба 28.09: второе сообщение, посланное во время первого хода,
+  // повторено только в своём запросе).
+  const эхо = () => {
+    if (argv.includes("--replay-user-messages")) {
+      записать({ type: "user", message: запись.message, session_id: СЕССИЯ, parent_tool_use_id: null, isReplay: true });
+    }
+  };
+  const initЗапроса = () => записать({ type: "system", subtype: "init", session_id: СЕССИЯ, model: "fake", tools: [], argv, pid: process.pid });
+  // ГОНКА: CLI уже начал свой запрос (кончилась фоновая команда), когда
+  // пришло сообщение панели; сообщение обрабатывается следом.
+  if (текст.includes("ГОНКА")) {
+    записать({ type: "system", subtype: "task_notification", task_id: "tb", status: "completed", summary: "Background command pytest completed (exit code 1)", session_id: СЕССИЯ });
+    initЗапроса();
+    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "итог фоновой" }] }, session_id: СЕССИЯ });
+    записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ, usage: { input_tokens: 70, output_tokens: 7 } });
+    initЗапроса();
+    эхо();
+    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "ответ на сообщение" }] }, session_id: СЕССИЯ });
+    записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ, usage: { input_tokens: 5, output_tokens: 5 } });
+    return;
+  }
+  эхо();
+  // ФОН-УВЕДОМЛЕНИЕ-БЕЗ-ХОДА: фоновая команда кончилась, но CLI ход не начал.
+  if (текст.includes("ФОН-УВЕДОМЛЕНИЕ-БЕЗ-ХОДА")) {
+    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "запущено" }] }, session_id: СЕССИЯ });
+    записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ });
+    setTimeout(() => {
+      записать({ type: "system", subtype: "task_notification", task_id: "tc", status: "completed", summary: "Background command старая completed", session_id: СЕССИЯ });
+    }, 50);
+    return;
+  }
+  // САМ-БЕЗ-ПРИЧИНЫ: после хода CLI сам начинает запрос без уведомления о задаче.
+  if (текст.includes("САМ-БЕЗ-ПРИЧИНЫ")) {
+    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "готово" }] }, session_id: СЕССИЯ });
+    записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ });
+    setTimeout(() => {
+      initЗапроса();
+      записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "сам" }] }, session_id: СЕССИЯ });
+      записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ });
+    }, 50);
+    return;
+  }
 
   // НУЖНО-РАЗРЕШЕНИЕ: запрос can_use_tool в форме, снятой пробой с Claude Code
   // 2.1.220 (--permission-prompt-tool stdio). Ход ждёт ответа панели; отказ,
