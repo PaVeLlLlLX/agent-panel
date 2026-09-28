@@ -10,8 +10,11 @@
 //   node scripts/ascii-identifiers.mjs --compare BEFORE   exit 1 if the rename changed anything checkable
 //
 // Code kept in strings is code too. A template tagged js`…` is a script, one tagged html`…` is a
-// page whose <script> bodies are scripts; both are checked and renamed like the rest. Substitutions
-// ${…} inside them belong to the outer file. Untagged strings are text and are left alone.
+// page whose <script> bodies are scripts; both are checked and renamed like the rest. What is read
+// is the value the tag function receives — escapes decoded, CRLF read as LF — not the source text,
+// and every character of it maps back to its place in the file, so a rename lands exactly. The
+// decoding is compared with TypeScript's own value of the template. Substitutions ${…} belong to
+// the outer file; code put in through ${…} has to be tagged itself. Untagged strings are text.
 //
 // MAP is {"names": {source: target}, "files": {"relative/path": {source: target}}}; private fields
 // are written with their '#'. Only identifiers change, so strings, template text and comments keep
@@ -71,41 +74,99 @@ function identifierNodes(source) {
   return nodes;
 }
 
-/** Scripts kept in js`…` and html`…` templates: [{offset, source}], offsets into the file text. */
+const SIMPLE_ESCAPES = { b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v" };
+
+/**
+ * The value a template part gets at run time (escapes decoded, CRLF and CR read as LF — what
+ * the tag function receives), with the file span every value character came from. The result is
+ * compared with TypeScript's own value of the part, so a wrong decoding stops the check.
+ */
+function cookPart(text, start, end, expected, where) {
+  let value = "";
+  const from = [];
+  const to = [];
+  const emit = (chars, a, b) => {
+    for (const ch of chars) for (let k = 0; k < ch.length; k++) { value += ch[k]; from.push(a); to.push(b); }
+  };
+  for (let i = start; i < end;) {
+    const c = text[i];
+    if (c === "\r") { const b = text[i + 1] === "\n" && i + 1 < end ? i + 2 : i + 1; emit(["\n"], i, b); i = b; continue; }
+    if (c !== "\\") { emit([c], i, i + 1); i += 1; continue; }
+    const d = text[i + 1];
+    let length;
+    if (Object.hasOwn(SIMPLE_ESCAPES, d)) { emit([SIMPLE_ESCAPES[d]], i, i + 2); length = 2; }
+    else if (d === "0" && !/[0-9]/.test(text[i + 2] ?? "")) { emit(["\0"], i, i + 2); length = 2; }
+    else if (d === "x") { emit([String.fromCharCode(parseInt(text.slice(i + 2, i + 4), 16))], i, i + 4); length = 4; }
+    else if (d === "u" && text[i + 2] === "{") {
+      const close = text.indexOf("}", i);
+      emit([String.fromCodePoint(parseInt(text.slice(i + 3, close), 16))], i, close + 1);
+      length = close + 1 - i;
+    } else if (d === "u") { emit([String.fromCharCode(parseInt(text.slice(i + 2, i + 6), 16))], i, i + 6); length = 6; }
+    else if (d === "\r") length = text[i + 2] === "\n" ? 3 : 2;           // line continuation: no value
+    else if (d === "\n" || d === String.fromCharCode(0x2028) || d === String.fromCharCode(0x2029)) length = 2;
+    else if (/[0-9]/.test(d)) throw new Error(`${where}: escape \\${d} gives undefined at run time`);
+    else { const ch = String.fromCodePoint(text.codePointAt(i + 1)); emit([ch], i, i + 1 + ch.length); length = 1 + ch.length; }
+    i += length;
+  }
+  if (expected === undefined) throw new Error(`${where}: an escape gives undefined at run time`);
+  if (value !== expected) throw new Error(`${where}: decoded value differs from TypeScript's`);
+  return { value, from, to };
+}
+
+/**
+ * Scripts kept in js`…` and html`…` templates, as the tag function receives them: the decoded
+ * value, not the source text. ${…} is outer code; its run-time value is not known here, so it
+ * stands as " 0 " (code put in through ${…} must be tagged itself to be checked). Returns
+ * [{source, from, to}]: a parsed script and, per character, the file span it came from.
+ */
 export function embeddedScripts(outer, text) {
   const found = [];
   const visit = (node) => {
     if (ts.isTaggedTemplateExpression(node) && ts.isIdentifier(node.tag) && ["js", "html"].includes(node.tag.text)) {
       const template = node.template;
-      const start = template.getStart() + 1;
-      const chars = text.slice(start, template.getEnd() - 1).split("");
-      if (ts.isTemplateExpression(template)) {
-        // ${…} is outer code: blank it, keeping line breaks, so offsets stay exact.
-        let previous = template.head;
-        for (const span of template.templateSpans) {
-          for (let i = previous.getEnd() - 2 - start; i < span.literal.getStart() + 1 - start; i++) {
-            if (chars[i] !== "\n" && chars[i] !== "\r") chars[i] = " ";
-          }
-          previous = span.literal;
+      const { line } = outer.getLineAndCharacterOfPosition(template.getStart());
+      const where = `${outer.fileName}:${line + 1}`;
+      const parts = ts.isNoSubstitutionTemplateLiteral(template)
+        ? [[template, template.getStart() + 1, template.getEnd() - 1]]
+        : [[template.head, template.head.getStart() + 1, template.head.getEnd() - 2],
+            ...template.templateSpans.map((span) => [span.literal, span.literal.getStart() + 1,
+              span.literal.getEnd() - (ts.isTemplateTail(span.literal) ? 1 : 2)])];
+      let value = "";
+      const from = [];
+      const to = [];
+      parts.forEach(([part, start, end], k) => {
+        if (k > 0) {
+          const at = parts[k - 1][2];
+          for (const ch of " 0 ") { value += ch; from.push(at); to.push(at); }
         }
+        const cooked = cookPart(text, start, end, part.text, where);
+        value += cooked.value;
+        from.push(...cooked.from);
+        to.push(...cooked.to);
+      });
+      const scripts = node.tag.text === "js" ? [[0, value]]
+        : [...value.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((m) => [m.index + m[0].indexOf(">") + 1, m[1]]);
+      for (const [offset, code] of scripts) {
+        found.push({
+          source: ts.createSourceFile("embedded.js", code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS),
+          from: from.slice(offset, offset + code.length),
+          to: to.slice(offset, offset + code.length),
+        });
       }
-      const body = chars.join("");
-      if (node.tag.text === "js") found.push([start, body]);
-      else for (const m of body.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) found.push([start + m.index + m[0].indexOf(">") + 1, m[1]]);
     }
     ts.forEachChild(node, visit);
   };
   visit(outer);
-  return found.map(([offset, code]) => ({ offset, source: ts.createSourceFile("embedded.js", code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS) }));
+  return found;
 }
 
-/** Every identifier of a file, those in embedded scripts included. */
+/** Every identifier of a file, those in embedded scripts included, with its span in the file. */
 function identifiers(file, text) {
   const outer = parse(file, text);
   const list = identifierNodes(outer).map((node) => ({ name: node.text, start: node.getStart(), end: node.getEnd(), embedded: false }));
-  for (const { offset, source } of embeddedScripts(outer, text)) {
+  for (const { source, from, to } of embeddedScripts(outer, text)) {
     for (const node of identifierNodes(source)) {
-      list.push({ name: node.text, start: offset + node.getStart(source), end: offset + node.getEnd(), embedded: true });
+      list.push({ name: node.text, start: from[node.getStart(source)], end: to[node.getEnd() - 1], embedded: true });
     }
   }
   return { outer, list };

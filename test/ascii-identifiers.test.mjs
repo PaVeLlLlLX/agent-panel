@@ -41,6 +41,34 @@ test("in an html`…` page only <script> bodies are code; untagged strings are t
   assert.deepEqual(names(root), ["имя"]);
 });
 
+test("an escape in js`…` code is checked as the browser gets it: \\n ends a comment", () => {
+  const root = project({ "a.mjs": "const js = (s) => s;\nopen(js`// comment\\nconst имя = 1;`);\n" });
+  assert.deepEqual(names(root), ["имя"]);
+});
+
+test("${…} of a template inside js`…` code is code", () => {
+  const root = project({ "a.mjs": "const js = (s) => s;\nopen(js`const t = \\`\\${data.имя}\\`;`);\n" });
+  assert.deepEqual(names(root), ["имя"]);
+});
+
+test("apply keeps positions across escapes and CRLF inside js`…` code", () => {
+  const root = project({ "a.mjs": "const js = (s) => s;\r\nconst code = js`a\\tb\\u0020\\n\r\nconst имя = 1; имя;`;\r\n" });
+  apply({ names: { "имя": "name" } }, root);
+  assert.equal(read(root, "a.mjs"), "const js = (s) => s;\r\nconst code = js`a\\tb\\u0020\\n\r\nconst name = 1; name;`;\r\n");
+});
+
+test("a name written with an escape inside js`…` code is renamed as a whole", () => {
+  const root = project({ "a.mjs": "const js = (s) => s;\nconst code = js`const \\u0438мя = 1;`;\n" });
+  assert.deepEqual(names(root), ["имя"]);
+  apply({ names: { "имя": "name" } }, root);
+  assert.equal(read(root, "a.mjs"), "const js = (s) => s;\nconst code = js`const name = 1;`;\n");
+});
+
+test("an escape the browser would get as undefined stops the check", () => {
+  const root = project({ "a.mjs": "const js = (s) => s;\nopen(js`const a = \"\\1\";`);\n" });
+  assert.throws(() => inventory(root), /escape/);
+});
+
 test("apply renames inside js`…` scripts; ${…} stays outer code", () => {
   const root = project({ "a.mjs": "const js = (s) => s;\nconst имя = 1;\nconst code = js`let имя = ${имя}; // имя`;\n" });
   apply({ names: { "имя": "name" } }, root);
