@@ -25,230 +25,230 @@ import { argumentForLaunch, resolveClaudeCommand } from "./claudeBinary.js";
 import { runMemorySearch } from "./memory.js";
 import { fetchClaudeUsage } from "./claudeUsage.js";
 
-let комната: Комната | undefined;
+let room: Room | undefined;
 
-const МАРШРУТЫ = new Set<Route>(["review", "both", "claude", "codex"]);
-const ВЫБОРЫ = new Set<ApprovalChoice>(["allow", "allowSession", "deny"]);
+const ROUTES = new Set<Route>(["review", "both", "claude", "codex"]);
+const CHOICES = new Set<ApprovalChoice>(["allow", "allowSession", "deny"]);
 
-type ВыбираемыйАгент = "claude" | "codex";
-const АГЕНТЫ: readonly ВыбираемыйАгент[] = ["claude", "codex"];
-const ИМЕНА_АГЕНТОВ: Record<ВыбираемыйАгент, string> = { claude: "Claude", codex: "Codex" };
+type SelectableAgent = "claude" | "codex";
+const AGENTS: readonly SelectableAgent[] = ["claude", "codex"];
+const AGENT_NAMES: Record<SelectableAgent, string> = { claude: "Claude", codex: "Codex" };
 
 /** Режимы разрешений, которые принимает Claude Code (2.1.220 и 2.1.280), плюс default — не передавать флаг. */
-const РЕЖИМЫ = new Set(["default", "acceptEdits", "auto", "manual", "dontAsk", "plan", "bypassPermissions"]);
-const ПОДПИСИ_РЕЖИМОВ: Record<string, string> = { bypassPermissions: "без вопросов", default: "спрашивать" };
+const MODES = new Set(["default", "acceptEdits", "auto", "manual", "dontAsk", "plan", "bypassPermissions"]);
+const MODE_LABELS: Record<string, string> = { bypassPermissions: "без вопросов", default: "спрашивать" };
 
-type СообщениеМоделей = {
+type ModelsMessage = {
   type: "models";
-  agent: ВыбираемыйАгент;
+  agent: SelectableAgent;
   choice: ModelChoice;
   options?: readonly ModelOption[];
   error?: string;
 };
 
-class Комната {
-  readonly #панель: vscode.WebviewPanel;
-  readonly #журнал: Journal;
-  readonly #координатор: Coordinator;
-  readonly #имя: string;
-  #закрыта = false;
+class Room {
+  readonly #panel: vscode.WebviewPanel;
+  readonly #journal: Journal;
+  readonly #coordinator: Coordinator;
+  readonly #name: string;
+  #closed = false;
   /** Выбор моделей хранится для папки: другая папка — другая задача. */
-  readonly #память: vscode.Memento;
-  readonly #ключМоделей: string;
-  readonly #выборы: Record<ВыбираемыйАгент, ModelChoice>;
-  readonly #каталоги: Partial<Record<ВыбираемыйАгент, readonly ModelOption[]>> = {};
-  readonly #адаптеры: Record<ВыбираемыйАгент, Adapter>;
-  #загрузкаМоделей: Promise<void> | undefined;
+  readonly #memento: vscode.Memento;
+  readonly #modelsKey: string;
+  readonly #choices: Record<SelectableAgent, ModelChoice>;
+  readonly #catalogs: Partial<Record<SelectableAgent, readonly ModelOption[]>> = {};
+  readonly #adapters: Record<SelectableAgent, Adapter>;
+  #modelsLoading: Promise<void> | undefined;
   /** Режим разрешений Claude для папки; по умолчанию — из настройки. */
-  #режим: string;
-  readonly #ключРежима: string;
+  #mode: string;
+  readonly #modeKey: string;
 
-  constructor(контекст: vscode.ExtensionContext, cwd: string) {
-    const настройки = vscode.workspace.getConfiguration("agentPanel");
-    this.#имя = `room:${cwd}`;
-    this.#память = контекст.workspaceState;
-    this.#ключМоделей = `agentPanel.models:${cwd}`;
-    const сохранённые = this.#память.get<Record<string, unknown>>(this.#ключМоделей) ?? {};
-    this.#выборы = {
-      claude: normalizeChoice(undefined, сохранённые["claude"]),
-      codex: normalizeChoice(undefined, сохранённые["codex"]),
+  constructor(context: vscode.ExtensionContext, cwd: string) {
+    const settings = vscode.workspace.getConfiguration("agentPanel");
+    this.#name = `room:${cwd}`;
+    this.#memento = context.workspaceState;
+    this.#modelsKey = `agentPanel.models:${cwd}`;
+    const savedChoices = this.#memento.get<Record<string, unknown>>(this.#modelsKey) ?? {};
+    this.#choices = {
+      claude: normalizeChoice(undefined, savedChoices["claude"]),
+      codex: normalizeChoice(undefined, savedChoices["codex"]),
     };
-    this.#ключРежима = `agentPanel.claudePermissions:${cwd}`;
-    const сохранённыйРежим = this.#память.get<string>(this.#ключРежима);
-    this.#режим =
-      сохранённыйРежим && РЕЖИМЫ.has(сохранённыйРежим)
-        ? сохранённыйРежим
-        : настройки.get<string>("claudePermissionMode", "bypassPermissions");
-    this.#журнал = new Journal(join(контекст.globalStorageUri.fsPath, "agent-panel.sqlite"));
-    this.#журнал.ensureRoom(this.#имя, cwd);
-    const привязка = this.#журнал.binding(this.#имя);
+    this.#modeKey = `agentPanel.claudePermissions:${cwd}`;
+    const savedMode = this.#memento.get<string>(this.#modeKey);
+    this.#mode =
+      savedMode && MODES.has(savedMode)
+        ? savedMode
+        : settings.get<string>("claudePermissionMode", "bypassPermissions");
+    this.#journal = new Journal(join(context.globalStorageUri.fsPath, "agent-panel.sqlite"));
+    this.#journal.ensureRoom(this.#name, cwd);
+    const binding = this.#journal.binding(this.#name);
 
-    this.#панель = vscode.window.createWebviewPanel(
+    this.#panel = vscode.window.createWebviewPanel(
       "agentPanel",
       "Общая комната",
       vscode.ViewColumn.Beside,
       { enableScripts: true, retainContextWhenHidden: true },
     );
-    this.#панель.webview.html = разметка(this.#панель.webview, контекст);
-    this.#панель.onDidDispose(() => void this.dispose());
+    this.#panel.webview.html = markup(this.#panel.webview, context);
+    this.#panel.onDidDispose(() => void this.dispose());
 
-    const принять = (событие: PanelEvent) => this.#координатор.handle(событие);
+    const accept = (event: PanelEvent) => this.#coordinator.handle(event);
     // Память по теме для обоих агентов и MCP-серверы для Claude панели: у него
     // нет пользовательских настроек, а значит и ваших MCP-серверов (qmd, om).
-    const командаПамяти = настройки.get<string>("memorySearchCommand", "").trim();
-    const mcpКонфиг = настройки.get<string>("claudeMcpConfig", "").trim();
+    const memoryCommand = settings.get<string>("memorySearchCommand", "").trim();
+    const mcpConfig = settings.get<string>("claudeMcpConfig", "").trim();
     // Тот же claude, что в чате владельца: claude из npm может не знать модель
     // его сессии (28.09: 2.1.220 не принял claude-opus-5-5).
-    const запускClaude = resolveClaudeCommand(
-      настройки.get<string>("claudeCommand", "claude"),
+    const claudeLaunch = resolveClaudeCommand(
+      settings.get<string>("claudeCommand", "claude"),
       vscode.extensions.getExtension("anthropic.claude-code")?.extensionPath,
     );
     // Через cmd.exe путь — в кавычках, иначе пробел или «&» в имени папки разбил
     // бы команду (рецензия Codex 28.09); без оболочки кавычки стали бы частью пути.
-    const mcpАргумент = argumentForLaunch(mcpКонфиг, запускClaude.shell);
+    const mcpArg = argumentForLaunch(mcpConfig, claudeLaunch.shell);
 
     const claude = new ClaudeAdapter(
       {
-        command: запускClaude.command,
-        ...(запускClaude.shell !== undefined ? { shell: запускClaude.shell } : {}),
+        command: claudeLaunch.command,
+        ...(claudeLaunch.shell !== undefined ? { shell: claudeLaunch.shell } : {}),
         cwd,
-        model: this.#выборы.claude.model,
-        effort: this.#выборы.claude.effort,
-        settingSources: настройки.get<string>("claudeSettingSources", "project,local"),
-        ...(mcpКонфиг ? { extraArgs: ["--mcp-config", mcpАргумент] } : {}),
-        ...(привязка?.claudeSessionId ? { resumeSessionId: привязка.claudeSessionId } : {}),
-        permissionMode: this.#режим,
+        model: this.#choices.claude.model,
+        effort: this.#choices.claude.effort,
+        settingSources: settings.get<string>("claudeSettingSources", "project,local"),
+        ...(mcpConfig ? { extraArgs: ["--mcp-config", mcpArg] } : {}),
+        ...(binding?.claudeSessionId ? { resumeSessionId: binding.claudeSessionId } : {}),
+        permissionMode: this.#mode,
         onSessionId: (id) => {
-          if (!this.#закрыта) this.#журнал.bindSessions(this.#имя, id, undefined);
+          if (!this.#closed) this.#journal.bindSessions(this.#name, id, undefined);
         },
       },
-      принять,
+      accept,
     );
     // Тот же codex, что в чате владельца: у CLI из npm может не быть модели его ветки.
-    const запускCodex = resolveCodexCommand(
-      настройки.get<string>("codexCommand", "codex"),
+    const codexLaunch = resolveCodexCommand(
+      settings.get<string>("codexCommand", "codex"),
       vscode.extensions.getExtension("openai.chatgpt")?.extensionPath,
     );
     const codex = new CodexAdapter(
       {
-        command: запускCodex.command,
-        ...(запускCodex.shell !== undefined ? { shell: запускCodex.shell } : {}),
+        command: codexLaunch.command,
+        ...(codexLaunch.shell !== undefined ? { shell: codexLaunch.shell } : {}),
         cwd,
-        model: this.#выборы.codex.model,
-        effort: this.#выборы.codex.effort,
-        ...(привязка?.codexThreadId ? { resumeThreadId: привязка.codexThreadId } : {}),
+        model: this.#choices.codex.model,
+        effort: this.#choices.codex.effort,
+        ...(binding?.codexThreadId ? { resumeThreadId: binding.codexThreadId } : {}),
         onSessionId: (id) => {
-          if (!this.#закрыта) this.#журнал.bindSessions(this.#имя, undefined, id);
+          if (!this.#closed) this.#journal.bindSessions(this.#name, undefined, id);
         },
       },
-      принять,
+      accept,
     );
 
-    this.#адаптеры = { claude, codex };
-    this.#координатор = new Coordinator(claude, codex, this.#журнал, {
-      room: this.#имя,
+    this.#adapters = { claude, codex };
+    this.#coordinator = new Coordinator(claude, codex, this.#journal, {
+      room: this.#name,
       cwd,
-      maxAutoRounds: настройки.get<number>("maxAutoRounds", 3),
-      evidenceBudget: настройки.get<number>("reviewEvidenceChars", 240_000),
-      taskTokenLimit: настройки.get<number>("taskTokenLimit", 0),
-      ...(командаПамяти
-        ? { memory: (текст: string, каталог: string) => runMemorySearch(командаПамяти, каталог, текст) }
+      maxAutoRounds: settings.get<number>("maxAutoRounds", 3),
+      evidenceBudget: settings.get<number>("reviewEvidenceChars", 240_000),
+      taskTokenLimit: settings.get<number>("taskTokenLimit", 0),
+      ...(memoryCommand
+        ? { memory: (text: string, catalog: string) => runMemorySearch(memoryCommand, catalog, text) }
         : {}),
-      ...(настройки.get<boolean>("claudeWeeklyUsage", true)
+      ...(settings.get<boolean>("claudeWeeklyUsage", true)
         ? {
             claudeUsage: () =>
               fetchClaudeUsage({
-                command: запускClaude.command,
-                ...(запускClaude.shell !== undefined ? { shell: запускClaude.shell } : {}),
+                command: claudeLaunch.command,
+                ...(claudeLaunch.shell !== undefined ? { shell: claudeLaunch.shell } : {}),
               }),
           }
         : {}),
-      onEvent: (событие) => this.#отправитьВПанель({ type: "event", событие: forDisplay(событие) }),
-      onState: (состояние) => this.#отправитьВПанель({ type: "state", состояние }),
+      onEvent: (event) => this.#postToPanel({ type: "event", event: forDisplay(event) }),
+      onState: (state) => this.#postToPanel({ type: "state", state }),
     });
 
-    this.#панель.webview.onDidReceiveMessage((сообщение: ВходящееUI) => void this.#изПанели(сообщение));
+    this.#panel.webview.onDidReceiveMessage((message: UiMessage) => void this.#fromPanel(message));
   }
 
-  async #изПанели(сообщение: ВходящееUI): Promise<void> {
-    switch (сообщение.type) {
+  async #fromPanel(message: UiMessage): Promise<void> {
+    switch (message.type) {
       case "ready":
-        for (const событие of this.#журнал.history(this.#имя)) {
-          const лёгкое = forDisplay(событие);
-          const чистое = лёгкое.text ? { ...лёгкое, text: stripAnsi(лёгкое.text) } : лёгкое;
-          this.#отправитьВПанель({ type: "event", событие: чистое, история: true });
+        for (const event of this.#journal.history(this.#name)) {
+          const light = forDisplay(event);
+          const clean = light.text ? { ...light, text: stripAnsi(light.text) } : light;
+          this.#postToPanel({ type: "event", event: clean, history: true });
         }
-        this.#отправитьВПанель({ type: "state", состояние: this.#координатор.state });
-        for (const агент of АГЕНТЫ) this.#отправитьМодели(агент);
-        this.#отправитьВПанель({ type: "permissions", mode: this.#режим });
-        void this.#координатор.refreshClaudeUsage();
+        this.#postToPanel({ type: "state", state: this.#coordinator.state });
+        for (const agent of AGENTS) this.#sendModels(agent);
+        this.#postToPanel({ type: "permissions", mode: this.#mode });
+        void this.#coordinator.refreshClaudeUsage();
         return;
       case "send":
-        if (!сообщение.text.trim() || !МАРШРУТЫ.has(сообщение.route as Route)) return;
-        await this.#координатор.fromHuman(сообщение.text, сообщение.route as Route);
+        if (!message.text.trim() || !ROUTES.has(message.route as Route)) return;
+        await this.#coordinator.fromHuman(message.text, message.route as Route);
         return;
       case "release":
-        await this.#координатор.releaseHeld();
+        await this.#coordinator.releaseHeld();
         return;
       case "stopAll":
-        await this.#координатор.stopAll();
+        await this.#coordinator.stopAll();
         return;
       case "interrupt":
-        await this.#координатор.interruptAll();
+        await this.#coordinator.interruptAll();
         return;
       case "setAuto":
-        this.#координатор.setAuto(сообщение.on);
+        this.#coordinator.setAuto(message.on);
         return;
       case "setPermissionMode": {
-        if (!РЕЖИМЫ.has(сообщение.mode)) return;
+        if (!MODES.has(message.mode)) return;
         // Адаптеру — всегда: «Больше не спрашивать» на карточке должна
         // разрешить открытый запрос, даже если режим уже был выбран.
-        this.#адаптеры.claude.setPermissionMode?.(сообщение.mode);
-        if (сообщение.mode !== this.#режим) {
-          this.#режим = сообщение.mode;
-          await this.#память.update(this.#ключРежима, сообщение.mode);
-          this.#координатор.notice(
-            сообщение.mode === "bypassPermissions"
+        this.#adapters.claude.setPermissionMode?.(message.mode);
+        if (message.mode !== this.#mode) {
+          this.#mode = message.mode;
+          await this.#memento.update(this.#modeKey, message.mode);
+          this.#coordinator.notice(
+            message.mode === "bypassPermissions"
               ? "Разрешения Claude: без вопросов. Открытые запросы разрешены сразу, со следующего хода Claude не спрашивает."
-              : `Разрешения Claude: ${ПОДПИСИ_РЕЖИМОВ[сообщение.mode] ?? сообщение.mode} — со следующего хода.`,
+              : `Разрешения Claude: ${MODE_LABELS[message.mode] ?? message.mode} — со следующего хода.`,
           );
         }
-        this.#отправитьВПанель({ type: "permissions", mode: this.#режим });
+        this.#postToPanel({ type: "permissions", mode: this.#mode });
         return;
       }
       case "listModels":
-        await this.#загрузитьМодели();
+        await this.#loadModels();
         return;
       case "newSession":
-        if (сообщение.agent === "claude" || сообщение.agent === "codex") await this.newSession(сообщение.agent);
+        if (message.agent === "claude" || message.agent === "codex") await this.newSession(message.agent);
         return;
       case "setModel": {
-        const агент = сообщение.agent as ВыбираемыйАгент;
-        if (!АГЕНТЫ.includes(агент)) return;
-        const выбор = normalizeChoice(this.#каталоги[агент], сообщение);
-        if (!sameChoice(выбор, this.#выборы[агент])) {
-          await this.#применитьВыбор(агент, выбор);
-          this.#координатор.notice(
-            `${ИМЕНА_АГЕНТОВ[агент]}: ${describeChoice(this.#каталоги[агент], выбор)} — со следующего хода.`,
+        const agent = message.agent as SelectableAgent;
+        if (!AGENTS.includes(agent)) return;
+        const choice = normalizeChoice(this.#catalogs[agent], message);
+        if (!sameChoice(choice, this.#choices[agent])) {
+          await this.#applyChoice(agent, choice);
+          this.#coordinator.notice(
+            `${AGENT_NAMES[agent]}: ${describeChoice(this.#catalogs[agent], choice)} — со следующего хода.`,
           );
         }
-        this.#отправитьМодели(агент);
+        this.#sendModels(agent);
         return;
       }
       case "openLink": {
         // Webview сам по ссылкам не переходит; открываются только веб-адреса и почта.
-        let адрес: vscode.Uri;
+        let uri: vscode.Uri;
         try {
-          адрес = vscode.Uri.parse(сообщение.href, true);
+          uri = vscode.Uri.parse(message.href, true);
         } catch {
           return;
         }
-        if (["http", "https", "mailto"].includes(адрес.scheme)) await vscode.env.openExternal(адрес);
+        if (["http", "https", "mailto"].includes(uri.scheme)) await vscode.env.openExternal(uri);
         return;
       }
       case "approval":
-        if (!ВЫБОРЫ.has(сообщение.choice as ApprovalChoice)) return;
-        await this.#координатор.answerApproval(сообщение.id, сообщение.choice as ApprovalChoice);
+        if (!CHOICES.has(message.choice as ApprovalChoice)) return;
+        await this.#coordinator.answerApproval(message.id, message.choice as ApprovalChoice);
         return;
     }
   }
@@ -257,80 +257,80 @@ class Комната {
    * Списки моделей — по запросу человека, один раз за открытие комнаты: каждый
    * поднимает короткий процесс агента. Неудача не запоминается — можно повторить.
    */
-  #загрузитьМодели(): Promise<void> {
-    this.#загрузкаМоделей ??= Promise.all(
-      АГЕНТЫ.map(async (агент) => {
+  #loadModels(): Promise<void> {
+    this.#modelsLoading ??= Promise.all(
+      AGENTS.map(async (agent) => {
         try {
-          const каталог = (await this.#адаптеры[агент].listModels?.()) ?? [];
-          this.#каталоги[агент] = каталог;
-          const допустимый = normalizeChoice(каталог, this.#выборы[агент]);
-          if (!sameChoice(допустимый, this.#выборы[агент])) {
-            await this.#применитьВыбор(агент, допустимый);
-            this.#координатор.notice(
-              `${ИМЕНА_АГЕНТОВ[агент]}: сохранённая модель больше недоступна — со следующего хода по умолчанию.`,
+          const catalog = (await this.#adapters[agent].listModels?.()) ?? [];
+          this.#catalogs[agent] = catalog;
+          const valid = normalizeChoice(catalog, this.#choices[agent]);
+          if (!sameChoice(valid, this.#choices[agent])) {
+            await this.#applyChoice(agent, valid);
+            this.#coordinator.notice(
+              `${AGENT_NAMES[agent]}: сохранённая модель больше недоступна — со следующего хода по умолчанию.`,
             );
           }
-          this.#отправитьМодели(агент);
-        } catch (беда) {
-          this.#загрузкаМоделей = undefined;
-          this.#отправитьМодели(агент, (беда as Error).message);
+          this.#sendModels(agent);
+        } catch (err) {
+          this.#modelsLoading = undefined;
+          this.#sendModels(agent, (err as Error).message);
         }
       }),
     ).then(() => undefined);
-    return this.#загрузкаМоделей;
+    return this.#modelsLoading;
   }
 
-  async #применитьВыбор(агент: ВыбираемыйАгент, выбор: ModelChoice): Promise<void> {
-    this.#выборы[агент] = выбор;
-    this.#адаптеры[агент].setModel?.(выбор);
-    await this.#память.update(this.#ключМоделей, this.#выборы);
+  async #applyChoice(agent: SelectableAgent, choice: ModelChoice): Promise<void> {
+    this.#choices[agent] = choice;
+    this.#adapters[agent].setModel?.(choice);
+    await this.#memento.update(this.#modelsKey, this.#choices);
   }
 
-  #отправитьМодели(агент: ВыбираемыйАгент, ошибка?: string): void {
-    const каталог = this.#каталоги[агент];
-    this.#отправитьВПанель({
+  #sendModels(agent: SelectableAgent, error?: string): void {
+    const catalog = this.#catalogs[agent];
+    this.#postToPanel({
       type: "models",
-      agent: агент,
-      choice: this.#выборы[агент],
-      ...(каталог ? { options: каталог } : {}),
-      ...(ошибка ? { error: ошибка } : {}),
+      agent: agent,
+      choice: this.#choices[agent],
+      ...(catalog ? { options: catalog } : {}),
+      ...(error ? { error: error } : {}),
     });
   }
 
   /** Новая сессия агента — после подтверждения: прежний разговор агент помнить не будет. */
-  async newSession(агент: "claude" | "codex"): Promise<void> {
-    const имя = агент === "claude" ? "Claude" : "Codex";
-    const ответ = await vscode.window.showWarningMessage(
-      `Начать новую сессию ${имя} для этой комнаты? Прежний разговор останется в истории ${имя}, ` +
+  async newSession(agent: "claude" | "codex"): Promise<void> {
+    const name = agent === "claude" ? "Claude" : "Codex";
+    const reply = await vscode.window.showWarningMessage(
+      `Начать новую сессию ${name} для этой комнаты? Прежний разговор останется в истории ${name}, ` +
         "но агент не будет его помнить. Беседа в панели сохранится.",
       { modal: true },
       "Начать новую",
     );
-    if (ответ !== "Начать новую") return;
-    await this.#координатор.newSession(агент);
+    if (reply !== "Начать новую") return;
+    await this.#coordinator.newSession(agent);
   }
 
-  #отправитьВПанель(
-    сообщение:
-      | { type: "event"; событие: PanelEvent; история?: boolean }
-      | { type: "state"; состояние: RoomState }
-      | СообщениеМоделей
+  #postToPanel(
+    message:
+      | { type: "event"; event: PanelEvent; history?: boolean }
+      | { type: "state"; state: RoomState }
+      | ModelsMessage
       | { type: "permissions"; mode: string },
   ): void {
-    if (this.#закрыта) return;
-    void this.#панель.webview.postMessage(сообщение);
+    if (this.#closed) return;
+    void this.#panel.webview.postMessage(message);
   }
 
   async dispose(): Promise<void> {
-    if (this.#закрыта) return;
-    this.#закрыта = true;
-    await this.#координатор.stopAll();
-    this.#журнал.close();
-    комната = undefined;
+    if (this.#closed) return;
+    this.#closed = true;
+    await this.#coordinator.stopAll();
+    this.#journal.close();
+    room = undefined;
   }
 }
 
-type ВходящееUI =
+type UiMessage =
   | { type: "ready" }
   | { type: "send"; text: string; route: string }
   | { type: "release" }
@@ -352,9 +352,9 @@ type ВходящееUI =
  * реплик агентов в страницу не попадает (markdown-it с html: false), а
  * скрипты по-прежнему только с nonce.
  */
-function разметка(webview: vscode.Webview, контекст: vscode.ExtensionContext): string {
-  const ресурс = (имя: string) =>
-    webview.asWebviewUri(vscode.Uri.joinPath(контекст.extensionUri, "media", имя));
+function markup(webview: vscode.Webview, context: vscode.ExtensionContext): string {
+  const resource = (name: string) =>
+    webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "media", name));
   const nonce = Math.random().toString(36).slice(2);
   return `<!DOCTYPE html>
 <html lang="ru">
@@ -362,8 +362,8 @@ function разметка(webview: vscode.Webview, контекст: vscode.Exte
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
-<link rel="stylesheet" href="${ресурс("vendor/katex/katex.min.css")}">
-<link rel="stylesheet" href="${ресурс("panel.css")}">
+<link rel="stylesheet" href="${resource("vendor/katex/katex.min.css")}">
+<link rel="stylesheet" href="${resource("panel.css")}">
 <title>Общая комната</title>
 </head>
 <body>
@@ -444,41 +444,41 @@ function разметка(webview: vscode.Webview, контекст: vscode.Exte
   </div>
   <div id="диагностика" hidden><pre id="диагностика-строки"></pre></div>
 </footer>
-<script nonce="${nonce}" src="${ресурс("format.js")}"></script>
-<script nonce="${nonce}" src="${ресурс("thread.js")}"></script>
-<script nonce="${nonce}" src="${ресурс("vendor/markdown.js")}"></script>
-<script nonce="${nonce}" src="${ресурс("panel.js")}"></script>
+<script nonce="${nonce}" src="${resource("format.js")}"></script>
+<script nonce="${nonce}" src="${resource("thread.js")}"></script>
+<script nonce="${nonce}" src="${resource("vendor/markdown.js")}"></script>
+<script nonce="${nonce}" src="${resource("panel.js")}"></script>
 </body>
 </html>`;
 }
 
-export function activate(контекст: vscode.ExtensionContext): void {
-  контекст.subscriptions.push(
+export function activate(context: vscode.ExtensionContext): void {
+  context.subscriptions.push(
     vscode.commands.registerCommand("agentPanel.open", async () => {
-      if (комната) {
+      if (room) {
         vscode.window.showInformationMessage("Комната уже открыта.");
         return;
       }
-      const папка = vscode.workspace.workspaceFolders?.[0];
-      if (!папка) {
+      const dir = vscode.workspace.workspaceFolders?.[0];
+      if (!dir) {
         vscode.window.showErrorMessage("Нужна открытая папка: агенты запускаются в её каталоге.");
         return;
       }
-      await vscode.workspace.fs.createDirectory(контекст.globalStorageUri);
-      комната = new Комната(контекст, папка.uri.fsPath);
+      await vscode.workspace.fs.createDirectory(context.globalStorageUri);
+      room = new Room(context, dir.uri.fsPath);
     }),
     vscode.commands.registerCommand("agentPanel.stopAll", async () => {
-      await комната?.dispose();
+      await room?.dispose();
     }),
     vscode.commands.registerCommand("agentPanel.newClaudeSession", async () => {
-      await комната?.newSession("claude");
+      await room?.newSession("claude");
     }),
     vscode.commands.registerCommand("agentPanel.newCodexSession", async () => {
-      await комната?.newSession("codex");
+      await room?.newSession("codex");
     }),
   );
 }
 
 export function deactivate(): void {
-  void комната?.dispose();
+  void room?.dispose();
 }

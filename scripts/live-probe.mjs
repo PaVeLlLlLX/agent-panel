@@ -29,103 +29,103 @@ const { resolveCodexCommand } = require("../out/codexBinary.js");
 const { resolveClaudeCommand } = require("../out/claudeBinary.js");
 const { readdirSync } = require("node:fs");
 
-const папка = mkdtempSync(join(tmpdir(), "agent-panel-probe-"));
-writeFileSync(join(папка, "README.md"), "Временная папка живой пробы agent-panel.\n");
-const итог = { папка, claude: {}, codex: {} };
+const dir = mkdtempSync(join(tmpdir(), "agent-panel-probe-"));
+writeFileSync(join(dir, "README.md"), "Временная папка живой пробы agent-panel.\n");
+const result = { dir, claude: {}, codex: {} };
 
 /**
  * Папка расширения с наибольшей версией: VS Code оставляет старые до перезапуска.
  * Панель берёт путь у самого VS Code (активную версию), поэтому проба
  * подтверждает работу бинарника, а не выбор папки панелью.
  */
-function расширение(префикс) {
-  const корень = join(homedir(), ".vscode", "extensions");
-  if (!existsSync(корень)) return undefined;
-  const имена = readdirSync(корень)
-    .filter((и) => и.startsWith(префикс))
-    .sort((а, б) => а.localeCompare(б, undefined, { numeric: true }));
-  return имена.length ? join(корень, имена[имена.length - 1]) : undefined;
+function extensionDir(prefix) {
+  const root = join(homedir(), ".vscode", "extensions");
+  if (!existsSync(root)) return undefined;
+  const names = readdirSync(root)
+    .filter((it) => it.startsWith(prefix))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  return names.length ? join(root, names[names.length - 1]) : undefined;
 }
-const расширениеChatGPT = () => расширение("openai.chatgpt-");
-const аргумент = (имя) => {
-  const и = process.argv.indexOf(имя);
-  return и >= 0 ? process.argv[и + 1] : undefined;
+const chatgptExtension = () => extensionDir("openai.chatgpt-");
+const arg = (name) => {
+  const it = process.argv.indexOf(name);
+  return it >= 0 ? process.argv[it + 1] : undefined;
 };
 
 /** Ход до turn_completed; события копятся для сводки. */
-function ход(адаптер, события, текст, предел = 180_000) {
+function turn(adapter, events, text, limit = 180_000) {
   return new Promise((resolve, reject) => {
-    const таймер = setTimeout(() => reject(new Error(`нет turn_completed за ${предел / 1000} с`)), предел);
-    события.ждать = (е) => {
-      if (е.kind === "turn_completed" || (е.kind === "error" && е.failed)) {
-        clearTimeout(таймер);
-        resolve(е);
+    const timer = setTimeout(() => reject(new Error(`нет turn_completed за ${limit / 1000} с`)), limit);
+    events.wait = (e) => {
+      if (e.kind === "turn_completed" || (e.kind === "error" && e.failed)) {
+        clearTimeout(timer);
+        resolve(e);
       }
     };
-    адаптер.send({ text: текст, from: "human" }).catch(reject);
+    adapter.send({ text: text, from: "human" }).catch(reject);
   });
 }
 
-function приёмник(события) {
-  return (е) => {
-    события.push(е);
-    события.ждать?.(е);
+function sink(events) {
+  return (e) => {
+    events.push(e);
+    events.wait?.(e);
   };
 }
 
-const ответ = (события) =>
-  события.filter((е) => е.kind === "message" && е.agent !== "system").map((е) => е.text).join(" ").trim();
+const reply = (events) =>
+  events.filter((e) => e.kind === "message" && e.agent !== "system").map((e) => e.text).join(" ").trim();
 
 // --- Claude --------------------------------------------------------------------
 {
-  const события = [];
-  const запуск = resolveClaudeCommand(undefined, расширение("anthropic.claude-code-"));
-  итог.claude.запуск = запуск;
-  const опции = {
-    command: запуск.command,
-    ...(запуск.shell !== undefined ? { shell: запуск.shell } : {}),
-    cwd: папка,
+  const events = [];
+  const launch = resolveClaudeCommand(undefined, extensionDir("anthropic.claude-code-"));
+  result.claude.launch = launch;
+  const options = {
+    command: launch.command,
+    ...(launch.shell !== undefined ? { shell: launch.shell } : {}),
+    cwd: dir,
     settingSources: "project,local",
     permissionMode: "default",
   };
-  const каталог = await new ClaudeAdapter(опции, приёмник(события)).listModels();
-  итог.claude.каталог = каталог.map((м) => ({ id: м.id, label: м.label, efforts: м.efforts }));
-  const дешёвая =
-    аргумент("--claude-model") ?? каталог.find((м) => /haiku/i.test(`${м.id} ${м.label}`))?.id ?? "haiku";
-  итог.claude.модель = дешёвая;
+  const catalog = await new ClaudeAdapter(options, sink(events)).listModels();
+  result.claude.catalog = catalog.map((m) => ({ id: m.id, label: m.label, efforts: m.efforts }));
+  const cheapModel =
+    arg("--claude-model") ?? catalog.find((m) => /haiku/i.test(`${m.id} ${m.label}`))?.id ?? "haiku";
+  result.claude.model = cheapModel;
 
-  let сессия;
-  const первый = new ClaudeAdapter({ ...опции, model: дешёвая, onSessionId: (id) => (сессия = id) }, приёмник(события));
-  const конец1 = await ход(первый, события, "Запомни кодовое слово «янтарь». Ответь одним словом: запомнил.");
-  итог.claude.ход1 = { ответ: ответ(события), провал: !!конец1.failed, сессия };
-  await первый.stop();
+  let session;
+  const first = new ClaudeAdapter({ ...options, model: cheapModel, onSessionId: (id) => (session = id) }, sink(events));
+  const end1 = await turn(first, events, "Запомни кодовое слово «янтарь». Ответь одним словом: запомнил.");
+  result.claude.turn1 = { reply: reply(events), failed: !!end1.failed, session };
+  await first.stop();
 
-  const события2 = [];
-  const второй = new ClaudeAdapter({ ...опции, model: дешёвая, resumeSessionId: сессия }, приёмник(события2));
-  const конец2 = await ход(второй, события2, "Какое кодовое слово я просил запомнить? Ответь одним словом.");
-  итог.claude.ход2 = {
-    ответ: ответ(события2),
-    провал: !!конец2.failed,
-    помнит: /янтар/i.test(ответ(события2)),
-    диагностика: события2.filter((е) => е.kind === "diagnostic").map((е) => е.text).slice(0, 5),
+  const events2 = [];
+  const second = new ClaudeAdapter({ ...options, model: cheapModel, resumeSessionId: session }, sink(events2));
+  const end2 = await turn(second, events2, "Какое кодовое слово я просил запомнить? Ответь одним словом.");
+  result.claude.turn2 = {
+    reply: reply(events2),
+    failed: !!end2.failed,
+    remembers: /янтар/i.test(reply(events2)),
+    diagnostics: events2.filter((e) => e.kind === "diagnostic").map((e) => e.text).slice(0, 5),
   };
-  await второй.stop();
+  await second.stop();
 }
 
 // --- Codex ---------------------------------------------------------------------
 {
-  const запуск = resolveCodexCommand(undefined, расширениеChatGPT());
-  итог.codex.запуск = запуск;
-  const события = [];
-  const codex = new CodexAdapter({ command: запуск.command, shell: запуск.shell, cwd: папка }, приёмник(события));
-  const каталог = await codex.listModels();
-  итог.codex.каталог = каталог.map((м) => ({ id: м.id, label: м.label, efforts: м.efforts, defaultEffort: м.defaultEffort }));
+  const launch = resolveCodexCommand(undefined, chatgptExtension());
+  result.codex.launch = launch;
+  const events = [];
+  const codex = new CodexAdapter({ command: launch.command, shell: launch.shell, cwd: dir }, sink(events));
+  const catalog = await codex.listModels();
+  result.codex.catalog = catalog.map((m) => ({ id: m.id, label: m.label, efforts: m.efforts, defaultEffort: m.defaultEffort }));
   if (process.argv.includes("--codex-turn")) {
-    const конец = await ход(codex, события, "Ответь одним словом: готов.");
-    итог.codex.ход = { ответ: ответ(события), провал: !!конец.failed };
+    const end = await turn(codex, events, "Ответь одним словом: готов.");
+    result.codex.turn = { reply: reply(events), failed: !!end.failed };
   }
   await codex.stop();
 }
 
-console.log(JSON.stringify(итог, null, 2));
+console.log(JSON.stringify(result, null, 2));
 process.exit(0);

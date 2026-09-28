@@ -37,7 +37,7 @@
  */
 import { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, Interface } from "node:readline";
-import { запуститьПроцесс, остановитьДерево } from "./process.js";
+import { spawnProcess, killTree } from "./process.js";
 import {
   Adapter,
   AgentPrompt,
@@ -68,11 +68,11 @@ export interface CodexOptions {
   readonly onSessionId?: (id: string) => void;
 }
 
-interface ОтветВетки {
+interface ThreadResponse {
   readonly thread?: { readonly id?: string };
 }
 
-const ИНСТРУМЕНТАЛЬНЫЕ = new Set([
+const TOOL_ITEMS = new Set([
   "commandExecution",
   "fileChange",
   "mcpToolCall",
@@ -87,55 +87,55 @@ const ИНСТРУМЕНТАЛЬНЫЕ = new Set([
  * displayName, description, hidden, isDefault, defaultReasoningEffort,
  * supportedReasoningEfforts[].reasoningEffort`. Скрытые не показываются.
  */
-function каталогCodex(модели: readonly Record<string, unknown>[]): {
-  список: ModelOption[];
-  поУмолчанию: string | undefined;
+function codexCatalog(models: readonly Record<string, unknown>[]): {
+  list: ModelOption[];
+  isDefault: string | undefined;
 } {
-  const видимые = модели.filter((м) => м["hidden"] !== true && typeof (м["model"] ?? м["id"]) === "string");
-  const умолчание = видимые.find((м) => м["isDefault"] === true) ?? видимые[0];
-  const вариант = (м: Record<string, unknown>): Omit<ModelOption, "id" | "label"> => ({
-    description: String(м["description"] ?? ""),
-    efforts: (Array.isArray(м["supportedReasoningEfforts"]) ? (м["supportedReasoningEfforts"] as { reasoningEffort?: unknown }[]) : [])
-      .map((у) => String(у.reasoningEffort ?? ""))
+  const visible = models.filter((m) => m["hidden"] !== true && typeof (m["model"] ?? m["id"]) === "string");
+  const defaultModel = visible.find((m) => m["isDefault"] === true) ?? visible[0];
+  const makeOption = (m: Record<string, unknown>): Omit<ModelOption, "id" | "label"> => ({
+    description: String(m["description"] ?? ""),
+    efforts: (Array.isArray(m["supportedReasoningEfforts"]) ? (m["supportedReasoningEfforts"] as { reasoningEffort?: unknown }[]) : [])
+      .map((u) => String(u.reasoningEffort ?? ""))
       .filter(Boolean),
-    ...(typeof м["defaultReasoningEffort"] === "string" ? { defaultEffort: м["defaultReasoningEffort"] } : {}),
+    ...(typeof m["defaultReasoningEffort"] === "string" ? { defaultEffort: m["defaultReasoningEffort"] } : {}),
   });
-  const имя = (м: Record<string, unknown>) => String(м["displayName"] ?? м["model"] ?? м["id"]);
+  const name = (m: Record<string, unknown>) => String(m["displayName"] ?? m["model"] ?? m["id"]);
   return {
-    список: [
-      умолчание
-        ? { id: "", label: `по умолчанию (${имя(умолчание)})`, ...вариант(умолчание) }
+    list: [
+      defaultModel
+        ? { id: "", label: `по умолчанию (${name(defaultModel)})`, ...makeOption(defaultModel) }
         : { id: "", label: "по умолчанию", description: "", efforts: [] },
-      ...видимые.map((м) => ({ id: String(м["model"] ?? м["id"]), label: имя(м), ...вариант(м) })),
+      ...visible.map((m) => ({ id: String(m["model"] ?? m["id"]), label: name(m), ...makeOption(m) })),
     ],
-    поУмолчанию: умолчание ? String(умолчание["model"] ?? умолчание["id"]) : undefined,
+    isDefault: defaultModel ? String(defaultModel["model"] ?? defaultModel["id"]) : undefined,
   };
 }
 
-interface Ожидание {
-  readonly resolve: (значение: unknown) => void;
-  readonly reject: (ошибка: Error) => void;
+interface Waiter {
+  readonly resolve: (value: unknown) => void;
+  readonly reject: (error: Error) => void;
 }
 
 /** Всё, что принадлежит одному запущенному процессу. */
-interface Контекст {
-  readonly процесс: ChildProcessWithoutNullStreams;
-  readonly строки: Interface;
-  readonly ожидания: Map<number, Ожидание>;
-  остановлен: boolean;
-  отчитан: boolean;
+interface Context {
+  readonly proc: ChildProcessWithoutNullStreams;
+  readonly lines: Interface;
+  readonly waiters: Map<number, Waiter>;
+  stopped: boolean;
+  reported: boolean;
 }
 
-function сложить(а: TurnUsage, б: TurnUsage): TurnUsage {
-  return { input: а.input + б.input, cached: а.cached + б.cached, output: а.output + б.output };
+function add(a: TurnUsage, b: TurnUsage): TurnUsage {
+  return { input: a.input + b.input, cached: a.cached + b.cached, output: a.output + b.output };
 }
 
-function вычесть(а: TurnUsage, б: TurnUsage): TurnUsage {
-  return { input: а.input - б.input, cached: а.cached - б.cached, output: а.output - б.output };
+function subtract(a: TurnUsage, b: TurnUsage): TurnUsage {
+  return { input: a.input - b.input, cached: a.cached - b.cached, output: a.output - b.output };
 }
 
-function неОтрицательно(а: TurnUsage): TurnUsage {
-  return { input: Math.max(0, а.input), cached: Math.max(0, а.cached), output: Math.max(0, а.output) };
+function nonNegative(a: TurnUsage): TurnUsage {
+  return { input: Math.max(0, a.input), cached: Math.max(0, a.cached), output: Math.max(0, a.output) };
 }
 
 export class CodexAdapter implements Adapter {
@@ -147,499 +147,499 @@ export class CodexAdapter implements Adapter {
    * Уведомления чужого хода (повтор при возобновлении) не учитываются; сброс
    * итога после сжатия контекста переносит набранное (рецензия Codex 28.09).
    */
-  #основа: TurnUsage | undefined;
-  #перенос: TurnUsage = { input: 0, cached: 0, output: 0 };
-  #прежнийИтог: TurnUsage | undefined;
-  #расходХода: TurnUsage | undefined;
-  #лимит: LimitInfo | undefined;
+  #baseline: TurnUsage | undefined;
+  #carry: TurnUsage = { input: 0, cached: 0, output: 0 };
+  #previousTotal: TurnUsage | undefined;
+  #turnUsage: TurnUsage | undefined;
+  #limit: LimitInfo | undefined;
 
-  #новыйХодРасхода(): void {
-    this.#основа = undefined;
-    this.#перенос = { input: 0, cached: 0, output: 0 };
-    this.#прежнийИтог = undefined;
-    this.#расходХода = undefined;
+  #newUsageTurn(): void {
+    this.#baseline = undefined;
+    this.#carry = { input: 0, cached: 0, output: 0 };
+    this.#previousTotal = undefined;
+    this.#turnUsage = undefined;
   }
 
-  #учестьРасход(сведения: unknown, ходУведомления: unknown): void {
+  #accountUsage(info: unknown, notifiedTurn: unknown): void {
     // Расход — только своего хода: с turnId — если он совпадает с известным
     // текущим; без turnId — если ход идёт (рецензия Codex 28.09).
-    const ход = typeof ходУведомления === "string" ? ходУведомления : undefined;
-    if (ход !== undefined ? ход !== this.#ход : !this.#занят) return;
-    const с = (сведения ?? {}) as Record<string, unknown>;
-    const разобрать = (о: unknown): TurnUsage | undefined => {
-      const з = о as Record<string, unknown> | undefined;
-      if (!з || typeof з["inputTokens"] !== "number") return undefined;
+    const turn = typeof notifiedTurn === "string" ? notifiedTurn : undefined;
+    if (turn !== undefined ? turn !== this.#turn : !this.#busy) return;
+    const s = (info ?? {}) as Record<string, unknown>;
+    const parseUsage = (o: unknown): TurnUsage | undefined => {
+      const z = o as Record<string, unknown> | undefined;
+      if (!z || typeof z["inputTokens"] !== "number") return undefined;
       return {
-        input: з["inputTokens"] as number,
-        cached: typeof з["cachedInputTokens"] === "number" ? (з["cachedInputTokens"] as number) : 0,
-        output: typeof з["outputTokens"] === "number" ? (з["outputTokens"] as number) : 0,
+        input: z["inputTokens"] as number,
+        cached: typeof z["cachedInputTokens"] === "number" ? (z["cachedInputTokens"] as number) : 0,
+        output: typeof z["outputTokens"] === "number" ? (z["outputTokens"] as number) : 0,
       };
     };
-    const итог = разобрать(с["total"]);
-    const последний = разобрать(с["last"]) ?? { input: 0, cached: 0, output: 0 };
-    if (!итог) {
-      if (с["last"]) this.#расходХода = сложить(this.#расходХода ?? this.#перенос, последний);
+    const result = parseUsage(s["total"]);
+    const lastIndex = parseUsage(s["last"]) ?? { input: 0, cached: 0, output: 0 };
+    if (!result) {
+      if (s["last"]) this.#turnUsage = add(this.#turnUsage ?? this.#carry, lastIndex);
       return;
     }
-    const прежний = this.#прежнийИтог;
-    if (!this.#основа) {
-      this.#основа = неОтрицательно(вычесть(итог, последний));
-    } else if (прежний && (итог.input < прежний.input || итог.output < прежний.output)) {
+    const previous = this.#previousTotal;
+    if (!this.#baseline) {
+      this.#baseline = nonNegative(subtract(result, lastIndex));
+    } else if (previous && (result.input < previous.input || result.output < previous.output)) {
       // Итог сброшен (сжатие контекста): набранное до сброса переносится.
-      this.#перенос = сложить(this.#перенос, неОтрицательно(вычесть(прежний, this.#основа)));
-      this.#основа = неОтрицательно(вычесть(итог, последний));
+      this.#carry = add(this.#carry, nonNegative(subtract(previous, this.#baseline)));
+      this.#baseline = nonNegative(subtract(result, lastIndex));
     }
-    this.#прежнийИтог = итог;
-    this.#расходХода = сложить(this.#перенос, неОтрицательно(вычесть(итог, this.#основа)));
+    this.#previousTotal = result;
+    this.#turnUsage = add(this.#carry, nonNegative(subtract(result, this.#baseline)));
   }
 
   readonly id = "codex" as const;
 
-  #к: Контекст | undefined;
-  #запуск: Promise<void> | undefined;
-  #ветка: string | undefined;
+  #ctx: Context | undefined;
+  #launch: Promise<void> | undefined;
+  #thread: string | undefined;
   /** После «новой сессии» ветка из настроек комнаты не возобновляется. */
-  #безВозобновления = false;
-  #ход: string | undefined;
+  #noResume = false;
+  #turn: string | undefined;
   /** Ходы, прерванные человеком: их поздний turn/completed не закрывает новый. */
-  readonly #прерванные = new Set<string>();
+  readonly #interrupted = new Set<string>();
   /** Номер последней отправки: сбой прежней не трогает занятость новой. */
-  #отправок = 0;
-  #занят = false;
-  #следующийId = 1;
-  readonly решения: ApprovalDecision[] = [];
-  #выбор: ModelChoice;
+  #sends = 0;
+  #busy = false;
+  #nextId = 1;
+  readonly decisions: ApprovalDecision[] = [];
+  #choice: ModelChoice;
   /** Выбор хоть раз передавался: модель остаётся у ветки, и умолчание надо назвать явно. */
-  #выборМенялся: boolean;
-  #каталог: readonly ModelOption[] | undefined;
-  #модельПоУмолчанию: string | undefined;
+  #choiceChanged: boolean;
+  #catalog: readonly ModelOption[] | undefined;
+  #defaultModel: string | undefined;
 
   constructor(
-    private readonly опции: CodexOptions,
+    private readonly options: CodexOptions,
     private readonly sink: EventSink,
   ) {
-    this.#выбор = { model: опции.model ?? "", effort: опции.effort ?? "" };
-    this.#выборМенялся = Boolean(опции.model || опции.effort);
+    this.#choice = { model: options.model ?? "", effort: options.effort ?? "" };
+    this.#choiceChanged = Boolean(options.model || options.effort);
   }
 
   get busy(): boolean {
-    return this.#занят;
+    return this.#busy;
   }
 
   async forgetSession(): Promise<void> {
     // Сначала забыть, потом останавливать — как у Claude.
-    this.#ветка = undefined;
-    this.#безВозобновления = true;
+    this.#thread = undefined;
+    this.#noResume = true;
     await this.stop();
   }
 
   get sessionId(): string | undefined {
-    return this.#ветка;
+    return this.#thread;
   }
 
   async start(): Promise<void> {
-    if (this.#к) throw new Error("адаптер Codex уже запущен");
-    const процесс = запуститьПроцесс(
-      this.опции.command,
-      [...(this.опции.commandArgs ?? []), "app-server"],
-      this.опции.cwd,
-      this.опции.shell,
+    if (this.#ctx) throw new Error("адаптер Codex уже запущен");
+    const proc = spawnProcess(
+      this.options.command,
+      [...(this.options.commandArgs ?? []), "app-server"],
+      this.options.cwd,
+      this.options.shell,
     );
-    const к: Контекст = {
-      процесс,
-      строки: createInterface({ input: процесс.stdout }),
-      ожидания: new Map(),
-      остановлен: false,
-      отчитан: false,
+    const k: Context = {
+      proc,
+      lines: createInterface({ input: proc.stdout }),
+      waiters: new Map(),
+      stopped: false,
+      reported: false,
     };
-    this.#к = к;
+    this.#ctx = k;
 
-    к.строки.on("line", (строка) => this.#разобрать(к, строка));
-    createInterface({ input: процесс.stderr }).on("line", (строка) => {
-      const текст = stripAnsi(строка).trim();
-      if (текст) this.#выдать("diagnostic", "stream", { text: clamp(текст) });
+    k.lines.on("line", (line) => this.#parse(k, line));
+    createInterface({ input: proc.stderr }).on("line", (line) => {
+      const text = stripAnsi(line).trim();
+      if (text) this.#emit("diagnostic", "stream", { text: clamp(text) });
     });
-    процесс.stdin.on("error", (беда) => this.#сбойКанала(к, беда));
-    процесс.on("error", (беда) => this.#конец(к, `Codex не запустился: ${беда.message}`));
-    процесс.on("exit", (код, сигнал) =>
-      this.#конец(к, `процесс Codex завершился неожиданно (код ${код}, сигнал ${сигнал}). Подробности — в диагностике.`),
+    proc.stdin.on("error", (err) => this.#channelFailure(k, err));
+    proc.on("error", (err) => this.#end(k, `Codex не запустился: ${err.message}`));
+    proc.on("exit", (code, signal) =>
+      this.#end(k, `процесс Codex завершился неожиданно (код ${code}, сигнал ${signal}). Подробности — в диагностике.`),
     );
 
     try {
-      await this.#запрос(к, "initialize", {
+      await this.#request(k, "initialize", {
         clientInfo: { name: "agent-panel", version: "0.1.0" },
         capabilities: {},
       });
-      this.#уведомить(к, "initialized", {});
+      this.#notify(k, "initialized", {});
       // Известная ветка продолжается, иначе создаётся новая.
       // Роль задаётся в обоих случаях: ветка, заведённая в приложении Codex,
       // помнит свою прежнюю роль разработчика, а в панели он рецензент.
       // thread/resume принимает developerInstructions наравне с thread/start
       // (схема app-server 0.153.0).
-      const известная = this.#ветка ?? (this.#безВозобновления ? undefined : this.опции.resumeThreadId);
-      const общие = {
-        cwd: this.опции.cwd,
+      const known = this.#thread ?? (this.#noResume ? undefined : this.options.resumeThreadId);
+      const common = {
+        cwd: this.options.cwd,
         sandbox: "read-only",
         approvalPolicy: "never",
-        developerInstructions: this.опции.reviewerInstructions ?? ИНСТРУКЦИЯ_РЕЦЕНЗЕНТА,
+        developerInstructions: this.options.reviewerInstructions ?? REVIEWER_INSTRUCTIONS,
       };
-      const ответ = (await (известная
-        ? this.#запрос(к, "thread/resume", { ...общие, threadId: известная })
-        : this.#запрос(к, "thread/start", общие))) as ОтветВетки;
-      this.#установитьВетку(ответ.thread?.id ?? известная);
-      this.#выдать("diagnostic", "stream", {
-        text: `ветка ${String(this.#ветка).slice(0, 8)}, песочница read-only, одобрения never`,
+      const reply = (await (known
+        ? this.#request(k, "thread/resume", { ...common, threadId: known })
+        : this.#request(k, "thread/start", common))) as ThreadResponse;
+      this.#setThread(reply.thread?.id ?? known);
+      this.#emit("diagnostic", "stream", {
+        text: `ветка ${String(this.#thread).slice(0, 8)}, песочница read-only, одобрения never`,
       });
-    } catch (беда) {
+    } catch (err) {
       // Останавливать только СВОЙ процесс: к этому моменту мог быть запущен новый.
-      if (this.#к === к) await this.stop();
-      throw беда;
+      if (this.#ctx === k) await this.stop();
+      throw err;
     }
   }
 
-  #конец(к: Контекст, текстОшибки: string): void {
-    if (this.#к === к) {
-      this.#к = undefined;
-      this.#запуск = undefined;
-      this.#занят = false;
-      this.#ход = undefined;
+  #end(k: Context, errorText: string): void {
+    if (this.#ctx === k) {
+      this.#ctx = undefined;
+      this.#launch = undefined;
+      this.#busy = false;
+      this.#turn = undefined;
       // Как в stop(): номера ходов нового процесса могут совпасть (рецензия Codex 28.09).
-      this.#прерванные.clear();
+      this.#interrupted.clear();
     }
-    const беда = new Error(к.остановлен ? "адаптер Codex остановлен" : текстОшибки);
-    for (const [, о] of к.ожидания) о.reject(беда);
-    к.ожидания.clear();
-    if (к.отчитан) return;
-    к.отчитан = true;
-    if (к.остановлен) {
-      this.#выдать("diagnostic", "stream", { text: "процесс Codex остановлен" });
+    const err = new Error(k.stopped ? "адаптер Codex остановлен" : errorText);
+    for (const [, o] of k.waiters) o.reject(err);
+    k.waiters.clear();
+    if (k.reported) return;
+    k.reported = true;
+    if (k.stopped) {
+      this.#emit("diagnostic", "stream", { text: "процесс Codex остановлен" });
     } else {
-      this.#выдать("error", "turn", { text: текстОшибки, failed: true });
+      this.#emit("error", "turn", { text: errorText, failed: true });
     }
   }
 
-  #сбойКанала(к: Контекст, беда: Error): void {
-    this.#конец(к, `канал связи с Codex сломан: ${беда.message}`);
-    void остановитьДерево(к.процесс);
+  #channelFailure(k: Context, err: Error): void {
+    this.#end(k, `канал связи с Codex сломан: ${err.message}`);
+    void killTree(k.proc);
   }
 
-  #установитьВетку(id: string | undefined): void {
-    if (!id || id === this.#ветка) return;
-    this.#ветка = id;
-    this.опции.onSessionId?.(id);
+  #setThread(id: string | undefined): void {
+    if (!id || id === this.#thread) return;
+    this.#thread = id;
+    this.options.onSessionId?.(id);
   }
 
   async send(prompt: AgentPrompt): Promise<void> {
     // Проверка и запуск — синхронно до первого ожидания: второе сообщение,
     // пришедшее во время запуска, ждёт того же запуска, а не теряется.
-    const моя = ++this.#отправок;
-    if (!this.#к) this.#запуск = this.start();
+    const mine = ++this.#sends;
+    if (!this.#ctx) this.#launch = this.start();
     // Занят с начала отправки: «Прервать» во время запуска процесса должно
     // её отменить, а не пропустить (рецензия Codex 28.09).
-    this.#занят = true;
-    const запуск = this.#запуск;
+    this.#busy = true;
+    const launch = this.#launch;
     try {
-      await запуск;
-      const к = this.#к;
-      const ветка = this.#ветка;
-      if (!к || !ветка || this.#запуск !== запуск) throw new Error("отправка Codex прервана до начала хода");
-      await this.#запрос(к, "turn/start", {
-        threadId: ветка,
-        ...this.#параметрыМодели(),
-        input: [{ type: "text", text: this.#оформить(prompt) }],
+      await launch;
+      const k = this.#ctx;
+      const thread = this.#thread;
+      if (!k || !thread || this.#launch !== launch) throw new Error("отправка Codex прервана до начала хода");
+      await this.#request(k, "turn/start", {
+        threadId: thread,
+        ...this.#modelParams(),
+        input: [{ type: "text", text: this.#format(prompt) }],
       });
-    } catch (беда) {
+    } catch (err) {
       // Более поздняя отправка уже идёт (процесс умер при запуске, координатор
       // отправил следующее): её занятость не снимать (рецензия Codex 28.09).
-      if (моя === this.#отправок) this.#занят = false;
-      throw беда;
+      if (mine === this.#sends) this.#busy = false;
+      throw err;
     }
   }
 
-  setModel(выбор: ModelChoice): void {
-    this.#выбор = { model: выбор.model, effort: выбор.effort };
-    if (выбор.model || выбор.effort) this.#выборМенялся = true;
+  setModel(choice: ModelChoice): void {
+    this.#choice = { model: choice.model, effort: choice.effort };
+    if (choice.model || choice.effort) this.#choiceChanged = true;
   }
 
   /**
    * model и effort для turn/start. Переданная модель остаётся у ветки, поэтому
    * возврат к «по умолчанию» называет модель и её уровень явно — по каталогу.
    */
-  #параметрыМодели(): { model?: string; effort?: string } {
-    if (!this.#выборМенялся) return {};
-    const модель = this.#выбор.model || this.#модельПоУмолчанию;
-    const уровень = this.#выбор.effort || this.#каталог?.find((о) => о.id === this.#выбор.model)?.defaultEffort;
-    return { ...(модель ? { model: модель } : {}), ...(уровень ? { effort: уровень } : {}) };
+  #modelParams(): { model?: string; effort?: string } {
+    if (!this.#choiceChanged) return {};
+    const model = this.#choice.model || this.#defaultModel;
+    const level = this.#choice.effort || this.#catalog?.find((o) => o.id === this.#choice.model)?.defaultEffort;
+    return { ...(model ? { model: model } : {}), ...(level ? { effort: level } : {}) };
   }
 
   /** Модели из model/list отдельного короткого процесса: ветка не создаётся. */
   async listModels(): Promise<readonly ModelOption[]> {
-    const процесс = запуститьПроцесс(
-      this.опции.command,
-      [...(this.опции.commandArgs ?? []), "app-server"],
-      this.опции.cwd,
-      this.опции.shell,
+    const proc = spawnProcess(
+      this.options.command,
+      [...(this.options.commandArgs ?? []), "app-server"],
+      this.options.cwd,
+      this.options.shell,
     );
-    процесс.stderr.resume();
-    процесс.stdin.on("error", () => undefined);
-    const строки = createInterface({ input: процесс.stdout });
-    const ожидания = new Map<number, Ожидание>();
-    let следующий = 1;
-    let таймер: NodeJS.Timeout | undefined;
-    const написать = (запись: unknown) => процесс.stdin.write(`${JSON.stringify(запись)}\n`);
-    строки.on("line", (строка) => {
-      let запись: Record<string, unknown>;
+    proc.stderr.resume();
+    proc.stdin.on("error", () => undefined);
+    const lines = createInterface({ input: proc.stdout });
+    const waiters = new Map<number, Waiter>();
+    let next = 1;
+    let timer: NodeJS.Timeout | undefined;
+    const writeMessage = (record: unknown) => proc.stdin.write(`${JSON.stringify(record)}\n`);
+    lines.on("line", (line) => {
+      let record: Record<string, unknown>;
       try {
-        запись = JSON.parse(строка) as Record<string, unknown>;
+        record = JSON.parse(line) as Record<string, unknown>;
       } catch {
         return;
       }
-      if (typeof запись["id"] !== "number" || "method" in запись) return;
-      const ожидание = ожидания.get(запись["id"]);
-      ожидания.delete(запись["id"]);
-      if (!ожидание) return;
-      if (запись["error"]) ожидание.reject(new Error((запись["error"] as { message?: string }).message ?? "ошибка Codex"));
-      else ожидание.resolve(запись["result"]);
+      if (typeof record["id"] !== "number" || "method" in record) return;
+      const waiter = waiters.get(record["id"]);
+      waiters.delete(record["id"]);
+      if (!waiter) return;
+      if (record["error"]) waiter.reject(new Error((record["error"] as { message?: string }).message ?? "ошибка Codex"));
+      else waiter.resolve(record["result"]);
     });
-    const запрос = (метод: string, параметры: unknown) =>
+    const request = (method: string, params: unknown) =>
       new Promise<unknown>((resolve, reject) => {
-        const id = следующий++;
-        ожидания.set(id, { resolve, reject });
-        написать({ jsonrpc: "2.0", id, method: метод, params: параметры });
+        const id = next++;
+        waiters.set(id, { resolve, reject });
+        writeMessage({ jsonrpc: "2.0", id, method: method, params: params });
       });
-    const провал = new Promise<never>((_, reject) => {
-      таймер = setTimeout(() => reject(new Error("Codex не прислал список моделей за 30 с")), 30_000);
-      процесс.on("error", reject);
-      процесс.on("exit", (код) => reject(new Error(`Codex завершился, не прислав список моделей (код ${код})`)));
+    const failed = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Codex не прислал список моделей за 30 с")), 30_000);
+      proc.on("error", reject);
+      proc.on("exit", (code) => reject(new Error(`Codex завершился, не прислав список моделей (код ${code})`)));
     });
     // Выход процесса после ответа — штатный: отказ провала никто не ждёт.
-    провал.catch(() => undefined);
-    const работа = (async () => {
-      await запрос("initialize", { clientInfo: { name: "agent-panel", version: "0.1.0" }, capabilities: {} });
-      написать({ jsonrpc: "2.0", method: "initialized", params: {} });
-      const все: Record<string, unknown>[] = [];
-      let курсор: unknown;
-      for (let страница = 0; страница < 10; страница += 1) {
-        const ответ = (await запрос("model/list", курсор ? { cursor: курсор } : {})) as
+    failed.catch(() => undefined);
+    const job = (async () => {
+      await request("initialize", { clientInfo: { name: "agent-panel", version: "0.1.0" }, capabilities: {} });
+      writeMessage({ jsonrpc: "2.0", method: "initialized", params: {} });
+      const all: Record<string, unknown>[] = [];
+      let cursor: unknown;
+      for (let page = 0; page < 10; page += 1) {
+        const reply = (await request("model/list", cursor ? { cursor: cursor } : {})) as
           | { data?: unknown; nextCursor?: unknown }
           | undefined;
-        if (Array.isArray(ответ?.data)) все.push(...(ответ.data as Record<string, unknown>[]));
-        курсор = ответ?.nextCursor;
-        if (!курсор) break;
+        if (Array.isArray(reply?.data)) all.push(...(reply.data as Record<string, unknown>[]));
+        cursor = reply?.nextCursor;
+        if (!cursor) break;
       }
-      return все;
+      return all;
     })();
-    работа.catch(() => undefined);
+    job.catch(() => undefined);
     try {
-      const { список, поУмолчанию } = каталогCodex(await Promise.race([работа, провал]));
-      this.#каталог = список;
-      this.#модельПоУмолчанию = поУмолчанию;
-      return список;
+      const { list, isDefault } = codexCatalog(await Promise.race([job, failed]));
+      this.#catalog = list;
+      this.#defaultModel = isDefault;
+      return list;
     } finally {
-      clearTimeout(таймер);
-      строки.close();
-      await остановитьДерево(процесс);
+      clearTimeout(timer);
+      lines.close();
+      await killTree(proc);
     }
   }
 
-  #оформить(prompt: AgentPrompt): string {
-    const шапка =
+  #format(prompt: AgentPrompt): string {
+    const heading =
       prompt.from === "human"
         ? "[от человека]"
         : prompt.from === "claude"
           ? "[от разработчика Claude]"
           : "[от панели]";
-    const версия = prompt.snapshot ? `\n[версия файлов: ${prompt.snapshot}]` : "";
-    return `${шапка}${версия}\n${prompt.text}`;
+    const version = prompt.snapshot ? `\n[версия файлов: ${prompt.snapshot}]` : "";
+    return `${heading}${version}\n${prompt.text}`;
   }
 
   async interrupt(): Promise<void> {
-    const к = this.#к;
-    if (!к) return;
-    if (this.#ветка && this.#ход) {
+    const k = this.#ctx;
+    if (!k) return;
+    if (this.#thread && this.#turn) {
       // Конец прерванного хода придёт позже ответа; к новому ходу он не
       // относится. Ход забывается сразу: следующее прерывание до начала
       // нового хода не должно уйти прежнему (рецензия Codex 28.09).
-      const ход = this.#ход;
-      this.#прерванные.add(ход);
-      this.#ход = undefined;
-      await this.#запрос(к, "turn/interrupt", { threadId: this.#ветка, turnId: ход }).catch(() => undefined);
-      this.#занят = false;
+      const turn = this.#turn;
+      this.#interrupted.add(turn);
+      this.#turn = undefined;
+      await this.#request(k, "turn/interrupt", { threadId: this.#thread, turnId: turn }).catch(() => undefined);
+      this.#busy = false;
       return;
     }
     // Ход запускается, но его идентификатор ещё не пришёл: прервать нечего
     // адресно. Останавливается процесс; следующая отправка продолжит ветку.
-    if (this.#занят) await this.stop();
+    if (this.#busy) await this.stop();
   }
 
   async stop(): Promise<void> {
-    const к = this.#к;
-    this.#к = undefined;
-    this.#запуск = undefined;
-    this.#занят = false;
-    this.#ход = undefined;
+    const k = this.#ctx;
+    this.#ctx = undefined;
+    this.#launch = undefined;
+    this.#busy = false;
+    this.#turn = undefined;
     // Номера ходов нового процесса могут совпасть с прежними.
-    this.#прерванные.clear();
-    if (!к) return;
-    к.остановлен = true;
-    for (const [, о] of к.ожидания) о.reject(new Error("адаптер Codex остановлен"));
-    к.ожидания.clear();
-    к.строки.close();
-    await остановитьДерево(к.процесс);
+    this.#interrupted.clear();
+    if (!k) return;
+    k.stopped = true;
+    for (const [, o] of k.waiters) o.reject(new Error("адаптер Codex остановлен"));
+    k.waiters.clear();
+    k.lines.close();
+    await killTree(k.proc);
   }
 
   /** Прочитать сохранённую историю ветки без возобновления и подписки. */
   async readThread(threadId: string): Promise<unknown> {
-    const к = this.#к;
-    if (!к) throw new Error("Codex не запущен");
-    return this.#запрос(к, "thread/read", { threadId, includeTurns: true });
+    const k = this.#ctx;
+    if (!k) throw new Error("Codex не запущен");
+    return this.#request(k, "thread/read", { threadId, includeTurns: true });
   }
 
-  #запрос(к: Контекст, метод: string, параметры: unknown): Promise<unknown> {
-    if (к.остановлен || this.#к !== к) return Promise.reject(new Error("Codex не запущен"));
-    const id = this.#следующийId++;
+  #request(k: Context, method: string, params: unknown): Promise<unknown> {
+    if (k.stopped || this.#ctx !== k) return Promise.reject(new Error("Codex не запущен"));
+    const id = this.#nextId++;
     return new Promise<unknown>((resolve, reject) => {
-      к.ожидания.set(id, { resolve, reject });
-      к.процесс.stdin.write(
-        `${JSON.stringify({ jsonrpc: "2.0", id, method: метод, params: параметры })}\n`,
-        (беда) => {
-          if (беда) this.#сбойКанала(к, беда);
+      k.waiters.set(id, { resolve, reject });
+      k.proc.stdin.write(
+        `${JSON.stringify({ jsonrpc: "2.0", id, method: method, params: params })}\n`,
+        (err) => {
+          if (err) this.#channelFailure(k, err);
         },
       );
     });
   }
 
-  #уведомить(к: Контекст, метод: string, параметры: unknown): void {
-    к.процесс.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: метод, params: параметры })}\n`, (беда) => {
-      if (беда) this.#сбойКанала(к, беда);
+  #notify(k: Context, method: string, params: unknown): void {
+    k.proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: method, params: params })}\n`, (err) => {
+      if (err) this.#channelFailure(k, err);
     });
   }
 
-  #разобрать(к: Контекст, строка: string): void {
-    const обрезанная = строка.trim();
-    if (!обрезанная) return;
-    let запись: Record<string, unknown>;
+  #parse(k: Context, line: string): void {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let record: Record<string, unknown>;
     try {
-      запись = JSON.parse(обрезанная) as Record<string, unknown>;
+      record = JSON.parse(trimmed) as Record<string, unknown>;
     } catch {
-      this.#выдать("diagnostic", "stream", { text: clamp(`строка вне протокола: ${stripAnsi(обрезанная)}`) });
+      this.#emit("diagnostic", "stream", { text: clamp(`строка вне протокола: ${stripAnsi(trimmed)}`) });
       return;
     }
 
-    if (typeof запись["id"] === "number" && !("method" in запись)) {
-      const ожидание = к.ожидания.get(запись["id"]);
-      к.ожидания.delete(запись["id"]);
-      if (!ожидание) return;
-      if (запись["error"]) {
-        ожидание.reject(new Error((запись["error"] as { message?: string }).message ?? "ошибка Codex"));
+    if (typeof record["id"] === "number" && !("method" in record)) {
+      const waiter = k.waiters.get(record["id"]);
+      k.waiters.delete(record["id"]);
+      if (!waiter) return;
+      if (record["error"]) {
+        waiter.reject(new Error((record["error"] as { message?: string }).message ?? "ошибка Codex"));
       } else {
-        ожидание.resolve(запись["result"]);
+        waiter.resolve(record["result"]);
       }
       return;
     }
 
     // Строки остановленного или заменённого процесса не должны менять
     // состояние текущего.
-    if (this.#к !== к) return;
+    if (this.#ctx !== k) return;
 
     // Запрос сервера к клиенту: неизвестное не разрешается.
-    if ("method" in запись && "id" in запись) {
-      this.#отказать(к, запись);
+    if ("method" in record && "id" in record) {
+      this.#deny(k, record);
       return;
     }
-    this.#нотификация(запись);
+    this.#notification(record);
   }
 
-  #отказать(к: Контекст, запись: Record<string, unknown>): void {
-    const метод = String(запись["method"]);
-    const причина = `рецензенту запрещены изменения: запрос «${метод}» отклонён панелью`;
-    this.решения.push({ allow: false, reason: причина });
-    this.#выдать("approval_requested", "turn", { text: метод, raw: запись });
-    this.#выдать("approval_decided", "turn", { text: причина });
-    к.процесс.stdin.write(
-      `${JSON.stringify({ jsonrpc: "2.0", id: запись["id"], error: { code: -32000, message: причина } })}\n`,
-      (беда) => {
-        if (беда) this.#сбойКанала(к, беда);
+  #deny(k: Context, record: Record<string, unknown>): void {
+    const method = String(record["method"]);
+    const reason = `рецензенту запрещены изменения: запрос «${method}» отклонён панелью`;
+    this.decisions.push({ allow: false, reason: reason });
+    this.#emit("approval_requested", "turn", { text: method, raw: record });
+    this.#emit("approval_decided", "turn", { text: reason });
+    k.proc.stdin.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: record["id"], error: { code: -32000, message: reason } })}\n`,
+      (err) => {
+        if (err) this.#channelFailure(k, err);
       },
     );
   }
 
-  #нотификация(запись: Record<string, unknown>): void {
-    const метод = String(запись["method"] ?? "");
-    const п = (запись["params"] ?? {}) as Record<string, unknown>;
+  #notification(record: Record<string, unknown>): void {
+    const method = String(record["method"] ?? "");
+    const p = (record["params"] ?? {}) as Record<string, unknown>;
 
-    switch (метод) {
+    switch (method) {
       case "thread/started":
-        this.#установитьВетку((п["thread"] as { id?: string } | undefined)?.id);
+        this.#setThread((p["thread"] as { id?: string } | undefined)?.id);
         return;
       case "turn/started": {
-        const ход = (п["turn"] as { id?: string } | undefined)?.id;
-        this.#ход = typeof ход === "string" ? ход : undefined;
-        this.#новыйХодРасхода();
-        this.#занят = true;
-        this.#выдать("turn_started", "turn", {});
+        const turn = (p["turn"] as { id?: string } | undefined)?.id;
+        this.#turn = typeof turn === "string" ? turn : undefined;
+        this.#newUsageTurn();
+        this.#busy = true;
+        this.#emit("turn_started", "turn", {});
         return;
       }
       case "thread/tokenUsage/updated": {
-        this.#учестьРасход(п["tokenUsage"], п["turnId"]);
+        this.#accountUsage(p["tokenUsage"], p["turnId"]);
         return;
       }
       case "account/rateLimits/updated": {
-        const окно = ((п["rateLimits"] ?? {}) as Record<string, unknown>)["primary"] as Record<string, unknown> | undefined;
-        if (окно && typeof окно["usedPercent"] === "number") {
-          const минут = окно["windowDurationMins"];
-          this.#лимит = {
-            percent: окно["usedPercent"],
-            window: минут === 10080 ? "week" : минут === 300 ? "five_hour" : `${String(минут)} min`,
-            ...(typeof окно["resetsAt"] === "number" ? { resetsAt: окно["resetsAt"] * 1000 } : {}),
+        const windowLabel = ((p["rateLimits"] ?? {}) as Record<string, unknown>)["primary"] as Record<string, unknown> | undefined;
+        if (windowLabel && typeof windowLabel["usedPercent"] === "number") {
+          const minutes = windowLabel["windowDurationMins"];
+          this.#limit = {
+            percent: windowLabel["usedPercent"],
+            window: minutes === 10080 ? "week" : minutes === 300 ? "five_hour" : `${String(minutes)} min`,
+            ...(typeof windowLabel["resetsAt"] === "number" ? { resetsAt: windowLabel["resetsAt"] * 1000 } : {}),
           };
         }
         return;
       }
       case "turn/completed": {
-        const ход = (п["turn"] ?? {}) as { id?: unknown; status?: string; error?: { message?: string } };
-        if (typeof ход.id === "string" && this.#прерванные.delete(ход.id)) {
+        const turn = (p["turn"] ?? {}) as { id?: unknown; status?: string; error?: { message?: string } };
+        if (typeof turn.id === "string" && this.#interrupted.delete(turn.id)) {
           // Человек уже знает о прерывании, координатор уже сбросил ожидание:
           // поздний конец не закрывает ни новый ход, ни «ничей» (рецензии Codex 28.09).
-          this.#выдать("diagnostic", "stream", { text: "поздний конец прерванного хода Codex пропущен" });
+          this.#emit("diagnostic", "stream", { text: "поздний конец прерванного хода Codex пропущен" });
           return;
         }
-        this.#занят = false;
-        this.#ход = undefined;
-        const провал = ход.status === "failed" || ход.status === "interrupted";
-        const расход = this.#расходХода;
-        this.#новыйХодРасхода();
-        this.#выдать("turn_completed", "turn", {
-          ...(расход ? { usage: расход } : {}),
-          ...(this.#лимит ? { limit: this.#лимит } : {}),
-          raw: п,
-          ...(провал
+        this.#busy = false;
+        this.#turn = undefined;
+        const failed = turn.status === "failed" || turn.status === "interrupted";
+        const usage = this.#turnUsage;
+        this.#newUsageTurn();
+        this.#emit("turn_completed", "turn", {
+          ...(usage ? { usage: usage } : {}),
+          ...(this.#limit ? { limit: this.#limit } : {}),
+          raw: p,
+          ...(failed
             ? {
                 failed: true,
-                text: `ход завершён: ${ход.status}${ход.error?.message ? ` — ${ход.error.message}` : ""}`,
+                text: `ход завершён: ${turn.status}${turn.error?.message ? ` — ${turn.error.message}` : ""}`,
               }
             : {}),
         });
         return;
       }
       case "item/started":
-        this.#элемент(п, false);
+        this.#item(p, false);
         return;
       case "item/completed":
-        this.#элемент(п, true);
+        this.#item(p, true);
         return;
       case "item/agentMessage/delta":
       case "item/reasoning/textDelta":
       case "item/reasoning/summaryTextDelta":
       case "item/commandExecution/outputDelta":
       case "process/outputDelta": {
-        if (this.#изПрерванного(п)) return;
-        const текст = this.#текстИз(п["delta"] ?? п["chunk"] ?? п["text"] ?? п["output"]);
-        if (текст) this.#выдать("text_delta", "stream", { text: текст });
+        if (this.#fromInterrupted(p)) return;
+        const text = this.#textOf(p["delta"] ?? p["chunk"] ?? p["text"] ?? p["output"]);
+        if (text) this.#emit("text_delta", "stream", { text: text });
         return;
       }
       case "process/exited":
-        this.#выдать("tool_result", "turn", { tool: "process", text: clamp(JSON.stringify(п)), raw: п });
+        this.#emit("tool_result", "turn", { tool: "process", text: clamp(JSON.stringify(p)), raw: p });
         return;
       default:
         return;
@@ -650,46 +650,46 @@ export class CodexAdapter implements Adapter {
    * Событие прерванного хода: его поздние элементы не должны войти в ответ
    * нового — например, в материал следующей проверки (рецензия Codex 28.09).
    */
-  #изПрерванного(п: Record<string, unknown>): boolean {
-    return typeof п["turnId"] === "string" && this.#прерванные.has(п["turnId"]);
+  #fromInterrupted(p: Record<string, unknown>): boolean {
+    return typeof p["turnId"] === "string" && this.#interrupted.has(p["turnId"]);
   }
 
-  #элемент(п: Record<string, unknown>, завершён: boolean): void {
-    if (this.#изПрерванного(п)) return;
-    const элемент = (п["item"] ?? п) as Record<string, unknown>;
-    const вид = String(элемент["type"] ?? "");
-    const текст = this.#текстИз(элемент["text"] ?? элемент["content"]);
+  #item(p: Record<string, unknown>, completed: boolean): void {
+    if (this.#fromInterrupted(p)) return;
+    const makeEl = (p["item"] ?? p) as Record<string, unknown>;
+    const kind = String(makeEl["type"] ?? "");
+    const text = this.#textOf(makeEl["text"] ?? makeEl["content"]);
 
-    if (вид === "agentMessage") {
-      if (завершён && текст) this.#выдать("message", "turn", { text: clamp(текст) });
+    if (kind === "agentMessage") {
+      if (completed && text) this.#emit("message", "turn", { text: clamp(text) });
       return;
     }
-    if (ИНСТРУМЕНТАЛЬНЫЕ.has(вид)) {
+    if (TOOL_ITEMS.has(kind)) {
       // id элемента связывает начало и конец одного инструмента: без него
       // панель рисовала две бусины на вызов (рецензия Codex 28.09).
-      this.#выдать(завершён ? "tool_result" : "tool_call", "turn", {
-        tool: вид,
-        ...(typeof элемент["id"] === "string" ? { callId: элемент["id"] } : {}),
-        ...clampKeepingFull(текст || JSON.stringify(элемент)),
-        raw: элемент,
+      this.#emit(completed ? "tool_result" : "tool_call", "turn", {
+        tool: kind,
+        ...(typeof makeEl["id"] === "string" ? { callId: makeEl["id"] } : {}),
+        ...clampKeepingFull(text || JSON.stringify(makeEl)),
+        raw: makeEl,
       });
     }
   }
 
-  #текстИз(значение: unknown): string {
-    if (typeof значение === "string") return значение;
-    if (Array.isArray(значение)) {
-      return значение
-        .map((э) => (typeof э === "string" ? э : typeof (э as { text?: unknown })?.text === "string" ? (э as { text: string }).text : ""))
+  #textOf(value: unknown): string {
+    if (typeof value === "string") return value;
+    if (Array.isArray(value)) {
+      return value
+        .map((el) => (typeof el === "string" ? el : typeof (el as { text?: unknown })?.text === "string" ? (el as { text: string }).text : ""))
         .join("");
     }
     return "";
   }
 
-  #выдать(
+  #emit(
     kind: PanelEvent["kind"],
     visibility: PanelEvent["visibility"],
-    остальное: Partial<PanelEvent>,
+    rest: Partial<PanelEvent>,
   ): void {
     this.sink({
       id: newEventId(),
@@ -697,13 +697,13 @@ export class CodexAdapter implements Adapter {
       kind,
       visibility,
       at: Date.now(),
-      ...(this.#ход ? { turnId: this.#ход } : {}),
-      ...остальное,
+      ...(this.#turn ? { turnId: this.#turn } : {}),
+      ...rest,
     } as PanelEvent);
   }
 }
 
-export const ИНСТРУКЦИЯ_РЕЦЕНЗЕНТА = [
+export const REVIEWER_INSTRUCTIONS = [
   "Ты рецензент в общей комнате с человеком и разработчиком Claude Code.",
   "",
   "Проверяй постановку, код и выводы. Файлы не изменяй — это запрещено",

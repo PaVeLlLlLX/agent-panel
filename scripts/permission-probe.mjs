@@ -25,112 +25,112 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { ClaudeAdapter } = require("../out/adapters/claude.js");
 
-const папка = mkdtempSync(join(tmpdir(), "agent-panel-permission-"));
-writeFileSync(join(папка, "README.md"), "Временная папка живой пробы разрешений agent-panel.\n");
-const итог = { папка, шаги: [] };
+const dir = mkdtempSync(join(tmpdir(), "agent-panel-permission-"));
+writeFileSync(join(dir, "README.md"), "Временная папка живой пробы разрешений agent-panel.\n");
+const result = { dir, steps: [] };
 
-const события = [];
-let ответНаЗапрос = "allow";
-let адаптер;
+const events = [];
+let requestAnswer = "allow";
+let adapter;
 
-function приёмник(е) {
-  события.push(е);
-  if (е.kind === "approval_requested") {
+function sink(e) {
+  events.push(e);
+  if (e.kind === "approval_requested") {
     // Ответ сразу: агент ждёт control_response и без него не продолжит.
-    void адаптер.answerApproval(е.callId, ответНаЗапрос);
+    void adapter.answerApproval(e.callId, requestAnswer);
   }
-  события.ждать?.(е);
+  events.wait?.(e);
 }
 
-function ход(текст, предел = 180_000) {
-  const начало = события.length;
+function turn(text, limit = 180_000) {
+  const start = events.length;
   return new Promise((resolve, reject) => {
-    const таймер = setTimeout(() => reject(new Error(`нет turn_completed за ${предел / 1000} с`)), предел);
-    события.ждать = (е) => {
-      if (е.kind === "turn_completed" || (е.kind === "error" && е.failed)) {
-        clearTimeout(таймер);
-        resolve(события.slice(начало));
+    const timer = setTimeout(() => reject(new Error(`нет turn_completed за ${limit / 1000} с`)), limit);
+    events.wait = (e) => {
+      if (e.kind === "turn_completed" || (e.kind === "error" && e.failed)) {
+        clearTimeout(timer);
+        resolve(events.slice(start));
       }
     };
-    адаптер.send({ text: текст, from: "human" }).catch(reject);
+    adapter.send({ text: text, from: "human" }).catch(reject);
   });
 }
 
-function сводка(имя, отрезок, проверка) {
-  const запросы = отрезок.filter((е) => е.kind === "approval_requested");
-  const решения = отрезок.filter((е) => е.kind === "approval_decided");
-  const действия = отрезок.filter((е) => е.kind === "tool_call" || е.kind === "tool_result");
-  const шаг = {
-    имя,
-    запросов: запросы.length,
-    запросы: запросы.map((е) => ({
-      tool: е.tool,
-      text: е.text,
-      sessionRules: е.sessionRules,
-      подсказкиCLI: е.raw?.request?.permission_suggestions,
+function summary(name, segment, check) {
+  const requests = segment.filter((e) => e.kind === "approval_requested");
+  const decisions = segment.filter((e) => e.kind === "approval_decided");
+  const actions = segment.filter((e) => e.kind === "tool_call" || e.kind === "tool_result");
+  const step = {
+    name,
+    requestCount: requests.length,
+    requests: requests.map((e) => ({
+      tool: e.tool,
+      text: e.text,
+      sessionRules: e.sessionRules,
+      cliSuggestions: e.raw?.request?.permission_suggestions,
     })),
-    решения: решения.map((е) => е.text),
-    действия: действия.map((е) => `${е.kind}:${е.tool ?? ""}:${(е.text ?? "").slice(0, 120)}`),
-    провал: отрезок.some((е) => е.kind === "error" && е.failed),
-    ...проверка,
+    decisions: decisions.map((e) => e.text),
+    actions: actions.map((e) => `${e.kind}:${e.tool ?? ""}:${(e.text ?? "").slice(0, 120)}`),
+    failed: segment.some((e) => e.kind === "error" && e.failed),
+    ...check,
   };
-  итог.шаги.push(шаг);
-  return шаг;
+  result.steps.push(step);
+  return step;
 }
 
-const опции = { command: "claude", cwd: папка, settingSources: "project,local", permissionMode: "default" };
-const каталог = await new ClaudeAdapter(опции, () => {}).listModels();
-const дешёвая = каталог.find((м) => /haiku/i.test(`${м.id} ${м.label}`))?.id ?? "haiku";
-адаптер = new ClaudeAdapter({ ...опции, model: дешёвая }, приёмник);
+const options = { command: "claude", cwd: dir, settingSources: "project,local", permissionMode: "default" };
+const catalog = await new ClaudeAdapter(options, () => {}).listModels();
+const cheapModel = catalog.find((m) => /haiku/i.test(`${m.id} ${m.label}`))?.id ?? "haiku";
+adapter = new ClaudeAdapter({ ...options, model: cheapModel }, sink);
 
 try {
-  ответНаЗапрос = "allow";
-  const ш1 = await ход(
+  requestAnswer = "allow";
+  const step1 = await turn(
     "Создай инструментом Write файл amber.txt в текущей папке с единственной строкой: янтарь. Больше ничего не делай, ответь одним словом: готово.",
   );
-  const путь1 = join(папка, "amber.txt");
-  сводка("1. Write → разрешить", ш1, {
-    файл: existsSync(путь1) ? readFileSync(путь1, "utf8").trim() : null,
+  const filePath1 = join(dir, "amber.txt");
+  summary("1. Write → разрешить", step1, {
+    file: existsSync(filePath1) ? readFileSync(filePath1, "utf8").trim() : null,
   });
 
-  ответНаЗапрос = "allowSession";
-  const команда = "echo one > bash-one.txt";
-  const ш2 = await ход(
-    `Выполни инструментом Bash ровно эту команду и ничего больше: ${команда}\nОтветь одним словом: готово.`,
+  requestAnswer = "allowSession";
+  const command = "echo one > bash-one.txt";
+  const step2 = await turn(
+    `Выполни инструментом Bash ровно эту команду и ничего больше: ${command}\nОтветь одним словом: готово.`,
   );
-  сводка("2. Bash → разрешить в сессии", ш2, { файл: existsSync(join(папка, "bash-one.txt")) });
+  summary("2. Bash → разрешить в сессии", step2, { file: existsSync(join(dir, "bash-one.txt")) });
 
-  ответНаЗапрос = "deny"; // если спросит повторно — правило не сработало, и выполнять не нужно
-  const ш3 = await ход(
-    `Выполни инструментом Bash ещё раз ровно эту же команду: ${команда}\nОтветь одним словом: готово.`,
+  requestAnswer = "deny"; // если спросит повторно — правило не сработало, и выполнять не нужно
+  const step3 = await turn(
+    `Выполни инструментом Bash ещё раз ровно эту же команду: ${command}\nОтветь одним словом: готово.`,
   );
-  сводка("3. та же команда повторно", ш3, {});
+  summary("3. та же команда повторно", step3, {});
 
-  const безЗаписи = "python -c \"print(2+2)\"";
-  ответНаЗапрос = "allowSession";
-  const ш4 = await ход(`Выполни инструментом Bash ровно эту команду: ${безЗаписи}
+  const noWriteCommand = "python -c \"print(2+2)\"";
+  requestAnswer = "allowSession";
+  const step4 = await turn(`Выполни инструментом Bash ровно эту команду: ${noWriteCommand}
 Ответь только её выводом.`);
-  сводка("4. Bash без записи → разрешить в сессии", ш4, {});
+  summary("4. Bash без записи → разрешить в сессии", step4, {});
 
-  ответНаЗапрос = "deny";
-  const ш5 = await ход(`Выполни инструментом Bash ещё раз ровно эту же команду: ${безЗаписи}
+  requestAnswer = "deny";
+  const step5 = await turn(`Выполни инструментом Bash ещё раз ровно эту же команду: ${noWriteCommand}
 Ответь только её выводом.`);
-  сводка("5. та же команда без записи повторно", ш5, {});
+  summary("5. та же команда без записи повторно", step5, {});
 
-  const папкаКоманда = "mkdir -p probe-dir";
-  ответНаЗапрос = "allowSession";
-  const ш6 = await ход(`Выполни инструментом Bash ровно эту команду: ${папкаКоманда}
+  const mkdirCommand = "mkdir -p probe-dir";
+  requestAnswer = "allowSession";
+  const step6 = await turn(`Выполни инструментом Bash ровно эту команду: ${mkdirCommand}
 Ответь одним словом: готово.`);
-  сводка("6. mkdir → разрешить в сессии", ш6, { папка: existsSync(join(папка, "probe-dir")) });
+  summary("6. mkdir → разрешить в сессии", step6, { dir: existsSync(join(dir, "probe-dir")) });
 
-  ответНаЗапрос = "deny";
-  const ш7 = await ход(`Выполни инструментом Bash ещё раз ровно эту же команду: ${папкаКоманда}
+  requestAnswer = "deny";
+  const step7 = await turn(`Выполни инструментом Bash ещё раз ровно эту же команду: ${mkdirCommand}
 Ответь одним словом: готово.`);
-  сводка("7. mkdir повторно", ш7, {});
-} catch (ошибка) {
-  итог.ошибка = String(ошибка);
+  summary("7. mkdir повторно", step7, {});
+} catch (error) {
+  result.error = String(error);
 } finally {
-  await адаптер.stop();
+  await adapter.stop();
 }
 
-console.log(JSON.stringify(итог, null, 2));
+console.log(JSON.stringify(result, null, 2));

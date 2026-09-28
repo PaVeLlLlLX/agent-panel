@@ -32,14 +32,14 @@ export interface RoomBinding {
 }
 
 export class Journal {
-  readonly #бд: DatabaseSync;
-  #закрыт = false;
+  readonly #db: DatabaseSync;
+  #closed = false;
 
-  constructor(путь: string) {
-    this.#бд = new DatabaseSync(путь);
-    this.#бд.exec("PRAGMA journal_mode = WAL");
-    this.#бд.exec("PRAGMA foreign_keys = ON");
-    this.#бд.exec(`
+  constructor(filePath: string) {
+    this.#db = new DatabaseSync(filePath);
+    this.#db.exec("PRAGMA journal_mode = WAL");
+    this.#db.exec("PRAGMA foreign_keys = ON");
+    this.#db.exec(`
       CREATE TABLE IF NOT EXISTS rooms (
         room       TEXT PRIMARY KEY,
         cwd        TEXT NOT NULL,
@@ -69,16 +69,16 @@ export class Journal {
     // (tool_call_id) и действия субагента (parent_call_id) — рецензия Codex 28.09;
     // unsolicited — ход, начатый агентом без сообщения панели; failed — ход не
     // удался (иначе после перезапуска пропадало уведомление об этом).
-    const есть = new Set(
-      (this.#бд.prepare("PRAGMA table_info(events)").all() as Record<string, unknown>[]).map((к) => String(к["name"])),
+    const existing = new Set(
+      (this.#db.prepare("PRAGMA table_info(events)").all() as Record<string, unknown>[]).map((k) => String(k["name"])),
     );
-    for (const колонка of ["tool_call_id", "parent_call_id", "unsolicited", "failed"]) {
-      if (!есть.has(колонка)) this.#бд.exec(`ALTER TABLE events ADD COLUMN ${колонка} TEXT`);
+    for (const column of ["tool_call_id", "parent_call_id", "unsolicited", "failed"]) {
+      if (!existing.has(column)) this.#db.exec(`ALTER TABLE events ADD COLUMN ${column} TEXT`);
     }
   }
 
   ensureRoom(room: string, cwd: string): void {
-    this.#бд
+    this.#db
       .prepare(
         `INSERT INTO rooms (room, cwd, updated_at) VALUES (?, ?, ?)
          ON CONFLICT(room) DO UPDATE SET cwd = excluded.cwd,
@@ -95,38 +95,38 @@ export class Journal {
     // Записывается только то, что известно: перетереть известный
     // идентификатор значением undefined значило бы потерять привязку.
     if (claudeSessionId) {
-      this.#бд
+      this.#db
         .prepare(`UPDATE rooms SET claude_session = ?, updated_at = ? WHERE room = ?`)
         .run(claudeSessionId, Date.now(), room);
     }
     if (codexThreadId) {
-      this.#бд
+      this.#db
         .prepare(`UPDATE rooms SET codex_thread = ?, updated_at = ? WHERE room = ?`)
         .run(codexThreadId, Date.now(), room);
     }
   }
 
   /** Новая сессия агента: привязка комнаты к прежней забывается. */
-  forgetSession(room: string, агент: "claude" | "codex"): void {
-    if (this.#закрыт) return;
-    const колонка = агент === "claude" ? "claude_session" : "codex_thread";
-    this.#бд.prepare(`UPDATE rooms SET ${колонка} = NULL, updated_at = ? WHERE room = ?`).run(Date.now(), room);
+  forgetSession(room: string, agent: "claude" | "codex"): void {
+    if (this.#closed) return;
+    const column = agent === "claude" ? "claude_session" : "codex_thread";
+    this.#db.prepare(`UPDATE rooms SET ${column} = NULL, updated_at = ? WHERE room = ?`).run(Date.now(), room);
   }
 
   binding(room: string): RoomBinding | undefined {
-    const строка = this.#бд
+    const line = this.#db
       .prepare(
         `SELECT room, cwd, claude_session, codex_thread, updated_at
          FROM rooms WHERE room = ?`,
       )
       .get(room) as Record<string, unknown> | undefined;
-    if (!строка) return undefined;
+    if (!line) return undefined;
     return {
-      room: String(строка["room"]),
-      cwd: String(строка["cwd"]),
-      claudeSessionId: (строка["claude_session"] as string | null) ?? undefined,
-      codexThreadId: (строка["codex_thread"] as string | null) ?? undefined,
-      updatedAt: Number(строка["updated_at"]),
+      room: String(line["room"]),
+      cwd: String(line["cwd"]),
+      claudeSessionId: (line["claude_session"] as string | null) ?? undefined,
+      codexThreadId: (line["codex_thread"] as string | null) ?? undefined,
+      updatedAt: Number(line["updated_at"]),
     };
   }
 
@@ -137,12 +137,12 @@ export class Journal {
    * история окажется полнее в одном месте и беднее в другом, и восстановить,
    * что человек видел в момент решения, будет нельзя.
    */
-  append(room: string, событие: PanelEvent): void {
+  append(room: string, event: PanelEvent): void {
     // После закрытия журнал молча ничего не делает: позднее событие
     // exit процесса иначе обратилось бы к закрытой базе и уронило
     // закрытие комнаты.
-    if (this.#закрыт) return;
-    this.#бд
+    if (this.#closed) return;
+    this.#db
       .prepare(
         `INSERT INTO events
            (room, id, agent, kind, visibility, at, text, tool, call_id,
@@ -151,69 +151,69 @@ export class Journal {
       )
       .run(
         room,
-        событие.id,
-        событие.agent,
-        событие.kind,
-        событие.visibility,
-        событие.at,
-        событие.text ?? null,
-        событие.tool ?? null,
-        событие.callId ?? null,
-        событие.turnId ?? null,
-        событие.snapshot ?? null,
-        событие.raw === undefined ? null : JSON.stringify(событие.raw),
-        событие.toolCallId ?? null,
-        событие.parentCallId ?? null,
-        событие.unsolicited ? "1" : null,
-        событие.failed ? "1" : null,
+        event.id,
+        event.agent,
+        event.kind,
+        event.visibility,
+        event.at,
+        event.text ?? null,
+        event.tool ?? null,
+        event.callId ?? null,
+        event.turnId ?? null,
+        event.snapshot ?? null,
+        event.raw === undefined ? null : JSON.stringify(event.raw),
+        event.toolCallId ?? null,
+        event.parentCallId ?? null,
+        event.unsolicited ? "1" : null,
+        event.failed ? "1" : null,
       );
   }
 
   /** История комнаты для восстановления панели после перезапуска. */
   history(room: string, limit = 2000): PanelEvent[] {
-    if (this.#закрыт) return [];
-    const строки = this.#бд
+    if (this.#closed) return [];
+    const lines = this.#db
       .prepare(
         `SELECT id, agent, kind, visibility, at, text, tool, call_id, turn_id, snapshot,
                 tool_call_id, parent_call_id, unsolicited, failed
          FROM events WHERE room = ? ORDER BY seq DESC LIMIT ?`,
       )
       .all(room, limit) as Record<string, unknown>[];
-    return строки.reverse().map((с) => ({
-      id: String(с["id"]),
-      agent: с["agent"] as PanelEvent["agent"],
-      kind: с["kind"] as PanelEvent["kind"],
-      visibility: с["visibility"] as PanelEvent["visibility"],
-      at: Number(с["at"]),
-      ...(с["text"] != null ? { text: String(с["text"]) } : {}),
-      ...(с["tool"] != null ? { tool: String(с["tool"]) } : {}),
-      ...(с["call_id"] != null ? { callId: String(с["call_id"]) } : {}),
-      ...(с["turn_id"] != null ? { turnId: String(с["turn_id"]) } : {}),
-      ...(с["snapshot"] != null ? { snapshot: String(с["snapshot"]) } : {}),
-      ...(с["tool_call_id"] != null ? { toolCallId: String(с["tool_call_id"]) } : {}),
-      ...(с["parent_call_id"] != null ? { parentCallId: String(с["parent_call_id"]) } : {}),
-      ...(с["unsolicited"] != null ? { unsolicited: true } : {}),
-      ...(с["failed"] != null ? { failed: true } : {}),
+    return lines.reverse().map((s) => ({
+      id: String(s["id"]),
+      agent: s["agent"] as PanelEvent["agent"],
+      kind: s["kind"] as PanelEvent["kind"],
+      visibility: s["visibility"] as PanelEvent["visibility"],
+      at: Number(s["at"]),
+      ...(s["text"] != null ? { text: String(s["text"]) } : {}),
+      ...(s["tool"] != null ? { tool: String(s["tool"]) } : {}),
+      ...(s["call_id"] != null ? { callId: String(s["call_id"]) } : {}),
+      ...(s["turn_id"] != null ? { turnId: String(s["turn_id"]) } : {}),
+      ...(s["snapshot"] != null ? { snapshot: String(s["snapshot"]) } : {}),
+      ...(s["tool_call_id"] != null ? { toolCallId: String(s["tool_call_id"]) } : {}),
+      ...(s["parent_call_id"] != null ? { parentCallId: String(s["parent_call_id"]) } : {}),
+      ...(s["unsolicited"] != null ? { unsolicited: true } : {}),
+      ...(s["failed"] != null ? { failed: true } : {}),
     })) as PanelEvent[];
   }
 
   /** Полная запись протокола для события: чтобы дочитать обрезанное. */
   rawOf(room: string, id: string): unknown {
-    if (this.#закрыт) return undefined;
-    const строка = this.#бд
+    if (this.#closed) return undefined;
+    const line = this.#db
       .prepare(`SELECT raw FROM events WHERE room = ? AND id = ?`)
       .get(room, id) as Record<string, unknown> | undefined;
-    const сырое = строка?.["raw"];
-    return typeof сырое === "string" ? JSON.parse(сырое) : undefined;
+    const raw = line?.["raw"];
+    return typeof raw === "string" ? JSON.parse(raw) : undefined;
   }
 
   get closed(): boolean {
-    return this.#закрыт;
+    return this.#closed;
   }
 
   close(): void {
-    if (this.#закрыт) return;
-    this.#закрыт = true;
-    this.#бд.close();
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#db.close();
   }
 }

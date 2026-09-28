@@ -13,7 +13,7 @@
  * обоим агентам панели. Команда задаётся настройкой; по умолчанию выключено.
  */
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { остановитьДерево } from "./adapters/process.js";
+import { killTree } from "./adapters/process.js";
 
 /**
  * Сколько ждать поиска. Сообщение человека ждёт вместе с ним, поэтому срок
@@ -28,24 +28,24 @@ export interface Memory {
   readonly titles: readonly string[];
 }
 
-const НС = String.fromCharCode(10);
+const NL = String.fromCharCode(10);
 
 /** Заметки из ответа команды; пустой ответ, не JSON и ответ без контекста — undefined. */
 export function parseMemoryOutput(stdout: string): Memory | undefined {
-  let ответ: unknown;
+  let reply: unknown;
   try {
-    ответ = JSON.parse(stdout);
+    reply = JSON.parse(stdout);
   } catch {
     return undefined;
   }
-  const выход = (ответ as { hookSpecificOutput?: { additionalContext?: unknown } } | null)?.hookSpecificOutput;
-  const контекст = выход?.additionalContext;
-  if (typeof контекст !== "string" || !контекст.trim()) return undefined;
-  const titles = контекст
-    .split(НС)
-    .filter((строка) => строка.startsWith("## "))
-    .map((строка) => строка.slice(3).trim());
-  return { text: контекст.trim(), titles };
+  const output = (reply as { hookSpecificOutput?: { additionalContext?: unknown } } | null)?.hookSpecificOutput;
+  const context = output?.additionalContext;
+  if (typeof context !== "string" || !context.trim()) return undefined;
+  const titles = context
+    .split(NL)
+    .filter((line) => line.startsWith("## "))
+    .map((line) => line.slice(3).trim());
+  return { text: context.trim(), titles };
 }
 
 /**
@@ -56,35 +56,35 @@ export function runMemorySearch(
   command: string,
   cwd: string,
   prompt: string,
-  таймаут = MEMORY_TIMEOUT_MS,
+  timeout = MEMORY_TIMEOUT_MS,
 ): Promise<Memory | undefined> {
   return new Promise((resolve, reject) => {
-    const процесс = spawn(command, { cwd, shell: true, windowsHide: true }) as ChildProcessWithoutNullStreams;
-    let вывод = "";
-    let ошибки = "";
-    const таймер = setTimeout(() => {
+    const proc = spawn(command, { cwd, shell: true, windowsHide: true }) as ChildProcessWithoutNullStreams;
+    let output = "";
+    let errors = "";
+    const timer = setTimeout(() => {
       // Через оболочку: kill() снял бы только её, команда поиска осталась бы жить.
-      void остановитьДерево(процесс);
-      reject(new Error(`поиск не ответил за ${Math.max(1, Math.round(таймаут / 1000))} с`));
-    }, таймаут);
-    процесс.stdout.setEncoding("utf8");
-    процесс.stderr.setEncoding("utf8");
-    процесс.stdout.on("data", (кусок: string) => (вывод += кусок));
-    процесс.stderr.on("data", (кусок: string) => (ошибки += кусок));
-    процесс.on("error", (беда) => {
-      clearTimeout(таймер);
-      reject(беда);
+      void killTree(proc);
+      reject(new Error(`поиск не ответил за ${Math.max(1, Math.round(timeout / 1000))} с`));
+    }, timeout);
+    proc.stdout.setEncoding("utf8");
+    proc.stderr.setEncoding("utf8");
+    proc.stdout.on("data", (chunk: string) => (output += chunk));
+    proc.stderr.on("data", (chunk: string) => (errors += chunk));
+    proc.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
     });
-    процесс.on("close", (код) => {
-      clearTimeout(таймер);
-      if (код !== 0) {
-        const подробности = ошибки.trim().slice(0, 200);
-        reject(new Error(`команда завершилась с кодом ${код}${подробности ? `: ${подробности}` : ""}`));
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        const details = errors.trim().slice(0, 200);
+        reject(new Error(`команда завершилась с кодом ${code}${details ? `: ${details}` : ""}`));
       } else {
-        resolve(parseMemoryOutput(вывод));
+        resolve(parseMemoryOutput(output));
       }
     });
-    процесс.stdin.on("error", () => undefined);
-    процесс.stdin.end(JSON.stringify({ cwd, prompt, hook_event_name: "UserPromptSubmit" }));
+    proc.stdin.on("error", () => undefined);
+    proc.stdin.end(JSON.stringify({ cwd, prompt, hook_event_name: "UserPromptSubmit" }));
   });
 }

@@ -20,39 +20,39 @@ const { effortLevels, defaultEffort, threadLayout, relayView, trackSteps, beadFo
   globalThis.PanelThread;
 
 const $ = (id) => document.getElementById(id);
-const беседа = $("беседа");
-const ввод = $("ввод");
+const conversation = $("беседа");
+const inputBox = $("ввод");
 
-const ИМЕНА = { claude: "Claude", codex: "Codex", human: "Вы", system: "Панель" };
-const МАРШРУТЫ = [
+const NAMES = { claude: "Claude", codex: "Codex", human: "Вы", system: "Панель" };
+const ROUTES = [
   { id: "review", name: "Задача с рецензией", hint: "Claude сделает, Codex проверит — по очереди, до вердикта" },
   { id: "both", name: "Спросить обоих", hint: "Оба ответят независимо, друг другу ничего не передаётся" },
   { id: "claude", name: "Только Claude", hint: "Только Claude, без проверки" },
   { id: "codex", name: "Только Codex", hint: "Только Codex, без пересылки" },
 ];
-const ПРЕДЕЛ_ДИАГНОСТИКИ = 500;
+const DIAGNOSTIC_LIMIT = 500;
 const SVG = "http://www.w3.org/2000/svg";
 
 /** Идущий поток текста по агенту. */
-const потоки = new Map();
+const streams = new Map();
 /** Открытая группа действий по агенту. */
-const группы = new Map();
+const groups = new Map();
 
-function элемент(тег, класс, текст) {
-  const э = document.createElement(тег);
-  if (класс) э.className = класс;
-  if (текст != null) э.textContent = текст;
-  return э;
+function makeEl(tag, className, text) {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  if (text != null) el.textContent = text;
+  return el;
 }
 
 /** Значок из готовой разметки SVG: только постоянные строки из этого файла. */
-function значок(разметка, размер = 14) {
-  const шаблон = document.createElement("template");
-  шаблон.innerHTML = `<svg xmlns="${SVG}" width="${размер}" height="${размер}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${разметка}</svg>`;
-  return шаблон.content.firstChild;
+function icon(markup, size = 14) {
+  const template = document.createElement("template");
+  template.innerHTML = `<svg xmlns="${SVG}" width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${markup}</svg>`;
+  return template.content.firstChild;
 }
 
-const ЗНАЧКИ = {
+const ICONS = {
   command: '<path d="M3 4.5 6.5 8 3 11.5M8.5 12h4.5"/>',
   read: '<path d="M4 2h5.5L12 4.5V14H4z"/><path d="M9.5 2v2.5H12"/>',
   edit: '<path d="M3 13l1-3.5 6.5-6.5 2.5 2.5L6.5 12z"/>',
@@ -65,7 +65,7 @@ const ЗНАЧКИ = {
 };
 
 /** Значки режимов: огоньки агентов и нити между ними. Цвета — классами из panel.css. */
-const ЗНАЧКИ_МАРШРУТОВ = {
+const ROUTE_ICONS = {
   review:
     '<path class="ик-линия" d="M6 7h9"/><path class="ик-линия" d="M13 4.5 15.5 7 13 9.5"/>' +
     '<circle class="ик-claude" cx="4" cy="7" r="3"/><circle class="ик-codex" cx="18.5" cy="7" r="3"/>',
@@ -76,17 +76,17 @@ const ЗНАЧКИ_МАРШРУТОВ = {
   codex: '<circle class="ик-кольцо-codex" cx="11" cy="7" r="5.5"/><circle class="ик-codex" cx="11" cy="7" r="3.2"/>',
 };
 
-function значокМаршрута(id) {
-  const шаблон = document.createElement("template");
-  шаблон.innerHTML = `<svg xmlns="${SVG}" width="22" height="14" viewBox="0 0 22 14" aria-hidden="true">${ЗНАЧКИ_МАРШРУТОВ[id]}</svg>`;
-  return шаблон.content.firstChild;
+function routeIcon(id) {
+  const template = document.createElement("template");
+  template.innerHTML = `<svg xmlns="${SVG}" width="22" height="14" viewBox="0 0 22 14" aria-hidden="true">${ROUTE_ICONS[id]}</svg>`;
+  return template.content.firstChild;
 }
 
 /** Состояние интерфейса между перезапусками webview: режим, раскрытая дорожка. */
-const сохранено = vscode.getState() ?? {};
-function запомнить(доп) {
-  Object.assign(сохранено, доп);
-  vscode.setState(сохранено);
+const saved = vscode.getState() ?? {};
+function remember(extra) {
+  Object.assign(saved, extra);
+  vscode.setState(saved);
 }
 
 // --- Прокрутка -----------------------------------------------------------------
@@ -97,21 +97,21 @@ function запомнить(доп) {
  * генерации было нельзя (жалоба владельца 27.09). Читает выше — появляется
  * кнопка «К последнему».
  */
-let прилип = true;
-const кПоследнему = $("к-последнему");
-беседа.addEventListener("scroll", () => {
-  прилип = stickToBottom(беседа.scrollHeight, беседа.scrollTop, беседа.clientHeight);
-  if (прилип) кПоследнему.hidden = true;
+let pinned = true;
+const toLastButton = $("к-последнему");
+conversation.addEventListener("scroll", () => {
+  pinned = stickToBottom(conversation.scrollHeight, conversation.scrollTop, conversation.clientHeight);
+  if (pinned) toLastButton.hidden = true;
 });
-кПоследнему.addEventListener("click", () => вниз(true));
+toLastButton.addEventListener("click", () => scrollToBottom(true));
 
-function вниз(принудительно = false) {
-  if (принудительно) прилип = true;
-  if (прилип) {
-    беседа.scrollTop = беседа.scrollHeight;
-    кПоследнему.hidden = true;
+function scrollToBottom(force = false) {
+  if (force) pinned = true;
+  if (pinned) {
+    conversation.scrollTop = conversation.scrollHeight;
+    toLastButton.hidden = true;
   } else {
-    кПоследнему.hidden = false;
+    toLastButton.hidden = false;
   }
 }
 
@@ -121,233 +121,233 @@ function вниз(принудительно = false) {
  * Markdown и формулы — только у реплик агентов: вставленные человеком логи
  * не должны превращаться в разметку. Нет сборки — просто текст.
  */
-const отрисовкаMarkdown = globalThis.PanelMarkdown?.render;
+const renderMarkdown = globalThis.PanelMarkdown?.render;
 /** Исходный текст пузыря: поток приходит кусками, отрисовывается целиком. */
-const исходники = new WeakMap();
+const sources = new WeakMap();
 
-const ВЕРДИКТЫ = {
-  accepted: { слова: "Принято", значок: "check" },
-  remarks: { слова: "Есть замечания", значок: "attention" },
-  human: { слова: "Нужно ваше решение", значок: "pause" },
+const VERDICTS = {
+  accepted: { words: "Принято", icon: "check" },
+  remarks: { words: "Есть замечания", icon: "attention" },
+  human: { words: "Нужно ваше решение", icon: "pause" },
 };
 
-function отрисовать(п) {
-  const узел = п.querySelector(".текст");
-  let текст = исходники.get(п) ?? "";
-  п.querySelector(".вердикт-строка")?.remove();
+function render(p) {
+  const node = p.querySelector(".текст");
+  let text = sources.get(p) ?? "";
+  p.querySelector(".вердикт-строка")?.remove();
   // Строка вердикта у законченной реплики рецензента — значком и словами,
   // под ними исходная строка как есть. На цикл это не влияет: вердикт
   // читает расширение из исходного текста.
-  const вердикт = п.dataset.вердикт === "да" ? verdictLine(текст) : null;
-  if (вердикт) текст = вердикт.body;
-  if (отрисовкаMarkdown && п.dataset.разметка === "да") {
-    узел.innerHTML = отрисовкаMarkdown(текст);
-    узел.classList.add("разметка");
+  const verdict = p.dataset.verdict === "да" ? verdictLine(text) : null;
+  if (verdict) text = verdict.body;
+  if (renderMarkdown && p.dataset.markup === "да") {
+    node.innerHTML = renderMarkdown(text);
+    node.classList.add("разметка");
   } else {
-    узел.textContent = текст;
+    node.textContent = text;
   }
-  if (вердикт) {
-    const вид = ВЕРДИКТЫ[вердикт.verdict];
-    const строка = элемент("div", `вердикт-строка ${вердикт.verdict}`);
-    строка.append(значок(ЗНАЧКИ[вид.значок], 16), элемент("span", "слово", вид.слова), элемент("span", "исходная", вердикт.line));
-    п.append(строка);
+  if (verdict) {
+    const kind = VERDICTS[verdict.verdict];
+    const line = makeEl("div", `вердикт-строка ${verdict.verdict}`);
+    line.append(icon(ICONS[kind.icon], 16), makeEl("span", "слово", kind.words), makeEl("span", "исходная", verdict.line));
+    p.append(line);
   }
 }
 
-function пузырь(агент, текст, { какРазметка = агент === "claude" || агент === "codex", снимок } = {}) {
-  const п = элемент("article", `пузырь ${агент}`);
-  const автор = элемент("div", "автор");
-  автор.append(элемент("span", "имя", ИМЕНА[агент] ?? агент));
-  if (снимок) {
-    const мета = элемент("span", "тихо", String(снимок).slice(0, 7));
-    мета.title = `Версия файлов, к которой относится реплика: ${снимок}`;
-    автор.append(мета);
+function bubble(agent, text, { asMarkup = agent === "claude" || agent === "codex", snapshot } = {}) {
+  const p = makeEl("article", `пузырь ${agent}`);
+  const author = makeEl("div", "автор");
+  author.append(makeEl("span", "имя", NAMES[agent] ?? agent));
+  if (snapshot) {
+    const meta = makeEl("span", "тихо", String(snapshot).slice(0, 7));
+    meta.title = `Версия файлов, к которой относится реплика: ${snapshot}`;
+    author.append(meta);
   }
-  автор.append(элемент("span", "пишет перелив", "пишет"));
-  п.append(автор, элемент("div", "текст"));
-  if (какРазметка) п.dataset.разметка = "да";
-  исходники.set(п, текст ?? "");
-  отрисовать(п);
-  беседа.append(п);
-  return п;
+  author.append(makeEl("span", "пишет перелив", "пишет"));
+  p.append(author, makeEl("div", "текст"));
+  if (asMarkup) p.dataset.markup = "да";
+  sources.set(p, text ?? "");
+  render(p);
+  conversation.append(p);
+  return p;
 }
 
 /** Реплика закончена: у рецензента отделяется строка вердикта. */
-function закончить(п, агент, текст) {
-  п.classList.remove("идёт");
-  исходники.set(п, текст ?? "");
-  if (агент === "codex") п.dataset.вердикт = "да";
-  ждутОтрисовки.delete(п);
-  отрисовать(п);
+function finish(p, agent, text) {
+  p.classList.remove("идёт");
+  sources.set(p, text ?? "");
+  if (agent === "codex") p.dataset.verdict = "да";
+  pendingRender.delete(p);
+  render(p);
 }
 
 /** Во время потока разметка пересобирается не чаще раза в 80 мс, а не на каждый кусок. */
-const ждутОтрисовки = new Set();
-let таймерОтрисовки = 0;
-function отрисоватьПозже(п) {
-  ждутОтрисовки.add(п);
-  if (таймерОтрисовки) return;
-  таймерОтрисовки = setTimeout(() => {
-    таймерОтрисовки = 0;
-    for (const у of ждутОтрисовки) отрисовать(у);
-    ждутОтрисовки.clear();
-    вниз();
+const pendingRender = new Set();
+let renderTimer = 0;
+function renderLater(p) {
+  pendingRender.add(p);
+  if (renderTimer) return;
+  renderTimer = setTimeout(() => {
+    renderTimer = 0;
+    for (const u of pendingRender) render(u);
+    pendingRender.clear();
+    scrollToBottom();
   }, 80);
 }
 
-function уведомление(текст, класс = "") {
-  беседа.append(элемент("div", `уведомление ${класс}`.trim(), текст));
+function showNotice(text, className = "") {
+  conversation.append(makeEl("div", `уведомление ${className}`.trim(), text));
 }
 
 // --- Действия хода: «Чётки» и «Счётчики» ------------------------------------------
 
-const ПОДПИСИ_СЧЁТЧИКОВ = { command: "Команды", read: "Чтения и поиск", edit: "Правки", other: "Прочие действия", denied: "Отказано" };
-const МЕТКИ = { formed: "готовится", running: "выполняется", done: "готово", denied: "отказано" };
+const COUNTER_LABELS = { command: "Команды", read: "Чтения и поиск", edit: "Правки", other: "Прочие действия", denied: "Отказано" };
+const LABELS = { formed: "готовится", running: "выполняется", done: "готово", denied: "отказано" };
 
-function группаДействий(агент) {
-  let г = группы.get(агент);
-  if (г) return г;
-  const узел = элемент("details", `действия ${агент}`);
-  const сводка = элемент("summary");
-  const чётки = элемент("span", "чётки");
-  const идёт = элемент("span", "идёт-сейчас перелив");
-  идёт.hidden = true;
-  const счётчики = элемент("span", "счётчики");
-  const шеврон = значок(ЗНАЧКИ.chevron, 12);
-  шеврон.classList.add("шеврон");
-  сводка.append(чётки, идёт, счётчики, шеврон);
-  const список = элемент("div", "список");
-  узел.append(сводка, список);
-  беседа.append(узел);
-  г = { агент, узел, сводка, чётки, идёт, счётчики, список, имена: [], отказы: 0, вызовы: new Map() };
-  группы.set(агент, г);
-  обновитьСводку(г);
-  return г;
+function actionGroup(agent) {
+  let g = groups.get(agent);
+  if (g) return g;
+  const node = makeEl("details", `действия ${agent}`);
+  const summary = makeEl("summary");
+  const beads = makeEl("span", "чётки");
+  const inProgress = makeEl("span", "идёт-сейчас перелив");
+  inProgress.hidden = true;
+  const counters = makeEl("span", "счётчики");
+  const chevron = icon(ICONS.chevron, 12);
+  chevron.classList.add("шеврон");
+  summary.append(beads, inProgress, counters, chevron);
+  const list = makeEl("div", "список");
+  node.append(summary, list);
+  conversation.append(node);
+  g = { agent, node, summary, beads, inProgress, counters, list, names: [], denials: 0, calls: new Map() };
+  groups.set(agent, g);
+  updateSummary(g);
+  return g;
 }
 
-function кратко(текст) {
-  return (текст ?? "").split(String.fromCharCode(10)).find((с) => с.trim() !== "")?.trim() ?? "";
+function brief(text) {
+  return (text ?? "").split(String.fromCharCode(10)).find((s) => s.trim() !== "")?.trim() ?? "";
 }
 
-function новыйВызов(г, инструмент, аргументы, callId, родитель) {
-  г.имена.push(инструмент);
-  const { shape } = beadFor(инструмент, "formed");
-  const бусина = элемент("span", `бусина ${shape} formed`);
-  if (родитель) бусина.classList.add("субагент");
-  бусина.title = `${родитель ? "субагент · " : ""}${инструмент} · ${кратко(аргументы)}`;
-  г.чётки.append(бусина);
+function newCall(g, tool, args, callId, parent) {
+  g.names.push(tool);
+  const { shape } = beadFor(tool, "formed");
+  const bead = makeEl("span", `бусина ${shape} formed`);
+  if (parent) bead.classList.add("субагент");
+  bead.title = `${parent ? "субагент · " : ""}${tool} · ${brief(args)}`;
+  g.beads.append(bead);
 
-  const строка = элемент("details", "вызов");
-  const заголовок = элемент("summary");
-  const метка = элемент("span", "метка", МЕТКИ.formed);
-  заголовок.append(
-    элемент("span", `бусина ${shape} formed`),
-    ...(родитель ? [Object.assign(элемент("span", "кто", "субагент"), { title: `запущен вызовом ${родитель}` })] : []),
-    элемент("span", "имя", инструмент),
-    элемент("span", "кратко", кратко(аргументы)),
-    метка,
+  const line = makeEl("details", "вызов");
+  const header = makeEl("summary");
+  const label = makeEl("span", "метка", LABELS.formed);
+  header.append(
+    makeEl("span", `бусина ${shape} formed`),
+    ...(parent ? [Object.assign(makeEl("span", "кто", "субагент"), { title: `запущен вызовом ${parent}` })] : []),
+    makeEl("span", "имя", tool),
+    makeEl("span", "кратко", brief(args)),
+    label,
   );
-  строка.append(заголовок);
-  if (аргументы) строка.append(элемент("pre", "аргументы", аргументы));
-  г.список.append(строка);
-  const вызов = { инструмент, аргументы, shape, бусина, строка, метка, состояние: "formed", родитель };
-  if (callId) г.вызовы.set(callId, вызов);
-  обновитьСводку(г);
-  return вызов;
+  line.append(header);
+  if (args) line.append(makeEl("pre", "аргументы", args));
+  g.list.append(line);
+  const call = { tool, args, shape, bead, line, label, state: "formed", parent };
+  if (callId) g.calls.set(callId, call);
+  updateSummary(g);
+  return call;
 }
 
-function отметитьВызов(г, вызов, состояние) {
-  вызов.состояние = состояние;
-  вызов.бусина.className = `бусина ${вызов.shape} ${состояние}${вызов.родитель ? " субагент" : ""}`;
-  вызов.строка.querySelector("summary .бусина").className = `бусина ${вызов.shape} ${состояние}`;
-  вызов.строка.className = `вызов ${состояние === "denied" ? "отказ" : состояние === "running" ? "выполняется" : ""}`.trim();
-  вызов.метка.textContent = МЕТКИ[состояние];
-  обновитьСводку(г);
+function markCall(g, call, state) {
+  call.state = state;
+  call.bead.className = `бусина ${call.shape} ${state}${call.parent ? " субагент" : ""}`;
+  call.line.querySelector("summary .бусина").className = `бусина ${call.shape} ${state}`;
+  call.line.className = `вызов ${state === "denied" ? "отказ" : state === "running" ? "выполняется" : ""}`.trim();
+  call.label.textContent = LABELS[state];
+  updateSummary(g);
 }
 
-function обновитьСводку(г) {
-  г.счётчики.replaceChildren(
-    ...actionCounters(г.имена, г.отказы).map(({ kind, n }) => {
-      const с = элемент("span", `счётчик ${kind === "denied" ? "отказы" : ""}`.trim());
-      с.title = ПОДПИСИ_СЧЁТЧИКОВ[kind];
-      с.append(значок(ЗНАЧКИ[kind]), String(n));
-      return с;
+function updateSummary(g) {
+  g.counters.replaceChildren(
+    ...actionCounters(g.names, g.denials).map(({ kind, n }) => {
+      const s = makeEl("span", `счётчик ${kind === "denied" ? "отказы" : ""}`.trim());
+      s.title = COUNTER_LABELS[kind];
+      s.append(icon(ICONS[kind]), String(n));
+      return s;
     }),
   );
-  const выполняется = [...г.вызовы.values()].filter((в) => в.состояние === "running").pop();
-  г.идёт.hidden = !выполняется;
-  г.идёт.textContent = выполняется ? `выполняется: ${кратко(выполняется.аргументы) || выполняется.инструмент}` : "";
-  const итог = summarizeTools(г.имена) || "действия";
-  г.сводка.title = `${ИМЕНА[г.агент]}: ${итог}${г.отказы ? `, отказано ${г.отказы}` : ""}. Нажмите — список`;
+  const running = [...g.calls.values()].filter((v) => v.state === "running").pop();
+  g.inProgress.hidden = !running;
+  g.inProgress.textContent = running ? `выполняется: ${brief(running.args) || running.tool}` : "";
+  const result = summarizeTools(g.names) || "действия";
+  g.summary.title = `${NAMES[g.agent]}: ${result}${g.denials ? `, отказано ${g.denials}` : ""}. Нажмите — список`;
 }
 
 // --- Запрос разрешения ---------------------------------------------------------
 
 /** Открытые карточки разрешений по id запроса. */
-const запросы = new Map();
+const requests = new Map();
 
-const ДЕЙСТВИЯ_РАЗРЕШЕНИЯ = {
+const PERMISSION_ACTIONS = {
   command: "хочет выполнить команду",
   read: "хочет прочитать",
   search: "хочет найти",
   edit: "хочет изменить файл",
 };
 
-function карточкаРазрешения(е, история) {
-  const карточка = элемент("section", "разрешение");
-  карточка.setAttribute("aria-label", "Запрос разрешения");
-  const вид = toolCategory(е.tool);
-  const заголовок = элемент("div", "заголовок");
-  const кто = элемент("span");
-  кто.append(элемент("span", "кто", ИМЕНА[е.agent] ?? е.agent), ` ${ДЕЙСТВИЯ_РАЗРЕШЕНИЯ[вид] ?? "хочет вызвать инструмент"}`);
-  заголовок.append(значок(ЗНАЧКИ[вид === "search" ? "read" : вид] ?? ЗНАЧКИ.other), кто, элемент("span", "инструмент", е.tool ?? "?"));
-  карточка.append(заголовок, элемент("pre", "аргументы", е.text ?? ""));
-  const итог = элемент("div", "итог");
-  if (история) {
+function permissionCard(e, history) {
+  const card = makeEl("section", "разрешение");
+  card.setAttribute("aria-label", "Запрос разрешения");
+  const kind = toolCategory(e.tool);
+  const header = makeEl("div", "заголовок");
+  const who = makeEl("span");
+  who.append(makeEl("span", "кто", NAMES[e.agent] ?? e.agent), ` ${PERMISSION_ACTIONS[kind] ?? "хочет вызвать инструмент"}`);
+  header.append(icon(ICONS[kind === "search" ? "read" : kind] ?? ICONS.other), who, makeEl("span", "инструмент", e.tool ?? "?"));
+  card.append(header, makeEl("pre", "аргументы", e.text ?? ""));
+  const result = makeEl("div", "итог");
+  if (history) {
     // Из журнала: процесс, задавший вопрос, уже другой — ответить нельзя.
-    итог.textContent = "запрос из прошлого запуска панели";
+    result.textContent = "запрос из прошлого запуска панели";
   } else {
-    const кнопки = элемент("div", "кнопки");
-    const закрыть = () => {
-      for (const к of кнопки.querySelectorAll("button")) к.disabled = true;
+    const buttons = makeEl("div", "кнопки");
+    const close = () => {
+      for (const k of buttons.querySelectorAll("button")) k.disabled = true;
     };
-    const ответить = (выбор) => {
-      закрыть();
-      vscode.postMessage({ type: "approval", id: е.callId, choice: выбор });
+    const answer = (choice) => {
+      close();
+      vscode.postMessage({ type: "approval", id: e.callId, choice: choice });
     };
-    const кнопка = (текст, класс, подсказка, действие) => {
-      const к = элемент("button", `пилюля ${класс}`.trim(), текст);
-      к.title = подсказка;
-      к.addEventListener("click", действие);
-      кнопки.append(к);
+    const button = (text, className, tooltip, action) => {
+      const k = makeEl("button", `пилюля ${className}`.trim(), text);
+      k.title = tooltip;
+      k.addEventListener("click", action);
+      buttons.append(k);
     };
-    кнопка("Разрешить", "главная", "Выполнить этот вызов один раз", () => ответить("allow"));
-    if (е.sessionRules?.length) {
-      кнопка(
+    button("Разрешить", "главная", "Выполнить этот вызов один раз", () => answer("allow"));
+    if (e.sessionRules?.length) {
+      button(
         "В этой сессии",
         "",
-        `Больше не спрашивать до остановки Claude: ${е.sessionRules.join(", ")}. В файлы настроек ничего не пишется`,
-        () => ответить("allowSession"),
+        `Больше не спрашивать до остановки Claude: ${e.sessionRules.join(", ")}. В файлы настроек ничего не пишется`,
+        () => answer("allowSession"),
       );
     }
-    кнопка(
+    button(
       "Больше не спрашивать",
       "",
       "Разрешить этот вызов и дальше не спрашивать в этой папке: до конца хода разрешает панель, " +
         "со следующего хода Claude работает в режиме bypassPermissions. Вернуть — кнопка со щитом у поля ввода",
       () => {
-        закрыть();
+        close();
         vscode.postMessage({ type: "setPermissionMode", mode: "bypassPermissions" });
       },
     );
-    кнопки.append(элемент("span", "распорка"));
-    кнопка("Отклонить", "опасно", "Не выполнять; Claude узнает, что отказал человек", () => ответить("deny"));
-    карточка.append(кнопки);
+    buttons.append(makeEl("span", "распорка"));
+    button("Отклонить", "опасно", "Не выполнять; Claude узнает, что отказал человек", () => answer("deny"));
+    card.append(buttons);
   }
-  карточка.append(итог);
-  беседа.append(карточка);
+  card.append(result);
+  conversation.append(card);
   // И карточку из журнала закроет решение, записанное следом за ней.
-  запросы.set(е.callId, карточка);
+  requests.set(e.callId, card);
 }
 
 // --- События -------------------------------------------------------------------
@@ -356,127 +356,127 @@ function карточкаРазрешения(е, история) {
  * Агенты, идущие ходом, который начали сами (Claude после фоновой команды):
  * их реплики — не работа по задаче, и это должно быть видно в самой реплике.
  */
-const самостоятельные = new Map();
+const autonomous = new Map();
 
-function показатьСобытие(е, история = false) {
-  switch (е.kind) {
+function showEvent(e, history = false) {
+  switch (e.kind) {
     case "turn_started":
-      if (е.unsolicited) самостоятельные.set(е.agent, е.text ?? "");
+      if (e.unsolicited) autonomous.set(e.agent, e.text ?? "");
       return;
     case "text_delta": {
-      let п = потоки.get(е.agent);
-      if (!п) {
-        п = пузырь(е.agent, "", { снимок: е.snapshot });
-        п.classList.add("идёт");
-        потоки.set(е.agent, п);
+      let p = streams.get(e.agent);
+      if (!p) {
+        p = bubble(e.agent, "", { snapshot: e.snapshot });
+        p.classList.add("идёт");
+        streams.set(e.agent, p);
       }
-      исходники.set(п, (исходники.get(п) ?? "") + (е.text ?? ""));
-      отрисоватьПозже(п);
+      sources.set(p, (sources.get(p) ?? "") + (e.text ?? ""));
+      renderLater(p);
       return;
     }
     case "message": {
-      if (е.agent === "system") {
-        уведомление(е.text ?? "");
-        вниз();
+      if (e.agent === "system") {
+        showNotice(e.text ?? "");
+        scrollToBottom();
         return;
       }
       // Реплика субагента — не ответ Claude: отдельный приглушённый блок, живой
       // пузырь Claude она не закрывает.
-      if (е.parentCallId) {
-        const п = пузырь(е.agent, е.text ?? "", { снимок: е.snapshot });
-        п.classList.add("субагент");
-        const имя = п.querySelector(".автор .имя");
-        имя.textContent = "Субагент";
-        имя.title = `запущен вызовом ${е.parentCallId}`;
-        вниз();
+      if (e.parentCallId) {
+        const p = bubble(e.agent, e.text ?? "", { snapshot: e.snapshot });
+        p.classList.add("субагент");
+        const name = p.querySelector(".автор .имя");
+        name.textContent = "Субагент";
+        name.title = `запущен вызовом ${e.parentCallId}`;
+        scrollToBottom();
         return;
       }
-      const открытый = потоки.get(е.agent);
-      const п = открытый ?? пузырь(е.agent, "", { снимок: е.snapshot });
-      закончить(п, е.agent, е.text);
-      if (открытый) потоки.delete(е.agent);
-      if (самостоятельные.has(е.agent)) {
-        п.classList.add("сам");
-        const имя = п.querySelector(".автор .имя");
-        имя.textContent = `${ИМЕНА[е.agent] ?? е.agent} · сам`;
-        имя.title = самостоятельные.get(е.agent) || "ход начат без сообщения панели";
+      const openStream = streams.get(e.agent);
+      const p = openStream ?? bubble(e.agent, "", { snapshot: e.snapshot });
+      finish(p, e.agent, e.text);
+      if (openStream) streams.delete(e.agent);
+      if (autonomous.has(e.agent)) {
+        p.classList.add("сам");
+        const name = p.querySelector(".автор .имя");
+        name.textContent = `${NAMES[e.agent] ?? e.agent} · сам`;
+        name.title = autonomous.get(e.agent) || "ход начат без сообщения панели";
       }
-      вниз();
+      scrollToBottom();
       return;
     }
     case "tool_call": {
-      новыйВызов(группаДействий(е.agent), е.tool ?? "?", е.text ?? "", е.callId, е.parentCallId);
-      вниз();
+      newCall(actionGroup(e.agent), e.tool ?? "?", e.text ?? "", e.callId, e.parentCallId);
+      scrollToBottom();
       return;
     }
     case "tool_running": {
-      const г = группы.get(е.agent);
-      const вызов = г?.вызовы.get(е.callId);
-      if (вызов) отметитьВызов(г, вызов, "running");
+      const g = groups.get(e.agent);
+      const call = g?.calls.get(e.callId);
+      if (call) markCall(g, call, "running");
       return;
     }
     case "tool_result": {
-      const г = группаДействий(е.agent);
-      const вызов = г.вызовы.get(е.callId) ?? новыйВызов(г, е.tool ?? "?", "", е.callId, е.parentCallId);
-      отметитьВызов(г, вызов, вызов.состояние === "denied" ? "denied" : "done");
-      вызов.строка.append(элемент("div", "вывод-подпись", "сырой вывод — передаётся рецензенту как есть"));
-      вызов.строка.append(элемент("pre", "вывод", е.text ?? ""));
+      const g = actionGroup(e.agent);
+      const call = g.calls.get(e.callId) ?? newCall(g, e.tool ?? "?", "", e.callId, e.parentCallId);
+      markCall(g, call, call.state === "denied" ? "denied" : "done");
+      call.line.append(makeEl("div", "вывод-подпись", "сырой вывод — передаётся рецензенту как есть"));
+      call.line.append(makeEl("pre", "вывод", e.text ?? ""));
       return;
     }
     case "approval_requested": {
       // Без callId запрос уже решён самим адаптером (запись файлов у Codex).
-      if (!е.callId) return;
-      карточкаРазрешения(е, история);
-      вниз();
+      if (!e.callId) return;
+      permissionCard(e, history);
+      scrollToBottom();
       return;
     }
     case "approval_decided": {
-      const карточка = запросы.get(е.callId);
-      if (карточка) {
-        карточка.querySelector(".кнопки")?.remove();
-        карточка.querySelector(".итог").textContent = е.text ?? "решено";
-        карточка.classList.add(/^отклонено/.test(е.text ?? "") ? "отклонено" : "решено");
-        запросы.delete(е.callId);
+      const card = requests.get(e.callId);
+      if (card) {
+        card.querySelector(".кнопки")?.remove();
+        card.querySelector(".итог").textContent = e.text ?? "решено";
+        card.classList.add(/^отклонено/.test(e.text ?? "") ? "отклонено" : "решено");
+        requests.delete(e.callId);
         // Карточка живёт по id запроса, бусина — по id вызова инструмента.
-        if (/^отклонено/.test(е.text ?? "") && е.toolCallId) {
-          const г = группы.get(е.agent);
-          const вызов = г?.вызовы.get(е.toolCallId);
-          if (вызов) {
-            г.отказы += 1;
-            отметитьВызов(г, вызов, "denied");
+        if (/^отклонено/.test(e.text ?? "") && e.toolCallId) {
+          const g = groups.get(e.agent);
+          const call = g?.calls.get(e.toolCallId);
+          if (call) {
+            g.denials += 1;
+            markCall(g, call, "denied");
           }
         }
         return;
       }
-      const г = группаДействий(е.agent);
-      г.отказы += 1;
-      const вызов = г.вызовы.get(е.toolCallId ?? е.callId);
-      if (вызов) отметитьВызов(г, вызов, "denied");
-      else обновитьСводку(г);
-      г.список.append(элемент("div", "отказ-строка", е.text ?? "отказано"));
+      const g = actionGroup(e.agent);
+      g.denials += 1;
+      const call = g.calls.get(e.toolCallId ?? e.callId);
+      if (call) markCall(g, call, "denied");
+      else updateSummary(g);
+      g.list.append(makeEl("div", "отказ-строка", e.text ?? "отказано"));
       return;
     }
     case "turn_completed":
-      группы.delete(е.agent);
-      if (е.unsolicited) самостоятельные.delete(е.agent);
-      if (е.failed) уведомление(`${ИМЕНА[е.agent]}: ${е.text ?? "ход не удался"}`, "ошибка");
+      groups.delete(e.agent);
+      if (e.unsolicited) autonomous.delete(e.agent);
+      if (e.failed) showNotice(`${NAMES[e.agent]}: ${e.text ?? "ход не удался"}`, "ошибка");
       return;
     case "error": {
-      потоки.delete(е.agent);
-      группы.delete(е.agent);
-      const п = пузырь(е.agent, е.text ?? "ошибка", { какРазметка: false });
-      п.classList.add("ошибка");
-      вниз();
+      streams.delete(e.agent);
+      groups.delete(e.agent);
+      const p = bubble(e.agent, e.text ?? "ошибка", { asMarkup: false });
+      p.classList.add("ошибка");
+      scrollToBottom();
       return;
     }
     case "diagnostic": {
-      const строки = $("диагностика-строки");
-      const время = new Date(е.at).toLocaleTimeString("ru-RU", { hour12: false });
-      строки.textContent += `${время} ${ИМЕНА[е.agent] ?? е.agent}: ${е.text ?? ""}` + String.fromCharCode(10);
-      const все = строки.textContent.split(String.fromCharCode(10));
-      if (все.length > ПРЕДЕЛ_ДИАГНОСТИКИ) строки.textContent = все.slice(-ПРЕДЕЛ_ДИАГНОСТИКИ).join(String.fromCharCode(10));
-      const счёт = $("диагностика-счёт");
-      счёт.textContent = String(Number(счёт.textContent) + 1);
+      const lines = $("диагностика-строки");
+      const time = new Date(e.at).toLocaleTimeString("ru-RU", { hour12: false });
+      lines.textContent += `${time} ${NAMES[e.agent] ?? e.agent}: ${e.text ?? ""}` + String.fromCharCode(10);
+      const all = lines.textContent.split(String.fromCharCode(10));
+      if (all.length > DIAGNOSTIC_LIMIT) lines.textContent = all.slice(-DIAGNOSTIC_LIMIT).join(String.fromCharCode(10));
+      const counts = $("диагностика-счёт");
+      counts.textContent = String(Number(counts.textContent) + 1);
       return;
     }
     default:
@@ -486,524 +486,524 @@ function показатьСобытие(е, история = false) {
 
 // --- Шапка: «Эстафета» и «Дорожка цикла» ------------------------------------------
 
-const ПОДПИСИ_ШАГОВ = { task: "Задача", claude: "Claude", codex: "Codex", you: "Вы" };
-let последнееСостояние;
+const STEP_LABELS = { task: "Задача", claude: "Claude", codex: "Codex", you: "Вы" };
+let lastState;
 
-function показатьСостояние(с) {
-  последнееСостояние = с;
-  const вид = relayView(с);
-  const нить = $("нить-статус");
-  нить.dataset.active = вид.active;
-  нить.dataset.flow = вид.flow;
-  const этап = $("этап");
-  этап.textContent = вид.label;
-  этап.dataset.active = вид.active;
-  этап.classList.toggle("перелив", вид.active === "claude" || вид.active === "codex");
-  $("этап-пояснение").textContent = вид.sub;
+function showState(s) {
+  lastState = s;
+  const kind = relayView(s);
+  const threadEl = $("нить-статус");
+  threadEl.dataset.active = kind.active;
+  threadEl.dataset.flow = kind.flow;
+  const stage = $("этап");
+  stage.textContent = kind.label;
+  stage.dataset.active = kind.active;
+  stage.classList.toggle("перелив", kind.active === "claude" || kind.active === "codex");
+  $("этап-пояснение").textContent = kind.sub;
 
-  const раунд = $("раунд");
-  раунд.replaceChildren(...вид.rounds.map((пройдена) => элемент("span", пройдена ? "пройдена" : "")));
-  раунд.setAttribute("aria-label", `проверок ${с.round} из ${с.maxRounds}`);
-  раунд.dataset.подпись = `проверок ${с.round} из ${с.maxRounds}`;
+  const round = $("раунд");
+  round.replaceChildren(...kind.rounds.map((passed) => makeEl("span", passed ? "пройдена" : "")));
+  round.setAttribute("aria-label", `проверок ${s.round} из ${s.maxRounds}`);
+  round.dataset.caption = `проверок ${s.round} из ${s.maxRounds}`;
 
-  const очередь = $("очередь");
-  очередь.hidden = !с.queued;
-  очередь.textContent = `в очереди ${с.queued}`;
+  const queue = $("очередь");
+  queue.hidden = !s.queued;
+  queue.textContent = `в очереди ${s.queued}`;
 
-  const задача = $("задача");
-  задача.hidden = !с.task;
-  задача.textContent = с.task ?? "";
+  const task = $("задача");
+  task.hidden = !s.task;
+  task.textContent = s.task ?? "";
   // Строка обрезается многоточием, полный текст — при наведении.
-  задача.title = с.task ?? "";
+  task.title = s.task ?? "";
 
-  показатьДорожку();
+  showTrack();
 
-  $("удержано").hidden = !с.held;
-  $("удержано-причина").textContent = с.held?.reason ?? "";
-  $("отпустить").textContent = !с.held
+  $("удержано").hidden = !s.held;
+  $("удержано-причина").textContent = s.held?.reason ?? "";
+  $("отпустить").textContent = !s.held
     ? "Отправить"
-    : с.held.action === "retry"
-      ? `Повторить ${ИМЕНА[с.held.to]}`
-      : `Отправить ${ИМЕНА[с.held.to]}`;
+    : s.held.action === "retry"
+      ? `Повторить ${NAMES[s.held.to]}`
+      : `Отправить ${NAMES[s.held.to]}`;
 
-  $("авто").checked = с.auto;
+  $("авто").checked = s.auto;
 }
 
 /** 1 262 000 → «1,26 млн», 17 527 → «17,5 тыс.». */
-function токены(n) {
-  const число = (значение, знаков) => String(Number(значение.toFixed(знаков))).replace(".", ",");
-  if (n >= 1_000_000) return `${число(n / 1_000_000, 2)} млн`;
-  if (n >= 1_000) return `${число(n / 1_000, 1)} тыс.`;
+function tokens(n) {
+  const num = (value, decimals) => String(Number(value.toFixed(decimals))).replace(".", ",");
+  if (n >= 1_000_000) return `${num(n / 1_000_000, 2)} млн`;
+  if (n >= 1_000) return `${num(n / 1_000, 1)} тыс.`;
   return String(n);
 }
 
-const СТАТУСЫ_ЛИМИТА = { allowed: "в норме", allowed_warning: "близко к пределу", rejected: "исчерпан" };
-const ОКНА = { week: "неделя", five_hour: "окно 5 ч" };
+const LIMIT_STATUSES = { allowed: "в норме", allowed_warning: "близко к пределу", rejected: "исчерпан" };
+const WINDOW_LABELS = { week: "неделя", five_hour: "окно 5 ч" };
 
 /** Время сведения; не сегодняшнее — с датой: «на 05:14», «на 27.09 23:50». */
-function когдаСведение(at) {
-  const д = new Date(at);
-  const часы = д.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-  if (д.toDateString() === new Date().toDateString()) return часы;
-  return `${String(д.getDate()).padStart(2, "0")}.${String(д.getMonth() + 1).padStart(2, "0")} ${часы}`;
+function infoTime(at) {
+  const d = new Date(at);
+  const clockText = d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === new Date().toDateString()) return clockText;
+  return `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")} ${clockText}`;
 }
 
 // Пометка «на …» зависит от возраста сведения, а не только от событий:
 // раскрытая строка расхода перерисовывается раз в минуту (рецензия Codex 28.09).
 setInterval(() => {
-  if (сохранено.дорожка === true) показатьРасход(true);
+  if (saved.track === true) showUsage(true);
 }, 60_000);
 
 /** Строка расхода: токены задачи по агентам и последние сведения о лимитах. */
-function показатьРасход(открыта) {
-  const строка = $("расход");
-  const расход = последнееСостояние?.usage;
-  const части = [];
-  for (const агент of ["claude", "codex"]) {
-    const р = расход?.task?.[агент];
-    if (р && р.input + р.output > 0) {
-      части.push(`${ИМЕНА[агент]} ${токены(р.input + р.output)}${р.cached ? ` (из кеша ${токены(р.cached)})` : ""}`);
+function showUsage(isOpen) {
+  const line = $("расход");
+  const usage = lastState?.usage;
+  const parts = [];
+  for (const agent of ["claude", "codex"]) {
+    const r = usage?.task?.[agent];
+    if (r && r.input + r.output > 0) {
+      parts.push(`${NAMES[agent]} ${tokens(r.input + r.output)}${r.cached ? ` (из кеша ${tokens(r.cached)})` : ""}`);
     }
   }
-  const лимиты = [];
-  for (const агент of ["codex", "claude"]) {
-    const л = расход?.limits?.[агент];
-    const неделя = агент === "claude" ? расход?.limits?.claudeWeek : undefined;
-    if (неделя) {
+  const limits = [];
+  for (const agent of ["codex", "claude"]) {
+    const l = usage?.limits?.[agent];
+    const week = agent === "claude" ? usage?.limits?.claudeWeek : undefined;
+    if (week) {
       // Доля недели из /usage; статус окна из потока — только когда он не «в норме».
       // Сведение старше 10 минут или последний запрос не удался — со временем.
-      const давно = неделя.stale || (typeof неделя.at === "number" && Date.now() - неделя.at > 10 * 60_000);
-      const время = давно && typeof неделя.at === "number" ? ` (на ${когдаСведение(неделя.at)})` : "";
-      const доли = [`неделя ${неделя.percent}%${время}`];
-      if (typeof неделя.session === "number") доли.push(`окно 5 ч ${неделя.session}%`);
-      if (л?.status && л.status !== "allowed") доли.push(СТАТУСЫ_ЛИМИТА[л.status] ?? л.status);
-      лимиты.push(`${ИМЕНА[агент]}: ${доли.join(", ")}`);
+      const isStale = week.stale || (typeof week.at === "number" && Date.now() - week.at > 10 * 60_000);
+      const time = isStale && typeof week.at === "number" ? ` (на ${infoTime(week.at)})` : "";
+      const pieces = [`неделя ${week.percent}%${time}`];
+      if (typeof week.session === "number") pieces.push(`окно 5 ч ${week.session}%`);
+      if (l?.status && l.status !== "allowed") pieces.push(LIMIT_STATUSES[l.status] ?? l.status);
+      limits.push(`${NAMES[agent]}: ${pieces.join(", ")}`);
       continue;
     }
-    if (!л) continue;
-    const окно = ОКНА[л.window] ?? л.window ?? "";
-    if (typeof л.percent === "number") лимиты.push(`${ИМЕНА[агент]}: ${окно} ${л.percent}%`);
-    else if (л.status) лимиты.push(`${ИМЕНА[агент]}: ${окно} — ${СТАТУСЫ_ЛИМИТА[л.status] ?? л.status}`);
+    if (!l) continue;
+    const windowLabel = WINDOW_LABELS[l.window] ?? l.window ?? "";
+    if (typeof l.percent === "number") limits.push(`${NAMES[agent]}: ${windowLabel} ${l.percent}%`);
+    else if (l.status) limits.push(`${NAMES[agent]}: ${windowLabel} — ${LIMIT_STATUSES[l.status] ?? l.status}`);
   }
-  строка.textContent = [
-    части.length ? `Расход задачи: ${части.join(" · ")}` : "",
-    лимиты.length ? `Лимиты — ${лимиты.join(", ")}` : "",
+  line.textContent = [
+    parts.length ? `Расход задачи: ${parts.join(" · ")}` : "",
+    limits.length ? `Лимиты — ${limits.join(", ")}` : "",
   ].filter(Boolean).join(". ");
-  строка.hidden = !открыта || !строка.textContent;
+  line.hidden = !isOpen || !line.textContent;
 }
 
-function показатьДорожку() {
-  const дорожка = $("дорожка");
-  const открыта = сохранено.дорожка === true;
-  дорожка.hidden = !открыта;
-  $("эстафета").setAttribute("aria-expanded", String(открыта));
-  показатьРасход(открыта);
-  if (!открыта) return;
-  const с = последнееСостояние ?? { stage: "idle", maxRounds: 0 };
-  const шаги = trackSteps(с.trail ?? [], с);
-  if (шаги.length === 0) {
-    дорожка.replaceChildren(элемент("span", "тихо", "Цикла рецензии ещё не было"));
+function showTrack() {
+  const track = $("дорожка");
+  const isOpen = saved.track === true;
+  track.hidden = !isOpen;
+  $("эстафета").setAttribute("aria-expanded", String(isOpen));
+  showUsage(isOpen);
+  if (!isOpen) return;
+  const s = lastState ?? { stage: "idle", maxRounds: 0 };
+  const steps = trackSteps(s.trail ?? [], s);
+  if (steps.length === 0) {
+    track.replaceChildren(makeEl("span", "тихо", "Цикла рецензии ещё не было"));
     return;
   }
-  дорожка.replaceChildren(
-    ...шаги.map((ш, i) => {
-      const обёртка = элемент("span", "шаг");
-      if (i > 0) обёртка.append(элемент("span", `шаг-связь ${ш.state === "ghost" ? "пустая" : ""}`.trim()));
-      const узел = элемент(
+  track.replaceChildren(
+    ...steps.map((sh, i) => {
+      const wrapper = makeEl("span", "шаг");
+      if (i > 0) wrapper.append(makeEl("span", `шаг-связь ${sh.state === "ghost" ? "пустая" : ""}`.trim()));
+      const node = makeEl(
         "span",
-        `шаг-узел ${ш.who} ${ш.state === "current" ? "текущий" : ""} ${ш.state === "ghost" ? "пустой" : ""}`.replace(/ +/g, " ").trim(),
+        `шаг-узел ${sh.who} ${sh.state === "current" ? "текущий" : ""} ${sh.state === "ghost" ? "пустой" : ""}`.replace(/ +/g, " ").trim(),
       );
-      узел.title = ПОДПИСИ_ШАГОВ[ш.who] + (ш.state === "ghost" ? " — ещё впереди, если понадобится" : "");
-      if (ш.mark) узел.append(элемент("span", `шаг-отметка ${ш.mark === "✓" ? "принято" : ""}`.trim(), ш.mark));
-      обёртка.append(узел);
-      return обёртка;
+      node.title = STEP_LABELS[sh.who] + (sh.state === "ghost" ? " — ещё впереди, если понадобится" : "");
+      if (sh.mark) node.append(makeEl("span", `шаг-отметка ${sh.mark === "✓" ? "принято" : ""}`.trim(), sh.mark));
+      wrapper.append(node);
+      return wrapper;
     }),
   );
 }
 
 $("эстафета").addEventListener("click", () => {
-  запомнить({ дорожка: !(сохранено.дорожка === true) });
-  показатьДорожку();
+  remember({ track: !(saved.track === true) });
+  showTrack();
 });
 
 // --- Режим отправки: переключатель и меню -----------------------------------------------
 
-let маршрут = МАРШРУТЫ.some((м) => м.id === сохранено.маршрут) ? сохранено.маршрут : "review";
+let route = ROUTES.some((m) => m.id === saved.route) ? saved.route : "review";
 
-function показатьМаршрут() {
-  const текущий = МАРШРУТЫ.find((м) => м.id === маршрут);
-  $("маршрут-название").textContent = текущий.name;
-  $("маршрут").title = `${текущий.hint}. Нажмите — выбрать режим`;
+function showRoute() {
+  const current = ROUTES.find((m) => m.id === route);
+  $("маршрут-название").textContent = current.name;
+  $("маршрут").title = `${current.hint}. Нажмите — выбрать режим`;
   $("режимы").replaceChildren(
-    ...МАРШРУТЫ.map((м) => {
-      const к = элемент("button");
-      к.setAttribute("role", "radio");
-      к.setAttribute("aria-checked", String(м.id === маршрут));
-      к.setAttribute("aria-label", м.name);
-      к.dataset.маршрут = м.id;
-      к.title = `${м.name}: ${м.hint}`;
-      к.append(значокМаршрута(м.id));
-      к.addEventListener("click", () => {
-        выбратьМаршрут(м.id);
+    ...ROUTES.map((m) => {
+      const k = makeEl("button");
+      k.setAttribute("role", "radio");
+      k.setAttribute("aria-checked", String(m.id === route));
+      k.setAttribute("aria-label", m.name);
+      k.dataset.route = m.id;
+      k.title = `${m.name}: ${m.hint}`;
+      k.append(routeIcon(m.id));
+      k.addEventListener("click", () => {
+        selectRoute(m.id);
         // Кнопки пересоздаются: фокус переходит на новую отмеченную.
         $("режимы").querySelector('[aria-checked="true"]')?.focus();
       });
-      return к;
+      return k;
     }),
   );
   $("маршрут-меню").replaceChildren(
-    ...МАРШРУТЫ.map((м) => {
-      const к = элемент("button");
-      к.setAttribute("role", "menuitemradio");
-      к.setAttribute("aria-checked", String(м.id === маршрут));
-      к.dataset.маршрут = м.id;
-      к.title = м.hint;
-      const галка = значок(ЗНАЧКИ.check);
-      галка.classList.add("галка");
-      к.append(значокМаршрута(м.id), элемент("span", "", м.name), галка);
-      к.addEventListener("click", () => {
-        выбратьМаршрут(м.id);
-        закрытьМеню(true);
+    ...ROUTES.map((m) => {
+      const k = makeEl("button");
+      k.setAttribute("role", "menuitemradio");
+      k.setAttribute("aria-checked", String(m.id === route));
+      k.dataset.route = m.id;
+      k.title = m.hint;
+      const checkmark = icon(ICONS.check);
+      checkmark.classList.add("галка");
+      k.append(routeIcon(m.id), makeEl("span", "", m.name), checkmark);
+      k.addEventListener("click", () => {
+        selectRoute(m.id);
+        closeMenu(true);
       });
-      return к;
+      return k;
     }),
   );
 }
 
-function выбратьМаршрут(id) {
-  маршрут = id;
-  запомнить({ маршрут: id });
-  показатьМаршрут();
+function selectRoute(id) {
+  route = id;
+  remember({ route: id });
+  showRoute();
 }
 
 /** Закрыть меню режима; с возвратом — фокус на кнопку названия, откуда меню открыли. */
-function закрытьМеню(вернутьФокус = false) {
-  const былоОткрыто = !$("маршрут-меню").hidden;
+function closeMenu(restoreFocus = false) {
+  const wasOpen = !$("маршрут-меню").hidden;
   $("маршрут-меню").hidden = true;
   $("маршрут").setAttribute("aria-expanded", "false");
-  if (вернутьФокус && былоОткрыто) $("маршрут").focus();
+  if (restoreFocus && wasOpen) $("маршрут").focus();
 }
 
-$("маршрут").addEventListener("click", (событие) => {
-  событие.stopPropagation();
-  const меню = $("маршрут-меню");
-  меню.hidden = !меню.hidden;
-  $("маршрут").setAttribute("aria-expanded", String(!меню.hidden));
+$("маршрут").addEventListener("click", (event) => {
+  event.stopPropagation();
+  const menu = $("маршрут-меню");
+  menu.hidden = !menu.hidden;
+  $("маршрут").setAttribute("aria-expanded", String(!menu.hidden));
 });
-document.addEventListener("click", (событие) => {
-  if (!$("маршрут-меню").hidden && !событие.target.closest?.("#маршрут-меню")) закрытьМеню();
+document.addEventListener("click", (event) => {
+  if (!$("маршрут-меню").hidden && !event.target.closest?.("#маршрут-меню")) closeMenu();
 });
-document.addEventListener("keydown", (событие) => {
-  if (событие.key === "Escape") закрытьМеню(true);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeMenu(true);
 });
-показатьМаршрут();
+showRoute();
 
 // --- Модель и уровень рассуждения: шкала «Нить» --------------------------------------
 // Список запрашивается по кнопке, а не при открытии: каждый поднимает
 // короткий процесс агента, а агенты в панели запускаются по делу.
 
-const МОДЕЛИ = {
+const MODELS = {
   claude: { options: undefined, choice: { model: "", effort: "" }, error: "" },
   codex: { options: undefined, choice: { model: "", effort: "" }, error: "" },
 };
-let спискиЗапрошены = false;
-const ПОДПИСИ_РЕЖИМОВ = { bypassPermissions: "Без вопросов", default: "Спрашивать" };
-let режимClaude = "bypassPermissions";
+let listsRequested = false;
+const MODE_LABELS = { bypassPermissions: "Без вопросов", default: "Спрашивать" };
+let claudeMode = "bypassPermissions";
 
-function принятьРежим(режим) {
-  if (typeof режим !== "string") return;
-  режимClaude = режим;
-  показатьРежим();
-  показатьМодели();
+function receiveMode(mode) {
+  if (typeof mode !== "string") return;
+  claudeMode = mode;
+  showMode();
+  showModels();
 }
 
-function показатьРежим() {
-  const кнопка = $("без-вопросов");
-  кнопка.setAttribute("aria-pressed", String(режимClaude === "bypassPermissions"));
+function showMode() {
+  const button = $("без-вопросов");
+  button.setAttribute("aria-pressed", String(claudeMode === "bypassPermissions"));
   // Режим из настройки, которого нет в переключателе (plan, acceptEdits…), показывается как есть.
-  кнопка.querySelector(".подпись").textContent = ПОДПИСИ_РЕЖИМОВ[режимClaude] ?? режимClaude;
-  кнопка.title =
-    режимClaude === "bypassPermissions"
+  button.querySelector(".подпись").textContent = MODE_LABELS[claudeMode] ?? claudeMode;
+  button.title =
+    claudeMode === "bypassPermissions"
       ? "Claude выполняет команды без запроса разрешения. Нажмите — спрашивать каждое действие, требующее согласия"
       : "Каждое действие Claude, требующее согласия, приходит карточкой. Нажмите — без вопросов. Действует для этой папки";
 }
 
-function вариант(значение, подпись, пояснение = "") {
-  const о = элемент("option", "", подпись);
-  о.value = значение;
-  if (пояснение) о.title = пояснение;
-  return о;
+function makeOption(value, caption, hint = "") {
+  const o = makeEl("option", "", caption);
+  o.value = value;
+  if (hint) o.title = hint;
+  return o;
 }
 
-function подписьМодели(агент) {
-  const { options, choice } = МОДЕЛИ[агент];
-  const выбранная = options?.find((о) => о.id === choice.model);
-  const имя = choice.model ? (выбранная?.label ?? choice.model) : "по умолчанию";
-  return choice.effort ? `${имя} · ${choice.effort}` : имя;
+function modelCaption(agent) {
+  const { options, choice } = MODELS[agent];
+  const selectedModel = options?.find((o) => o.id === choice.model);
+  const name = choice.model ? (selectedModel?.label ?? choice.model) : "по умолчанию";
+  return choice.effort ? `${name} · ${choice.effort}` : name;
 }
 
-function показатьМодели() {
+function showModels() {
   $("модели-кнопка").title =
     `Модель и уровень рассуждения каждого агента; меняются со следующего хода. ` +
-    `Сейчас — Claude: ${подписьМодели("claude")}; Codex: ${подписьМодели("codex")}; ` +
-    `разрешения Claude: ${(ПОДПИСИ_РЕЖИМОВ[режимClaude] ?? режимClaude).toLowerCase()}`;
-  const ошибки = ["claude", "codex"].filter((а) => МОДЕЛИ[а].error).map((а) => `${ИМЕНА[а]}: ${МОДЕЛИ[а].error}`);
-  const ждём = спискиЗапрошены && ["claude", "codex"].some((а) => !МОДЕЛИ[а].options && !МОДЕЛИ[а].error);
-  $("модели-состояние").textContent = ошибки.length
-    ? `Список не получен — ${ошибки.join("; ")}. Откройте ещё раз, чтобы повторить.`
-    : ждём
+    `Сейчас — Claude: ${modelCaption("claude")}; Codex: ${modelCaption("codex")}; ` +
+    `разрешения Claude: ${(MODE_LABELS[claudeMode] ?? claudeMode).toLowerCase()}`;
+  const errors = ["claude", "codex"].filter((a) => MODELS[a].error).map((a) => `${NAMES[a]}: ${MODELS[a].error}`);
+  const waiting = listsRequested && ["claude", "codex"].some((a) => !MODELS[a].options && !MODELS[a].error);
+  $("модели-состояние").textContent = errors.length
+    ? `Список не получен — ${errors.join("; ")}. Откройте ещё раз, чтобы повторить.`
+    : waiting
       ? "Загружаю список моделей…"
       : "";
 
-  for (const агент of ["claude", "codex"]) {
-    const { options, choice } = МОДЕЛИ[агент];
-    const модель = $(`модель-${агент}`);
+  for (const agent of ["claude", "codex"]) {
+    const { options, choice } = MODELS[agent];
+    const model = $(`модель-${agent}`);
     if (!options) {
-      модель.disabled = true;
-      нарисоватьНить(агент, undefined);
+      model.disabled = true;
+      drawThread(agent, undefined);
       continue;
     }
-    модель.replaceChildren(...options.map((о) => вариант(о.id, о.label, о.description)));
-    модель.value = choice.model;
-    модель.disabled = false;
-    нарисоватьНить(агент, options.find((о) => о.id === choice.model));
+    model.replaceChildren(...options.map((o) => makeOption(o.id, o.label, o.description)));
+    model.value = choice.model;
+    model.disabled = false;
+    drawThread(agent, options.find((o) => o.id === choice.model));
   }
 }
 
 /** Узел разметки со стилями из раскладки: вся геометрия — числа из thread.js. */
-function кусок(класс, стиль) {
-  const э = элемент("span", класс);
-  Object.assign(э.style, стиль);
-  return э;
+function chunk(className, style) {
+  const el = makeEl("span", className);
+  Object.assign(el.style, style);
+  return el;
 }
 
-const пикс = (n) => `${n}px`;
+const px = (n) => `${n}px`;
 
-function нарисоватьНить(агент, модель) {
-  const полоса = $(`нить-${агент}`);
-  const подпись = $(`нить-уровень-${агент}`);
-  const уровни = effortLevels(агент, модель?.efforts ?? []);
-  const поУмолчанию = defaultEffort(модель);
-  const выбор = МОДЕЛИ[агент].choice.effort;
-  const р = threadLayout(агент, уровни, выбор, поУмолчанию, полоса.clientWidth || 328);
+function drawThread(agent, model) {
+  const strip = $(`нить-${agent}`);
+  const caption = $(`нить-уровень-${agent}`);
+  const levels = effortLevels(agent, model?.efforts ?? []);
+  const isDefault = defaultEffort(model);
+  const choice = MODELS[agent].choice.effort;
+  const r = threadLayout(agent, levels, choice, isDefault, strip.clientWidth || 328);
   // Вернуть «по умолчанию» можно, пока выбран явный уровень: у Claude умолчание
   // неизвестно, и никакой узел его не заменяет (рецензия Codex 28.09).
-  $(`нить-сброс-${агент}`).hidden = !р || !выбор;
-  if (!р) {
-    подпись.textContent = МОДЕЛИ[агент].options ? "Без уровней" : "—";
-    подпись.style.color = "var(--тихий)";
-    подпись.title = МОДЕЛИ[агент].options ? "У этой модели уровень рассуждения не выбирается" : "";
-    полоса.replaceChildren();
+  $(`нить-сброс-${agent}`).hidden = !r || !choice;
+  if (!r) {
+    caption.textContent = MODELS[agent].options ? "Без уровней" : "—";
+    caption.style.color = "var(--тихий)";
+    caption.title = MODELS[agent].options ? "У этой модели уровень рассуждения не выбирается" : "";
+    strip.replaceChildren();
     return;
   }
-  подпись.textContent = р.label;
-  подпись.style.color = р.color ? `color-mix(in srgb, ${р.color} var(--нить-доля-подписи), var(--сильный))` : "var(--тихий)";
-  подпись.title = выбор ? "" : поУмолчанию ? "Уровень модели по умолчанию" : "Уровень выбирает агент: своего умолчания CLI не сообщает";
+  caption.textContent = r.label;
+  caption.style.color = r.color ? `color-mix(in srgb, ${r.color} var(--нить-доля-подписи), var(--сильный))` : "var(--тихий)";
+  caption.title = choice ? "" : isDefault ? "Уровень модели по умолчанию" : "Уровень выбирает агент: своего умолчания CLI не сообщает";
 
-  const части = [кусок("нить-основа", { left: "10px", width: пикс(р.baseWidth) })];
-  if (р.modeSegment) {
-    const цвет = р.modeSegment.lit ? р.color : "var(--нить-край)";
-    части.push(
-      кусок("нить-режим", {
-        left: пикс(р.modeSegment.left),
+  const parts = [chunk("нить-основа", { left: "10px", width: px(r.baseWidth) })];
+  if (r.modeSegment) {
+    const color = r.modeSegment.lit ? r.color : "var(--нить-край)";
+    parts.push(
+      chunk("нить-режим", {
+        left: px(r.modeSegment.left),
         top: "21px",
         height: "2px",
-        width: пикс(р.modeSegment.width),
-        background: `repeating-linear-gradient(90deg, ${цвет} 0 4px, transparent 4px 8px)`,
+        width: px(r.modeSegment.width),
+        background: `repeating-linear-gradient(90deg, ${color} 0 4px, transparent 4px 8px)`,
       }),
     );
   }
-  if (р.litWidth > 0) {
-    части.push(
-      кусок("нить-свет", { left: "10px", top: пикс(р.litTop), height: пикс(р.litHeight), width: пикс(р.litWidth), background: р.litFill }),
+  if (r.litWidth > 0) {
+    parts.push(
+      chunk("нить-свет", { left: "10px", top: px(r.litTop), height: px(r.litHeight), width: px(r.litWidth), background: r.litFill }),
     );
   }
-  if (р.particles.length) {
-    const поток = кусок("нить-поток", { left: "10px", width: пикс(р.flowWidth) });
-    for (const ч of р.particles) {
-      поток.append(кусок("нить-частица", { animationDuration: ч.dur, animationDelay: ч.delay, boxShadow: `0 0 6px ${р.color}` }));
+  if (r.particles.length) {
+    const flow = chunk("нить-поток", { left: "10px", width: px(r.flowWidth) });
+    for (const ch of r.particles) {
+      flow.append(chunk("нить-частица", { animationDuration: ch.dur, animationDelay: ch.delay, boxShadow: `0 0 6px ${r.color}` }));
     }
-    части.push(поток);
+    parts.push(flow);
   }
-  if (р.fork) {
-    const ветви = кусок("нить-ветвь-обёртка", { left: пикс(р.forkLeft) });
-    for (const в of р.branches) {
-      const ветвь = кусок("нить-ветвь", {
-        transform: `rotate(${в.angle})`,
-        background: `linear-gradient(90deg, ${р.color}, color-mix(in srgb, var(--vscode-foreground) 12%, transparent))`,
+  if (r.fork) {
+    const forks = chunk("нить-ветвь-обёртка", { left: px(r.forkLeft) });
+    for (const v of r.branches) {
+      const fork = chunk("нить-ветвь", {
+        transform: `rotate(${v.angle})`,
+        background: `linear-gradient(90deg, ${r.color}, color-mix(in srgb, var(--vscode-foreground) 12%, transparent))`,
       });
-      ветвь.append(
-        кусок("нить-частица", { animationDelay: в.delay, boxShadow: `0 0 6px ${р.color}` }),
-        кусок("нить-субагент", { background: р.tipColor, boxShadow: `0 0 8px ${р.tipColor}`, animationDelay: в.delay }),
+      fork.append(
+        chunk("нить-частица", { animationDelay: v.delay, boxShadow: `0 0 6px ${r.color}` }),
+        chunk("нить-субагент", { background: r.tipColor, boxShadow: `0 0 8px ${r.tipColor}`, animationDelay: v.delay }),
       );
-      ветви.append(ветвь);
+      forks.append(fork);
     }
-    части.push(ветви);
+    parts.push(forks);
   }
-  if (р.defaultLeft != null) {
-    const метка = кусок("нить-по-умолчанию", { left: пикс(р.defaultLeft) });
-    метка.title = "Уровень по умолчанию";
-    части.push(метка);
+  if (r.defaultLeft != null) {
+    const label = chunk("нить-по-умолчанию", { left: px(r.defaultLeft) });
+    label.title = "Уровень по умолчанию";
+    parts.push(label);
   }
-  for (const у of р.nodes) {
-    const узел = элемент("button", "нить-узел");
-    узел.style.left = пикс(у.left);
-    узел.setAttribute("role", "radio");
-    узел.setAttribute("aria-checked", String(у.current));
-    узел.setAttribute("aria-label", у.name);
-    узел.dataset.уровень = у.id;
-    узел.title = `${у.name}. ${у.tip}`;
-    узел.tabIndex = у.current || (!р.nodes.some((н) => н.current) && у === р.nodes[0]) ? 0 : -1;
-    узел.append(
-      кусок("", {
-        width: пикс(у.size),
-        height: пикс(у.size),
+  for (const u of r.nodes) {
+    const node = makeEl("button", "нить-узел");
+    node.style.left = px(u.left);
+    node.setAttribute("role", "radio");
+    node.setAttribute("aria-checked", String(u.current));
+    node.setAttribute("aria-label", u.name);
+    node.dataset.level = u.id;
+    node.title = `${u.name}. ${u.tip}`;
+    node.tabIndex = u.current || (!r.nodes.some((n) => n.current) && u === r.nodes[0]) ? 0 : -1;
+    node.append(
+      chunk("", {
+        width: px(u.size),
+        height: px(u.size),
         boxSizing: "border-box",
-        background: у.fill,
-        border: у.border,
-        boxShadow: у.glow,
+        background: u.fill,
+        border: u.border,
+        boxShadow: u.glow,
       }),
     );
-    узел.addEventListener("click", () => выбратьУровень(агент, модель, у.id));
-    части.push(узел);
+    node.addEventListener("click", () => selectLevel(agent, model, u.id));
+    parts.push(node);
   }
-  if (р.ringLeft != null) {
-    const кольца = кусок("нить-кольцо-обёртка", { left: пикс(р.ringLeft) });
-    кольца.append(кусок("нить-кольцо", { borderColor: р.color, animationDuration: р.ringDur }));
-    if (р.deep) кольца.append(кусок("нить-кольцо", { borderColor: р.color, animationDuration: р.ringDur, animationDelay: р.ringDelay }));
-    части.push(кольца);
+  if (r.ringLeft != null) {
+    const rings = chunk("нить-кольцо-обёртка", { left: px(r.ringLeft) });
+    rings.append(chunk("нить-кольцо", { borderColor: r.color, animationDuration: r.ringDur }));
+    if (r.deep) rings.append(chunk("нить-кольцо", { borderColor: r.color, animationDuration: r.ringDur, animationDelay: r.ringDelay }));
+    parts.push(rings);
   }
-  полоса.replaceChildren(...части);
+  strip.replaceChildren(...parts);
 }
 
 /**
  * Узел, совпадающий с умолчанием из каталога, сохраняется как «по умолчанию»:
  * флаг агенту не передаётся, решает сам агент — как было до выбора.
  */
-function выбратьУровень(агент, модель, id) {
-  const effort = модель?.defaultEffort && id === модель.defaultEffort ? "" : id;
-  выбрать(агент, { model: МОДЕЛИ[агент].choice.model, effort });
-  $(`нить-${агент}`).querySelector(`[data-уровень="${id}"]`)?.focus();
+function selectLevel(agent, model, id) {
+  const effort = model?.defaultEffort && id === model.defaultEffort ? "" : id;
+  select(agent, { model: MODELS[agent].choice.model, effort });
+  $(`нить-${agent}`).querySelector(`[data-level="${id}"]`)?.focus();
 }
 
-function выбрать(агент, выбор) {
-  МОДЕЛИ[агент].choice = выбор;
-  показатьМодели();
-  vscode.postMessage({ type: "setModel", agent: агент, model: выбор.model, effort: выбор.effort });
+function select(agent, choice) {
+  MODELS[agent].choice = choice;
+  showModels();
+  vscode.postMessage({ type: "setModel", agent: agent, model: choice.model, effort: choice.effort });
 }
 
-function принятьМодели(д) {
-  const м = МОДЕЛИ[д.agent];
-  if (!м) return;
-  if (д.options) м.options = д.options;
-  if (д.choice) м.choice = д.choice;
-  м.error = д.error ?? "";
-  if (д.error) спискиЗапрошены = false;
-  показатьМодели();
+function receiveModels(d) {
+  const m = MODELS[d.agent];
+  if (!m) return;
+  if (d.options) m.options = d.options;
+  if (d.choice) m.choice = d.choice;
+  m.error = d.error ?? "";
+  if (d.error) listsRequested = false;
+  showModels();
 }
 
-for (const агент of ["claude", "codex"]) {
-  $(`модель-${агент}`).addEventListener("change", (событие) => {
-    const м = МОДЕЛИ[агент];
-    const модель = событие.target.value;
-    const уровни = м.options?.find((о) => о.id === модель)?.efforts ?? [];
+for (const agent of ["claude", "codex"]) {
+  $(`модель-${agent}`).addEventListener("change", (event) => {
+    const m = MODELS[agent];
+    const model = event.target.value;
+    const levels = m.options?.find((o) => o.id === model)?.efforts ?? [];
     // Уровень, которого у новой модели нет, сбрасывается, а не уходит агенту.
-    выбрать(агент, { model: модель, effort: уровни.includes(м.choice.effort) ? м.choice.effort : "" });
+    select(agent, { model: model, effort: levels.includes(m.choice.effort) ? m.choice.effort : "" });
   });
   // Стрелки двигают выбор по нити, как в любой группе переключателей.
-  $(`нить-${агент}`).addEventListener("keydown", (событие) => {
-    if (событие.key !== "ArrowLeft" && событие.key !== "ArrowRight") return;
-    const узлы = [...$(`нить-${агент}`).querySelectorAll(".нить-узел")];
-    const сейчас = узлы.findIndex((у) => у.getAttribute("aria-checked") === "true");
-    const шаг = событие.key === "ArrowRight" ? 1 : -1;
-    const следующий = узлы[Math.min(узлы.length - 1, Math.max(0, (сейчас < 0 ? 0 : сейчас) + шаг))];
-    if (!следующий) return;
-    событие.preventDefault();
-    следующий.click();
+  $(`нить-${agent}`).addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    const nodes = [...$(`нить-${agent}`).querySelectorAll(".нить-узел")];
+    const currentIndex = nodes.findIndex((u) => u.getAttribute("aria-checked") === "true");
+    const step = event.key === "ArrowRight" ? 1 : -1;
+    const next = nodes[Math.min(nodes.length - 1, Math.max(0, (currentIndex < 0 ? 0 : currentIndex) + step))];
+    if (!next) return;
+    event.preventDefault();
+    next.click();
   });
 }
 
-for (const агент of ["claude", "codex"]) {
+for (const agent of ["claude", "codex"]) {
   // Подтверждение спрашивает расширение: новая сессия — необратимое забывание.
-  $(`новая-сессия-${агент}`).addEventListener("click", () => vscode.postMessage({ type: "newSession", agent: агент }));
-  $(`нить-сброс-${агент}`).addEventListener("click", () => {
-    выбрать(агент, { model: МОДЕЛИ[агент].choice.model, effort: "" });
+  $(`новая-сессия-${agent}`).addEventListener("click", () => vscode.postMessage({ type: "newSession", agent: agent }));
+  $(`нить-сброс-${agent}`).addEventListener("click", () => {
+    select(agent, { model: MODELS[agent].choice.model, effort: "" });
   });
 }
 
 $("без-вопросов").addEventListener("click", () => {
-  режимClaude = режимClaude === "bypassPermissions" ? "default" : "bypassPermissions";
-  показатьРежим();
-  показатьМодели();
-  vscode.postMessage({ type: "setPermissionMode", mode: режимClaude });
+  claudeMode = claudeMode === "bypassPermissions" ? "default" : "bypassPermissions";
+  showMode();
+  showModels();
+  vscode.postMessage({ type: "setPermissionMode", mode: claudeMode });
 });
 
 $("модели-кнопка").addEventListener("click", () => {
-  const панель = $("модели-панель");
-  панель.hidden = !панель.hidden;
-  $("модели-кнопка").setAttribute("aria-expanded", String(!панель.hidden));
-  if (!панель.hidden && !спискиЗапрошены) {
-    спискиЗапрошены = true;
+  const panel = $("модели-панель");
+  panel.hidden = !panel.hidden;
+  $("модели-кнопка").setAttribute("aria-expanded", String(!panel.hidden));
+  if (!panel.hidden && !listsRequested) {
+    listsRequested = true;
     vscode.postMessage({ type: "listModels" });
   }
-  показатьМодели();
+  showModels();
 });
 // Ширина нити зависит от ширины панели.
 window.addEventListener("resize", () => {
-  if (!$("модели-панель").hidden) показатьМодели();
+  if (!$("модели-панель").hidden) showModels();
 });
-показатьРежим();
-показатьМодели();
+showMode();
+showModels();
 
 // --- Прочее ------------------------------------------------------------------------
 
-window.addEventListener("message", (событие) => {
-  const д = событие.data;
-  if (д?.type === "event") показатьСобытие(д.событие, д.история === true);
-  else if (д?.type === "state") показатьСостояние(д.состояние);
-  else if (д?.type === "models") принятьМодели(д);
-  else if (д?.type === "permissions") принятьРежим(д.mode);
+window.addEventListener("message", (event) => {
+  const d = event.data;
+  if (d?.type === "event") showEvent(d.event, d.history === true);
+  else if (d?.type === "state") showState(d.state);
+  else if (d?.type === "models") receiveModels(d);
+  else if (d?.type === "permissions") receiveMode(d.mode);
 });
 
-function отправить() {
-  const текст = ввод.value.trim();
-  if (!текст) return;
+function send() {
+  const text = inputBox.value.trim();
+  if (!text) return;
   // Своё сообщение человек хочет видеть: беседа снова следует за концом.
-  вниз(true);
-  vscode.postMessage({ type: "send", text: текст, route: маршрут });
-  ввод.value = "";
-  подогнатьВвод();
+  scrollToBottom(true);
+  vscode.postMessage({ type: "send", text: text, route: route });
+  inputBox.value = "";
+  fitInput();
 }
 
 /** Поле растёт с текстом до 40% высоты панели, дальше — прокрутка внутри. */
-function подогнатьВвод() {
-  ввод.style.height = "auto";
-  ввод.style.height = `${Math.min(ввод.scrollHeight, Math.round(window.innerHeight * 0.4))}px`;
+function fitInput() {
+  inputBox.style.height = "auto";
+  inputBox.style.height = `${Math.min(inputBox.scrollHeight, Math.round(window.innerHeight * 0.4))}px`;
 }
-ввод.addEventListener("input", подогнатьВвод);
+inputBox.addEventListener("input", fitInput);
 
 // Webview сам по ссылкам не переходит: адрес открывает расширение.
-беседа.addEventListener("click", (событие) => {
-  const ссылка = событие.target.closest?.(".разметка a[href]");
-  if (!ссылка) return;
-  событие.preventDefault();
-  vscode.postMessage({ type: "openLink", href: ссылка.getAttribute("href") });
+conversation.addEventListener("click", (event) => {
+  const link = event.target.closest?.(".разметка a[href]");
+  if (!link) return;
+  event.preventDefault();
+  vscode.postMessage({ type: "openLink", href: link.getAttribute("href") });
 });
-$("отправить").addEventListener("click", отправить);
-ввод.addEventListener("keydown", (е) => {
-  if (е.key === "Enter" && (е.ctrlKey || е.metaKey)) {
-    е.preventDefault();
-    отправить();
+$("отправить").addEventListener("click", send);
+inputBox.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    send();
   }
 });
 $("отпустить").addEventListener("click", () => vscode.postMessage({ type: "release" }));
 $("стоп").addEventListener("click", () => vscode.postMessage({ type: "stopAll" }));
 $("прервать").addEventListener("click", () => vscode.postMessage({ type: "interrupt" }));
-$("авто").addEventListener("change", (е) => vscode.postMessage({ type: "setAuto", on: е.target.checked }));
+$("авто").addEventListener("change", (e) => vscode.postMessage({ type: "setAuto", on: e.target.checked }));
 $("диагностика-кнопка").addEventListener("click", () => {
-  const панель = $("диагностика");
-  панель.hidden = !панель.hidden;
-  $("диагностика-кнопка").setAttribute("aria-expanded", String(!панель.hidden));
+  const panel = $("диагностика");
+  panel.hidden = !panel.hidden;
+  $("диагностика-кнопка").setAttribute("aria-expanded", String(!panel.hidden));
 });
 
 // История и состояние приходят только после этого сигнала.

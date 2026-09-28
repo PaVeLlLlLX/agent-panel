@@ -14,8 +14,8 @@ import Module from "node:module";
 const require_ = createRequire(import.meta.url);
 
 test("расширение активируется и регистрирует команды из манифеста", () => {
-  const зарегистрированы = [];
-  const заглушка = {
+  const registered = [];
+  const stub = {
     window: {
       createWebviewPanel: () => ({
         webview: { html: "", postMessage: () => {}, onDidReceiveMessage: () => {}, asWebviewUri: (u) => u, cspSource: "vscode-resource:" },
@@ -25,56 +25,56 @@ test("расширение активируется и регистрирует 
       showErrorMessage: () => {},
     },
     workspace: {
-      getConfiguration: () => ({ get: (_к, по) => по }),
+      getConfiguration: () => ({ get: (_key, fallback) => fallback }),
       workspaceFolders: undefined,
       fs: { createDirectory: async () => {} },
     },
     commands: {
-      registerCommand: (имя) => {
-        зарегистрированы.push(имя);
+      registerCommand: (name) => {
+        registered.push(name);
         return { dispose() {} };
       },
     },
-    Uri: { joinPath: (...ч) => ч.join("/") },
+    Uri: { joinPath: (...ch) => ch.join("/") },
     ViewColumn: { Beside: 2 },
   };
 
   // Подмена require для модуля vscode.
-  const исходный = Module._load;
-  Module._load = function (запрос, ...остальное) {
-    if (запрос === "vscode") return заглушка;
-    return исходный.call(this, запрос, ...остальное);
+  const original = Module._load;
+  Module._load = function (request, ...rest) {
+    if (request === "vscode") return stub;
+    return original.call(this, request, ...rest);
   };
   try {
-    const расширение = require_("../out/extension.js");
-    assert.equal(typeof расширение.activate, "function");
-    assert.equal(typeof расширение.deactivate, "function");
-    расширение.activate({
+    const extensionDir = require_("../out/extension.js");
+    assert.equal(typeof extensionDir.activate, "function");
+    assert.equal(typeof extensionDir.deactivate, "function");
+    extensionDir.activate({
       subscriptions: [],
       globalStorageUri: { fsPath: "." },
       extensionUri: ".",
     });
   } finally {
-    Module._load = исходный;
+    Module._load = original;
   }
 
-  const манифест = JSON.parse(readFileSync("package.json", "utf8"));
-  const объявлены = манифест.contributes.commands.map((к) => к.command);
+  const manifest = JSON.parse(readFileSync("package.json", "utf8"));
+  const declared = manifest.contributes.commands.map((k) => k.command);
   assert.deepEqual(
-    зарегистрированы.sort(),
-    objявлены_sorted(объявлены),
+    registered.sort(),
+    sortedDeclared(declared),
     "все объявленные команды должны быть зарегистрированы, иначе в палитре будет «command not found»",
   );
 });
 
-function objявлены_sorted(а) {
-  return [...а].sort();
+function sortedDeclared(a) {
+  return [...a].sort();
 }
 
 test("точка входа манифеста указывает на существующий файл", () => {
-  const манифест = JSON.parse(readFileSync("package.json", "utf8"));
+  const manifest = JSON.parse(readFileSync("package.json", "utf8"));
   assert.doesNotThrow(
-    () => require_.resolve(`../${манифест.main.replace(/^\.\//, "")}`),
-    `main из манифеста не разрешается: ${манифест.main}`,
+    () => require_.resolve(`../${manifest.main.replace(/^\.\//, "")}`),
+    `main из манифеста не разрешается: ${manifest.main}`,
   );
 });

@@ -44,7 +44,7 @@
 import { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, Interface } from "node:readline";
 import { sameChoice } from "../models.js";
-import { запуститьПроцесс, остановитьДерево } from "./process.js";
+import { spawnProcess, killTree } from "./process.js";
 import {
   Adapter,
   AgentPrompt,
@@ -99,50 +99,50 @@ export interface ClaudeOptions {
  * 2.1.220: `models[] { value, displayName, description, supportsEffort,
  * supportedEffortLevels }`. Вариант "default" становится пунктом «по умолчанию».
  */
-function каталогClaude(модели: unknown): ModelOption[] {
-  const список = (Array.isArray(модели) ? модели : []) as Record<string, unknown>[];
-  const уровни = (м: Record<string, unknown>): string[] =>
-    м["supportsEffort"] === true && Array.isArray(м["supportedEffortLevels"])
-      ? (м["supportedEffortLevels"] as unknown[]).map(String)
+function claudeCatalog(models: unknown): ModelOption[] {
+  const list = (Array.isArray(models) ? models : []) as Record<string, unknown>[];
+  const levels = (m: Record<string, unknown>): string[] =>
+    m["supportsEffort"] === true && Array.isArray(m["supportedEffortLevels"])
+      ? (m["supportedEffortLevels"] as unknown[]).map(String)
       : [];
-  const поУмолчанию = список.find((м) => м["value"] === "default");
-  const имяУмолчания = поУмолчанию ? String(поУмолчанию["description"] ?? "").split(" · ")[0] : "";
+  const isDefault = list.find((m) => m["value"] === "default");
+  const defaultName = isDefault ? String(isDefault["description"] ?? "").split(" · ")[0] : "";
   return [
     {
       id: "",
-      label: имяУмолчания ? `по умолчанию (${имяУмолчания})` : "по умолчанию",
-      description: String(поУмолчанию?.["description"] ?? ""),
-      efforts: поУмолчанию ? уровни(поУмолчанию) : [],
+      label: defaultName ? `по умолчанию (${defaultName})` : "по умолчанию",
+      description: String(isDefault?.["description"] ?? ""),
+      efforts: isDefault ? levels(isDefault) : [],
     },
-    ...список
-      .filter((м) => typeof м["value"] === "string" && м["value"] !== "default")
-      .map((м) => ({
-        id: String(м["value"]),
-        label: String(м["displayName"] ?? м["value"]),
-        description: String(м["description"] ?? ""),
-        efforts: уровни(м),
+    ...list
+      .filter((m) => typeof m["value"] === "string" && m["value"] !== "default")
+      .map((m) => ({
+        id: String(m["value"]),
+        label: String(m["displayName"] ?? m["value"]),
+        description: String(m["description"] ?? ""),
+        efforts: levels(m),
       })),
   ];
 }
 
-const ПОДПИСЬ_БЕЗ_ВОПРОСОВ = "разрешено панелью: режим «без вопросов»";
+const NO_QUESTIONS_NOTE = "разрешено панелью: режим «без вопросов»";
 
 /** Запрос разрешения, на который человек ещё не ответил. */
-interface ОткрытыйЗапрос {
+interface OpenRequest {
   /** Процесс, задавший вопрос: ответ в перезапущенный процесс не имеет смысла. */
-  readonly процесс: ChildProcessWithoutNullStreams;
-  readonly вход: unknown;
-  readonly вызов: string | undefined;
+  readonly proc: ChildProcessWithoutNullStreams;
+  readonly input: unknown;
+  readonly call: string | undefined;
   /** Предложения addRules, переписанные на destination "session". */
-  readonly правила: readonly Record<string, unknown>[];
+  readonly rules: readonly Record<string, unknown>[];
 }
 
 /** Суть ввода инструмента для человека: команда, путь или весь ввод. */
-function сутьВвода(вход: unknown): string {
-  const запись = (вход ?? {}) as Record<string, unknown>;
-  if (typeof запись["command"] === "string") return запись["command"];
-  if (typeof запись["file_path"] === "string") return запись["file_path"];
-  return JSON.stringify(запись, null, 1);
+function inputGist(input: unknown): string {
+  const record = (input ?? {}) as Record<string, unknown>;
+  if (typeof record["command"] === "string") return record["command"];
+  if (typeof record["file_path"] === "string") return record["file_path"];
+  return JSON.stringify(record, null, 1);
 }
 
 /**
@@ -150,32 +150,32 @@ function сутьВвода(вход: unknown): string {
  * Форма снята с настоящего result живого прогона. Отказы, данные человеком
  * в панели, пропускаются: это решение, а не блокировка.
  */
-function разобратьОтказы(значение: unknown, решённыеЧеловеком: Set<string>): string[] {
-  if (!Array.isArray(значение)) return [];
-  const отказы: string[] = [];
-  for (const о of значение) {
-    const запись = (о ?? {}) as { tool_name?: unknown; tool_use_id?: unknown; tool_input?: unknown };
-    if (typeof запись.tool_use_id === "string" && решённыеЧеловеком.delete(запись.tool_use_id)) continue;
-    отказы.push(clamp(`${String(запись.tool_name ?? "?")}: ${сутьВвода(запись.tool_input)}`, 300));
+function parseDenials(value: unknown, decidedByHuman: Set<string>): string[] {
+  if (!Array.isArray(value)) return [];
+  const denials: string[] = [];
+  for (const o of value) {
+    const record = (o ?? {}) as { tool_name?: unknown; tool_use_id?: unknown; tool_input?: unknown };
+    if (typeof record.tool_use_id === "string" && decidedByHuman.delete(record.tool_use_id)) continue;
+    denials.push(clamp(`${String(record.tool_name ?? "?")}: ${inputGist(record.tool_input)}`, 300));
   }
-  return отказы;
+  return denials;
 }
 
 /** Правила «на сессию» из permission_suggestions: только addRules. */
-function правилаСессии(предложения: unknown): Record<string, unknown>[] {
-  if (!Array.isArray(предложения)) return [];
-  return предложения
-    .filter((п): п is Record<string, unknown> => {
-      const запись = (п ?? {}) as Record<string, unknown>;
-      return запись["type"] === "addRules" && Array.isArray(запись["rules"]);
+function sessionRules(suggestions: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(suggestions)) return [];
+  return suggestions
+    .filter((p): p is Record<string, unknown> => {
+      const record = (p ?? {}) as Record<string, unknown>;
+      return record["type"] === "addRules" && Array.isArray(record["rules"]);
     })
-    .map((п) => ({ ...п, destination: "session" }));
+    .map((p) => ({ ...p, destination: "session" }));
 }
 
 /** «Bash(mkdir x *)» — как правило видно человеку на кнопке. */
-function подписиПравил(правила: readonly Record<string, unknown>[]): string[] {
-  return правила.flatMap((п) =>
-    (п["rules"] as { toolName?: unknown; ruleContent?: unknown }[]).map((r) =>
+function ruleLabels(rules: readonly Record<string, unknown>[]): string[] {
+  return rules.flatMap((p) =>
+    (p["rules"] as { toolName?: unknown; ruleContent?: unknown }[]).map((r) =>
       typeof r.ruleContent === "string" && r.ruleContent
         ? `${String(r.toolName ?? "?")}(${r.ruleContent})`
         : String(r.toolName ?? "?"),
@@ -189,47 +189,47 @@ function подписиПравил(правила: readonly Record<string, unkn
  * рецензенту JSON-строкой с экранированными переводами строк. Прочие блоки
  * (изображения) остаются JSON: выдумывать им текст нельзя.
  */
-export function текстРезультата(содержимое: unknown): string {
-  if (typeof содержимое === "string") return содержимое;
-  if (!Array.isArray(содержимое)) return JSON.stringify(содержимое ?? null);
-  return содержимое
-    .map((блок: unknown) => {
-      const б = блок as Record<string, unknown> | null;
-      return б && б["type"] === "text" && typeof б["text"] === "string" ? б["text"] : JSON.stringify(блок);
+export function toolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return JSON.stringify(content ?? null);
+  return content
+    .map((block: unknown) => {
+      const b = block as Record<string, unknown> | null;
+      return b && b["type"] === "text" && typeof b["text"] === "string" ? b["text"] : JSON.stringify(block);
     })
     .join(String.fromCharCode(10));
 }
 
 /** Чей субагент: parent_tool_use_id записи, если она не от самого Claude. */
-function родительИз(запись: Record<string, unknown>): { parentCallId?: string } {
-  const id = запись["parent_tool_use_id"];
+function parentFrom(record: Record<string, unknown>): { parentCallId?: string } {
+  const id = record["parent_tool_use_id"];
   return typeof id === "string" && id ? { parentCallId: id } : {};
 }
 
 /** Токены одного result: вход = без кеша + чтение кеша + запись кеша. */
-function расходClaude(usage: unknown): TurnUsage {
-  const у = (usage ?? {}) as Record<string, unknown>;
-  const число = (ключ: string) => (typeof у[ключ] === "number" ? (у[ключ] as number) : 0);
-  const изКеша = число("cache_read_input_tokens");
+function toTurnUsage(usage: unknown): TurnUsage {
+  const u = (usage ?? {}) as Record<string, unknown>;
+  const num = (key: string) => (typeof u[key] === "number" ? (u[key] as number) : 0);
+  const fromCache = num("cache_read_input_tokens");
   return {
-    input: число("input_tokens") + изКеша + число("cache_creation_input_tokens"),
-    cached: изКеша,
-    output: число("output_tokens"),
+    input: num("input_tokens") + fromCache + num("cache_creation_input_tokens"),
+    cached: fromCache,
+    output: num("output_tokens"),
   };
 }
 
 export class ClaudeAdapter implements Adapter {
   readonly id = "claude" as const;
 
-  #процесс: ChildProcessWithoutNullStreams | undefined;
-  #строки: Interface | undefined;
-  #сессия: string | undefined;
-  #занят = false;
-  #ходИдёт: string | undefined;
-  readonly #вызовы = new Map<string, string>();
-  readonly #запросы = new Map<string, ОткрытыйЗапрос>();
+  #proc: ChildProcessWithoutNullStreams | undefined;
+  #lines: Interface | undefined;
+  #session: string | undefined;
+  #busy = false;
+  #turnInProgress: string | undefined;
+  readonly #calls = new Map<string, string>();
+  readonly #requests = new Map<string, OpenRequest>();
   /** tool_use_id вызовов, отклонённых человеком: в итоге хода это не отказ без спроса. */
-  readonly #отклонённыеЧеловеком = new Set<string>();
+  readonly #deniedByHuman = new Set<string>();
   /**
    * Ход с фоновыми субагентами (живая трасса Claude Code 2.1.220, 28.09):
    * result приходит, пока субагент ещё работает, а после него Claude сам
@@ -238,21 +238,21 @@ export class ClaudeAdapter implements Adapter {
    * ждём. Фоновые Bash (task_type local_bash) ход не держат: сервер,
    * запущенный в фоне, закончить его не дал бы никогда.
    */
-  readonly #субагенты = new Set<string>();
+  readonly #subagents = new Set<string>();
   /**
    * Субагенты запроса без эха — хода самого CLI, начатого раньше сообщения
    * панели. Ход панели они не держат: их итог CLI пришлёт своим запросом
    * после, и он будет самостоятельным (рецензия Codex 28.09).
    */
-  readonly #чужиеСубагенты = new Set<string>();
+  readonly #foreignSubagents = new Set<string>();
   /**
    * Ход, начатый самим Claude без сообщения панели: кончилась фоновая
    * команда, и CLI сам запускает запрос модели (init без send). Пока он идёт,
    * адаптер занят — сообщения панели ждут в очереди координатора.
    */
-  #самостоятельный = false;
+  #autonomous = false;
   /** Что сообщил CLI о последней кончившейся фоновой задаче не-субагенте. */
-  #последняяФоновая: string | undefined;
+  #lastBackground: string | undefined;
   /**
    * Эхо сообщений (--replay-user-messages). CLI повторяет сообщение, когда
    * начинает его запрос, — после init (живая проба 28.09: сообщение, посланное
@@ -261,55 +261,55 @@ export class ClaudeAdapter implements Adapter {
    * когда его init был ещё в пути (рецензия Codex 28.09). Пока эха в этом
    * процессе не было (старый CLI), различения нет — прежнее поведение.
    */
-  #эхоРаботает = false;
-  #ждёмЭха = 0;
-  #запросБезЭха = false;
+  #echoWorks = false;
+  #awaitingEcho = 0;
+  #requestWithoutEcho = false;
   /** Запрос без эха уже отвечал: свой запрос повторяет сообщение раньше ответа модели. */
-  #безЭхаОтвечал = false;
+  #answeredWithoutEcho = false;
   /** В процессе уже был result: стартовый init без сообщения — не ход. */
-  #процессОтвечал = false;
-  #открытыхЗапросов = 0;
-  #ждёмПродолжения = false;
-  #ходДержится = false;
-  #отложенныеОтказы: string[] = [];
-  #срокПродолжения: NodeJS.Timeout | undefined;
+  #processAnswered = false;
+  #openRequests = 0;
+  #awaitingContinuation = false;
+  #turnHeld = false;
+  #deferredDenials: string[] = [];
+  #continueDeadline: NodeJS.Timeout | undefined;
   /** Расход хода — сумма по всем его result; лимит — последнее сведение CLI. */
-  #расходХода: TurnUsage = NO_USAGE;
-  #лимит: LimitInfo | undefined;
+  #turnUsage: TurnUsage = NO_USAGE;
+  #limit: LimitInfo | undefined;
   /** Время последней записи процесса и срок тишины удерживаемого хода. */
-  #последняяЗапись = 0;
-  #срокТишины: NodeJS.Timeout | undefined;
-  readonly #останавливаемые = new WeakSet<object>();
-  readonly #отчитанные = new WeakSet<object>();
+  #lastRecordAt = 0;
+  #silenceDeadline: NodeJS.Timeout | undefined;
+  readonly #stopping = new WeakSet<object>();
+  readonly #reported = new WeakSet<object>();
   /** Выбор человека и выбор, с которым запущен текущий процесс. */
-  #выбор: ModelChoice;
-  #выборПроцесса: ModelChoice | undefined;
+  #choice: ModelChoice;
+  #processChoice: ModelChoice | undefined;
   /** Режим разрешений человека и режим, с которым запущен текущий процесс. */
-  #режим: string;
-  #режимПроцесса: string | undefined;
+  #mode: string;
+  #processMode: string | undefined;
 
   constructor(
-    private readonly опции: ClaudeOptions,
+    private readonly options: ClaudeOptions,
     private readonly sink: EventSink,
   ) {
-    this.#сессия = опции.resumeSessionId;
-    this.#выбор = { model: опции.model ?? "", effort: опции.effort ?? "" };
-    this.#режим = опции.permissionMode || "default";
+    this.#session = options.resumeSessionId;
+    this.#choice = { model: options.model ?? "", effort: options.effort ?? "" };
+    this.#mode = options.permissionMode || "default";
   }
 
   get busy(): boolean {
-    return this.#занят;
+    return this.#busy;
   }
 
   get sessionId(): string | undefined {
-    return this.#сессия;
+    return this.#session;
   }
 
   async start(): Promise<void> {
-    if (this.#процесс) throw new Error("адаптер Claude уже запущен");
-    const источники = this.опции.settingSources ?? "project,local";
-    const аргументы = [
-      ...(this.опции.commandArgs ?? []),
+    if (this.#proc) throw new Error("адаптер Claude уже запущен");
+    const settingSources = this.options.settingSources ?? "project,local";
+    const args = [
+      ...(this.options.commandArgs ?? []),
       "-p",
       "--input-format",
       "stream-json",
@@ -322,85 +322,85 @@ export class ClaudeAdapter implements Adapter {
       "--replay-user-messages",
       "--permission-prompt-tool",
       "stdio",
-      ...(источники ? ["--setting-sources", источники] : []),
-      ...(this.#выбор.model ? ["--model", this.#выбор.model] : []),
-      ...(this.#выбор.effort ? ["--effort", this.#выбор.effort] : []),
-      ...(this.#режим !== "default" ? ["--permission-mode", this.#режим] : []),
+      ...(settingSources ? ["--setting-sources", settingSources] : []),
+      ...(this.#choice.model ? ["--model", this.#choice.model] : []),
+      ...(this.#choice.effort ? ["--effort", this.#choice.effort] : []),
+      ...(this.#mode !== "default" ? ["--permission-mode", this.#mode] : []),
       // Перезапуск после падения или прерывания продолжает ту же сессию.
-      ...(this.#сессия ? ["--resume", this.#сессия] : []),
-      ...(this.опции.extraArgs ?? []),
+      ...(this.#session ? ["--resume", this.#session] : []),
+      ...(this.options.extraArgs ?? []),
     ];
-    const процесс = запуститьПроцесс(this.опции.command, аргументы, this.опции.cwd, this.опции.shell);
-    this.#процесс = процесс;
-    this.#эхоРаботает = false;
-    this.#ждёмЭха = 0;
-    this.#процессОтвечал = false;
-    this.#выборПроцесса = this.#выбор;
-    this.#режимПроцесса = this.#режим;
+    const proc = spawnProcess(this.options.command, args, this.options.cwd, this.options.shell);
+    this.#proc = proc;
+    this.#echoWorks = false;
+    this.#awaitingEcho = 0;
+    this.#processAnswered = false;
+    this.#processChoice = this.#choice;
+    this.#processMode = this.#mode;
 
-    this.#строки = createInterface({ input: процесс.stdout });
-    this.#строки.on("line", (строка) => this.#разобрать(строка));
-    createInterface({ input: процесс.stderr }).on("line", (строка) => {
-      const текст = stripAnsi(строка).trim();
-      if (текст) this.#выдать("diagnostic", "stream", { text: clamp(текст) });
+    this.#lines = createInterface({ input: proc.stdout });
+    this.#lines.on("line", (line) => this.#parse(line));
+    createInterface({ input: proc.stderr }).on("line", (line) => {
+      const text = stripAnsi(line).trim();
+      if (text) this.#emit("diagnostic", "stream", { text: clamp(text) });
     });
-    процесс.stdin.on("error", (беда) => this.#сбойКанала(процесс, беда));
-    процесс.on("error", (беда) => this.#конец(процесс, `Claude не запустился: ${беда.message}`));
-    процесс.on("exit", (код, сигнал) =>
-      this.#конец(
-        процесс,
-        `процесс Claude завершился неожиданно (код ${код}, сигнал ${сигнал}). Подробности — в диагностике.`,
+    proc.stdin.on("error", (err) => this.#channelFailure(proc, err));
+    proc.on("error", (err) => this.#end(proc, `Claude не запустился: ${err.message}`));
+    proc.on("exit", (code, signal) =>
+      this.#end(
+        proc,
+        `процесс Claude завершился неожиданно (код ${code}, сигнал ${signal}). Подробности — в диагностике.`,
       ),
     );
   }
 
-  #конец(процесс: ChildProcessWithoutNullStreams, текстОшибки: string): void {
-    if (this.#процесс === процесс) {
-      this.#процесс = undefined;
-      this.#занят = false;
+  #end(proc: ChildProcessWithoutNullStreams, errorText: string): void {
+    if (this.#proc === proc) {
+      this.#proc = undefined;
+      this.#busy = false;
       // Уведомлений умершего процесса уже не будет: его субагенты и срок
       // ожидания не должны держать или закрывать следующий ход.
-      this.#сброситьФон();
+      this.#resetBackground();
     }
-    this.#закрытьЗапросы(процесс, "запрос закрыт: процесс Claude завершился");
-    if (this.#отчитанные.has(процесс)) return;
-    this.#отчитанные.add(процесс);
-    if (this.#останавливаемые.has(процесс)) {
-      this.#выдать("diagnostic", "stream", { text: "процесс Claude остановлен" });
+    this.#closeRequests(proc, "запрос закрыт: процесс Claude завершился");
+    if (this.#reported.has(proc)) return;
+    this.#reported.add(proc);
+    if (this.#stopping.has(proc)) {
+      this.#emit("diagnostic", "stream", { text: "процесс Claude остановлен" });
     } else {
-      this.#выдать("error", "turn", { text: текстОшибки, failed: true });
+      this.#emit("error", "turn", { text: errorText, failed: true });
     }
   }
 
   /** Канал сломан при живом процессе: ответа не будет — это конец процесса. */
-  #сбойКанала(процесс: ChildProcessWithoutNullStreams, беда: Error): void {
-    this.#конец(процесс, `канал связи с Claude сломан: ${беда.message}`);
-    void остановитьДерево(процесс);
+  #channelFailure(proc: ChildProcessWithoutNullStreams, err: Error): void {
+    this.#end(proc, `канал связи с Claude сломан: ${err.message}`);
+    void killTree(proc);
   }
 
   async send(prompt: AgentPrompt): Promise<void> {
     // Модель и уровень задаются флагами запуска: сменились — процесс
     // перезапускается между ходами, --resume сохраняет контекст сессии.
-    const сменилось =
-      this.#выборПроцесса !== undefined &&
-      (!sameChoice(this.#выборПроцесса, this.#выбор) || this.#режимПроцесса !== this.#режим);
-    if (this.#процесс && !this.#занят && сменилось) {
-      this.#выдать("diagnostic", "stream", {
+    const changed =
+      this.#processChoice !== undefined &&
+      (!sameChoice(this.#processChoice, this.#choice) || this.#processMode !== this.#mode);
+    if (this.#proc && !this.#busy && changed) {
+      this.#emit("diagnostic", "stream", {
         text: "модель, уровень или режим разрешений сменились — перезапуск с той же сессией",
       });
       await this.stop();
     }
-    if (!this.#процесс) await this.start();
-    const процесс = this.#процесс;
-    if (!процесс) throw new Error("адаптер Claude не запущен");
-    const запись = {
+    if (!this.#proc) await this.start();
+    const proc = this.#proc;
+    if (!proc) throw new Error("адаптер Claude не запущен");
+    const record = {
       type: "user",
-      message: { role: "user", content: [{ type: "text", text: this.#оформить(prompt) }] },
+      message: { role: "user", content: [{ type: "text", text: this.#format(prompt) }] },
     };
-    this.#занят = true;
-    this.#открытыхЗапросов = 0;
-    this.#ждёмЭха += 1;
-    this.#записать(процесс, запись);
+    this.#busy = true;
+    this.#openRequests = 0;
+    this.#awaitingEcho += 1;
+    this.#write(proc, record);
   }
 
   /**
@@ -409,14 +409,14 @@ export class ClaudeAdapter implements Adapter {
    * панель. Проба на Claude Code 2.1.220 показала, что setMode
    * bypassPermissions в ответе на запрос повторных запросов не отключает.
    */
-  setPermissionMode(режим: string): void {
-    this.#режим = режим || "default";
-    if (this.#режим !== "bypassPermissions") return;
-    for (const id of [...this.#запросы.keys()]) void this.#решить(id, "allow", ПОДПИСЬ_БЕЗ_ВОПРОСОВ);
+  setPermissionMode(mode: string): void {
+    this.#mode = mode || "default";
+    if (this.#mode !== "bypassPermissions") return;
+    for (const id of [...this.#requests.keys()]) void this.#decide(id, "allow", NO_QUESTIONS_NOTE);
   }
 
-  setModel(выбор: ModelChoice): void {
-    this.#выбор = { model: выбор.model, effort: выбор.effort };
+  setModel(choice: ModelChoice): void {
+    this.#choice = { model: choice.model, effort: choice.effort };
   }
 
   /**
@@ -424,104 +424,104 @@ export class ClaudeAdapter implements Adapter {
    * рабочая сессия от этого не поднимается, модель не вызывается.
    */
   async listModels(): Promise<readonly ModelOption[]> {
-    const источники = this.опции.settingSources ?? "project,local";
-    const процесс = запуститьПроцесс(
-      this.опции.command,
+    const settingSources = this.options.settingSources ?? "project,local";
+    const proc = spawnProcess(
+      this.options.command,
       [
-        ...(this.опции.commandArgs ?? []),
+        ...(this.options.commandArgs ?? []),
         "-p",
         "--input-format",
         "stream-json",
         "--output-format",
         "stream-json",
         "--verbose",
-        ...(источники ? ["--setting-sources", источники] : []),
+        ...(settingSources ? ["--setting-sources", settingSources] : []),
       ],
-      this.опции.cwd,
-      this.опции.shell,
+      this.options.cwd,
+      this.options.shell,
     );
-    процесс.stderr.resume();
-    процесс.stdin.on("error", () => undefined);
-    const строки = createInterface({ input: процесс.stdout });
-    let таймер: NodeJS.Timeout | undefined;
+    proc.stderr.resume();
+    proc.stdin.on("error", () => undefined);
+    const lines = createInterface({ input: proc.stdout });
+    let timer: NodeJS.Timeout | undefined;
     try {
-      const ответ = await new Promise<Record<string, unknown>>((resolve, reject) => {
-        таймер = setTimeout(() => reject(new Error("Claude не прислал список моделей за 30 с")), 30_000);
-        процесс.on("error", reject);
-        процесс.on("exit", (код) => reject(new Error(`Claude завершился, не прислав список моделей (код ${код})`)));
-        строки.on("line", (строка) => {
-          let запись: Record<string, unknown>;
+      const reply = await new Promise<Record<string, unknown>>((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Claude не прислал список моделей за 30 с")), 30_000);
+        proc.on("error", reject);
+        proc.on("exit", (code) => reject(new Error(`Claude завершился, не прислав список моделей (код ${code})`)));
+        lines.on("line", (line) => {
+          let record: Record<string, unknown>;
           try {
-            запись = JSON.parse(строка) as Record<string, unknown>;
+            record = JSON.parse(line) as Record<string, unknown>;
           } catch {
             return;
           }
-          const отклик = запись["response"] as Record<string, unknown> | undefined;
-          if (запись["type"] !== "control_response" || отклик?.["request_id"] !== "models") return;
-          if (отклик["subtype"] === "success") resolve((отклик["response"] ?? {}) as Record<string, unknown>);
-          else reject(new Error(`Claude не отдал список моделей: ${String(отклик["error"] ?? "без причины")}`));
+          const response = record["response"] as Record<string, unknown> | undefined;
+          if (record["type"] !== "control_response" || response?.["request_id"] !== "models") return;
+          if (response["subtype"] === "success") resolve((response["response"] ?? {}) as Record<string, unknown>);
+          else reject(new Error(`Claude не отдал список моделей: ${String(response["error"] ?? "без причины")}`));
         });
-        процесс.stdin.write(
+        proc.stdin.write(
           `${JSON.stringify({ type: "control_request", request_id: "models", request: { subtype: "initialize" } })}\n`,
         );
       });
-      return каталогClaude(ответ["models"]);
+      return claudeCatalog(reply["models"]);
     } finally {
-      clearTimeout(таймер);
-      строки.close();
-      await остановитьДерево(процесс);
+      clearTimeout(timer);
+      lines.close();
+      await killTree(proc);
     }
   }
 
-  async answerApproval(id: string, выбор: ApprovalChoice): Promise<boolean> {
-    return this.#решить(id, выбор);
+  async answerApproval(id: string, choice: ApprovalChoice): Promise<boolean> {
+    return this.#decide(id, choice);
   }
 
-  async #решить(id: string, выбор: ApprovalChoice, подпись?: string): Promise<boolean> {
-    const запрос = this.#запросы.get(id);
-    if (!запрос || запрос.процесс !== this.#процесс) return false;
-    this.#запросы.delete(id);
+  async #decide(id: string, choice: ApprovalChoice, caption?: string): Promise<boolean> {
+    const request = this.#requests.get(id);
+    if (!request || request.proc !== this.#proc) return false;
+    this.#requests.delete(id);
 
-    const наСессию = выбор === "allowSession" && запрос.правила.length > 0;
-    const решение =
-      выбор === "deny"
+    const forSession = choice === "allowSession" && request.rules.length > 0;
+    const decision =
+      choice === "deny"
         ? { behavior: "deny", message: "Отклонено человеком в панели." }
         : {
             behavior: "allow",
-            updatedInput: запрос.вход,
-            ...(наСессию ? { updatedPermissions: запрос.правила } : {}),
+            updatedInput: request.input,
+            ...(forSession ? { updatedPermissions: request.rules } : {}),
           };
-    if (выбор === "deny" && запрос.вызов) this.#отклонённыеЧеловеком.add(запрос.вызов);
+    if (choice === "deny" && request.call) this.#deniedByHuman.add(request.call);
 
-    this.#записать(запрос.процесс, {
+    this.#write(request.proc, {
       type: "control_response",
-      response: { subtype: "success", request_id: id, response: решение },
+      response: { subtype: "success", request_id: id, response: decision },
     });
-    this.#выдать("approval_decided", "turn", {
+    this.#emit("approval_decided", "turn", {
       callId: id,
-      ...(запрос.вызов ? { toolCallId: запрос.вызов } : {}),
+      ...(request.call ? { toolCallId: request.call } : {}),
       text:
-        подпись ??
-        (выбор === "deny"
+        caption ??
+        (choice === "deny"
           ? "отклонено человеком"
-          : наСессию
-            ? `разрешено в этой сессии: ${подписиПравил(запрос.правила).join(", ")}`
+          : forSession
+            ? `разрешено в этой сессии: ${ruleLabels(request.rules).join(", ")}`
             : "разрешено"),
-      raw: решение,
+      raw: decision,
     });
     return true;
   }
 
   /** Кто прислал реплику — часть сообщения: указание человека и замечание рецензента весят по-разному. */
-  #оформить(prompt: AgentPrompt): string {
-    const шапка =
+  #format(prompt: AgentPrompt): string {
+    const heading =
       prompt.from === "human"
         ? "[от человека]"
         : prompt.from === "codex"
           ? "[замечание рецензента Codex]"
           : "[от панели]";
-    const версия = prompt.snapshot ? `\n[версия файлов: ${prompt.snapshot}]` : "";
-    return `${шапка}${версия}\n${prompt.text}`;
+    const version = prompt.snapshot ? `\n[версия файлов: ${prompt.snapshot}]` : "";
+    return `${heading}${version}\n${prompt.text}`;
   }
 
   /**
@@ -535,176 +535,176 @@ export class ClaudeAdapter implements Adapter {
   async forgetSession(): Promise<void> {
     // Сначала забыть, потом останавливать: отправка, пришедшая во время
     // остановки, запустит процесс уже без --resume (рецензия Codex 28.09).
-    this.#сессия = undefined;
+    this.#session = undefined;
     await this.stop();
   }
 
   async stop(): Promise<void> {
-    this.#строки?.close();
-    this.#строки = undefined;
-    const процесс = this.#процесс;
-    this.#процесс = undefined;
-    this.#занят = false;
-    this.#сброситьФон();
-    if (!процесс) return;
-    this.#останавливаемые.add(процесс);
+    this.#lines?.close();
+    this.#lines = undefined;
+    const proc = this.#proc;
+    this.#proc = undefined;
+    this.#busy = false;
+    this.#resetBackground();
+    if (!proc) return;
+    this.#stopping.add(proc);
     // Карточки закрываются сразу: после остановки ответ уже некому отдать,
     // а открытая карточка звала бы человека нажимать бесполезную кнопку.
-    this.#закрытьЗапросы(процесс, "запрос закрыт: процесс Claude остановлен");
-    await остановитьДерево(процесс);
+    this.#closeRequests(proc, "запрос закрыт: процесс Claude остановлен");
+    await killTree(proc);
   }
 
-  #закрытьЗапросы(процесс: ChildProcessWithoutNullStreams, причина: string): void {
-    for (const [id, запрос] of this.#запросы) {
-      if (запрос.процесс !== процесс) continue;
-      this.#запросы.delete(id);
-      this.#выдать("approval_decided", "turn", {
+  #closeRequests(proc: ChildProcessWithoutNullStreams, reason: string): void {
+    for (const [id, request] of this.#requests) {
+      if (request.proc !== proc) continue;
+      this.#requests.delete(id);
+      this.#emit("approval_decided", "turn", {
         callId: id,
-        ...(запрос.вызов ? { toolCallId: запрос.вызов } : {}),
-        text: причина,
+        ...(request.call ? { toolCallId: request.call } : {}),
+        text: reason,
       });
     }
   }
 
-  #записать(процесс: ChildProcessWithoutNullStreams, запись: unknown): void {
-    процесс.stdin.write(`${JSON.stringify(запись)}\n`, (беда) => {
-      if (беда) this.#сбойКанала(процесс, беда);
+  #write(proc: ChildProcessWithoutNullStreams, record: unknown): void {
+    proc.stdin.write(`${JSON.stringify(record)}\n`, (err) => {
+      if (err) this.#channelFailure(proc, err);
     });
   }
 
-  #разобрать(строка: string): void {
-    const обрезанная = строка.trim();
-    if (!обрезанная) return;
-    this.#последняяЗапись = Date.now();
-    let запись: Record<string, unknown>;
+  #parse(line: string): void {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    this.#lastRecordAt = Date.now();
+    let record: Record<string, unknown>;
     try {
-      запись = JSON.parse(обрезанная) as Record<string, unknown>;
+      record = JSON.parse(trimmed) as Record<string, unknown>;
     } catch {
-      this.#выдать("diagnostic", "stream", { text: clamp(`строка вне протокола: ${stripAnsi(обрезанная)}`) });
+      this.#emit("diagnostic", "stream", { text: clamp(`строка вне протокола: ${stripAnsi(trimmed)}`) });
       return;
     }
 
-    if (typeof запись["session_id"] === "string" && запись["session_id"] !== this.#сессия) {
+    if (typeof record["session_id"] === "string" && record["session_id"] !== this.#session) {
       // Идентификатор приходит асинхронно, уже после start().
-      this.#сессия = запись["session_id"];
-      this.опции.onSessionId?.(this.#сессия);
+      this.#session = record["session_id"];
+      this.options.onSessionId?.(this.#session);
     }
 
-    const вид = запись["type"];
-    if (вид === "system" && запись["subtype"] === "init") {
+    const kind = record["type"];
+    if (kind === "system" && record["subtype"] === "init") {
       // Начало запроса модели: первого на сообщение или итогового после субагентов.
       // Без сообщения панели и вне удерживаемого хода — Claude начал ход сам.
-      if (!this.#занят) {
-        if (this.#процессОтвечал) this.#начатьСамостоятельный();
-      } else if (!this.#ходДержится && this.#эхоРаботает && this.#ждёмЭха > 0) {
-        this.#запросБезЭха = true;
-        this.#безЭхаОтвечал = false;
+      if (!this.#busy) {
+        if (this.#processAnswered) this.#startAutonomous();
+      } else if (!this.#turnHeld && this.#echoWorks && this.#awaitingEcho > 0) {
+        this.#requestWithoutEcho = true;
+        this.#answeredWithoutEcho = false;
       }
-      this.#открытыхЗапросов += 1;
-      this.#ждёмПродолжения = false;
-      this.#отменитьСрок();
-      this.#выдать("diagnostic", "stream", {
-        text: `сессия ${String(запись["session_id"]).slice(0, 8)}, модель ${String(запись["model"])}`,
-        raw: запись,
+      this.#openRequests += 1;
+      this.#awaitingContinuation = false;
+      this.#cancelDeadline();
+      this.#emit("diagnostic", "stream", {
+        text: `сессия ${String(record["session_id"]).slice(0, 8)}, модель ${String(record["model"])}`,
+        raw: record,
       });
-    } else if (вид === "system") {
-      this.#задача(запись);
-    } else if (вид === "rate_limit_event") {
-      const о = (запись["rate_limit_info"] ?? {}) as Record<string, unknown>;
-      this.#лимит = {
-        ...(typeof о["status"] === "string" ? { status: о["status"] } : {}),
-        ...(typeof о["rateLimitType"] === "string" ? { window: о["rateLimitType"] } : {}),
-        ...(typeof о["resetsAt"] === "number" ? { resetsAt: о["resetsAt"] * 1000 } : {}),
+    } else if (kind === "system") {
+      this.#task(record);
+    } else if (kind === "rate_limit_event") {
+      const o = (record["rate_limit_info"] ?? {}) as Record<string, unknown>;
+      this.#limit = {
+        ...(typeof o["status"] === "string" ? { status: o["status"] } : {}),
+        ...(typeof o["rateLimitType"] === "string" ? { window: o["rateLimitType"] } : {}),
+        ...(typeof o["resetsAt"] === "number" ? { resetsAt: o["resetsAt"] * 1000 } : {}),
       };
-    } else if (вид === "stream_event") {
+    } else if (kind === "stream_event") {
       // Эхо своего запроса приходит раньше первого stream_event (замер 28.09).
-      if (this.#запросБезЭха) this.#безЭхаОтвечал = true;
-      this.#дельта(запись);
-    } else if (вид === "assistant") {
-      if (this.#запросБезЭха) this.#безЭхаОтвечал = true;
-      this.#блокиАссистента(запись);
-    } else if (вид === "user" && запись["isReplay"] === true) {
-      this.#эхоРаботает = true;
-      this.#ждёмЭха = Math.max(0, this.#ждёмЭха - 1);
-      this.#запросБезЭха = false;
-    } else if (вид === "user") {
-      this.#блокиПользователя(запись);
-    } else if (вид === "control_request") {
-      this.#запросАгента(запись);
-    } else if (вид === "result" && this.#запросБезЭха && (запись["is_error"] !== true || this.#безЭхаОтвечал)) {
-      this.#процессОтвечал = true;
-      this.#чужойЗапросЗакончен(запись);
-    } else if (вид === "result") {
-      this.#процессОтвечал = true;
-      if (this.#запросБезЭха) {
+      if (this.#requestWithoutEcho) this.#answeredWithoutEcho = true;
+      this.#delta(record);
+    } else if (kind === "assistant") {
+      if (this.#requestWithoutEcho) this.#answeredWithoutEcho = true;
+      this.#assistantBlocks(record);
+    } else if (kind === "user" && record["isReplay"] === true) {
+      this.#echoWorks = true;
+      this.#awaitingEcho = Math.max(0, this.#awaitingEcho - 1);
+      this.#requestWithoutEcho = false;
+    } else if (kind === "user") {
+      this.#userBlocks(record);
+    } else if (kind === "control_request") {
+      this.#agentRequest(record);
+    } else if (kind === "result" && this.#requestWithoutEcho && (record["is_error"] !== true || this.#answeredWithoutEcho)) {
+      this.#processAnswered = true;
+      this.#foreignRequestDone(record);
+    } else if (kind === "result") {
+      this.#processAnswered = true;
+      if (this.#requestWithoutEcho) {
         // Ошибка раньше эха — свой запрос: принять его за чужой значило бы
         // ждать следующего вечно (рецензия Codex 28.09).
-        this.#запросБезЭха = false;
-        this.#ждёмЭха = Math.max(0, this.#ждёмЭха - 1);
+        this.#requestWithoutEcho = false;
+        this.#awaitingEcho = Math.max(0, this.#awaitingEcho - 1);
       }
-      this.#открытыхЗапросов = Math.max(0, this.#открытыхЗапросов - 1);
-      this.#расходХода = addUsage(this.#расходХода, расходClaude(запись["usage"]));
-      const ошибка = запись["is_error"] === true;
-      this.#отложенныеОтказы.push(...разобратьОтказы(запись["permission_denials"], this.#отклонённыеЧеловеком));
-      if (!ошибка && (this.#субагенты.size > 0 || this.#открытыхЗапросов > 0 || this.#ждёмПродолжения)) {
-        if (!this.#ходДержится) {
-          this.#ходДержится = true;
-          this.#следитьЗаТишиной();
-          this.#выдать("diagnostic", "stream", {
+      this.#openRequests = Math.max(0, this.#openRequests - 1);
+      this.#turnUsage = addUsage(this.#turnUsage, toTurnUsage(record["usage"]));
+      const error = record["is_error"] === true;
+      this.#deferredDenials.push(...parseDenials(record["permission_denials"], this.#deniedByHuman));
+      if (!error && (this.#subagents.size > 0 || this.#openRequests > 0 || this.#awaitingContinuation)) {
+        if (!this.#turnHeld) {
+          this.#turnHeld = true;
+          this.#watchSilence();
+          this.#emit("diagnostic", "stream", {
             text:
-              `ход продолжается: Claude ждёт субагентов (${this.#субагенты.size}) — ` +
+              `ход продолжается: Claude ждёт субагентов (${this.#subagents.size}) — ` +
               "итог и проверка будут после их работы",
           });
         }
-        this.#назначитьСрок();
+        this.#scheduleDeadline();
         return;
       }
-      this.#закончитьХод(
-        ошибка
-          ? `ход завершён с ошибкой: ${String(запись["stop_reason"] ?? запись["subtype"] ?? "причина не указана")}`
-          : `ход завершён, реплик ${String(запись["num_turns"])}`,
-        ошибка,
-        запись,
+      this.#finishTurn(
+        error
+          ? `ход завершён с ошибкой: ${String(record["stop_reason"] ?? record["subtype"] ?? "причина не указана")}`
+          : `ход завершён, реплик ${String(record["num_turns"])}`,
+        error,
+        record,
       );
     }
   }
 
   /** Фоновые задачи: следим только за субагентами (task_type local_agent). */
-  #задача(запись: Record<string, unknown>): void {
-    const вид = запись["subtype"];
-    const id = typeof запись["task_id"] === "string" ? запись["task_id"] : undefined;
-    const закончить = (задача: string | undefined) => {
-      if (задача && this.#чужиеСубагенты.delete(задача)) return;
-      if (задача && this.#субагенты.delete(задача)) {
+  #task(record: Record<string, unknown>): void {
+    const kind = record["subtype"];
+    const id = typeof record["task_id"] === "string" ? record["task_id"] : undefined;
+    const finish = (task: string | undefined) => {
+      if (task && this.#foreignSubagents.delete(task)) return;
+      if (task && this.#subagents.delete(task)) {
         // Субагент кончил — Claude сам начнёт итоговый запрос.
-        this.#ждёмПродолжения = true;
-        this.#назначитьСрок();
+        this.#awaitingContinuation = true;
+        this.#scheduleDeadline();
       }
     };
-    if (вид === "task_started") {
-      if (id && запись["task_type"] === "local_agent") {
-        (this.#запросБезЭха ? this.#чужиеСубагенты : this.#субагенты).add(id);
+    if (kind === "task_started") {
+      if (id && record["task_type"] === "local_agent") {
+        (this.#requestWithoutEcho ? this.#foreignSubagents : this.#subagents).add(id);
       }
-    } else if (вид === "task_notification") {
-      if (id && !this.#субагенты.has(id)) {
-        const суть = запись["summary"] ?? запись["description"];
-        this.#последняяФоновая = typeof суть === "string" && суть ? суть : undefined;
+    } else if (kind === "task_notification") {
+      if (id && !this.#subagents.has(id)) {
+        const gist = record["summary"] ?? record["description"];
+        this.#lastBackground = typeof gist === "string" && gist ? gist : undefined;
       }
-      закончить(id);
-    } else if (вид === "task_updated") {
-      const статус = (запись["patch"] as Record<string, unknown> | undefined)?.["status"];
-      if (typeof статус === "string" && ["completed", "failed", "killed", "stopped", "cancelled"].includes(статус)) {
-        закончить(id);
+      finish(id);
+    } else if (kind === "task_updated") {
+      const status = (record["patch"] as Record<string, unknown> | undefined)?.["status"];
+      if (typeof status === "string" && ["completed", "failed", "killed", "stopped", "cancelled"].includes(status)) {
+        finish(id);
       }
-    } else if (вид === "background_tasks_changed" && Array.isArray(запись["tasks"])) {
-      const задачи = (запись["tasks"] as Record<string, unknown>[]).filter((з) => typeof з?.["task_id"] === "string");
+    } else if (kind === "background_tasks_changed" && Array.isArray(record["tasks"])) {
+      const tasks = (record["tasks"] as Record<string, unknown>[]).filter((z) => typeof z?.["task_id"] === "string");
       // Снимается только то, чего в снимке нет: известный id без task_type —
       // всё ещё идущий субагент (рецензия Codex 28.09).
-      const вСнимке = new Set(задачи.map((з) => з["task_id"] as string));
-      for (const задача of [...this.#субагенты, ...this.#чужиеСубагенты]) if (!вСнимке.has(задача)) закончить(задача);
-      for (const з of задачи) {
-        const задача = з["task_id"] as string;
-        if (з["task_type"] === "local_agent" && !this.#чужиеСубагенты.has(задача)) this.#субагенты.add(задача);
+      const inSnapshot = new Set(tasks.map((z) => z["task_id"] as string));
+      for (const task of [...this.#subagents, ...this.#foreignSubagents]) if (!inSnapshot.has(task)) finish(task);
+      for (const z of tasks) {
+        const task = z["task_id"] as string;
+        if (z["task_type"] === "local_agent" && !this.#foreignSubagents.has(task)) this.#subagents.add(task);
       }
     }
   }
@@ -714,68 +714,68 @@ export class ClaudeAdapter implements Adapter {
    * запрос модели не открыт и разрешений никто не ждёт: иначе срок закрыл бы
    * живой ответ (рецензия Codex 28.09).
    */
-  #назначитьСрок(): void {
-    if (!this.#ходДержится || this.#субагенты.size > 0 || this.#срокПродолжения) return;
-    if (this.#открытыхЗапросов > 0 || this.#запросы.size > 0) return;
-    this.#срокПродолжения = setTimeout(() => {
-      this.#срокПродолжения = undefined;
-      if (this.#ходДержится) {
-        this.#закончитьХод("ход завершён: субагенты закончили, продолжения от Claude не было", false);
+  #scheduleDeadline(): void {
+    if (!this.#turnHeld || this.#subagents.size > 0 || this.#continueDeadline) return;
+    if (this.#openRequests > 0 || this.#requests.size > 0) return;
+    this.#continueDeadline = setTimeout(() => {
+      this.#continueDeadline = undefined;
+      if (this.#turnHeld) {
+        this.#finishTurn("ход завершён: субагенты закончили, продолжения от Claude не было", false);
       }
-    }, this.опции.backgroundGraceMs ?? 15_000);
+    }, this.options.backgroundGraceMs ?? 15_000);
   }
 
   /** Срок продолжения. Срок тишины — отдельно: итоговый init его не снимает (рецензия Codex 28.09). */
-  #отменитьСрок(): void {
-    if (this.#срокПродолжения) clearTimeout(this.#срокПродолжения);
-    this.#срокПродолжения = undefined;
+  #cancelDeadline(): void {
+    if (this.#continueDeadline) clearTimeout(this.#continueDeadline);
+    this.#continueDeadline = undefined;
   }
 
-  #отменитьТишину(): void {
-    if (this.#срокТишины) clearTimeout(this.#срокТишины);
-    this.#срокТишины = undefined;
+  #cancelSilence(): void {
+    if (this.#silenceDeadline) clearTimeout(this.#silenceDeadline);
+    this.#silenceDeadline = undefined;
   }
 
   /** Держится ход, а процесс молчит дольше backgroundIdleMs — ход закрывается. */
-  #следитьЗаТишиной(): void {
-    const предел = this.опции.backgroundIdleMs ?? 600_000;
-    const проверить = () => {
-      this.#срокТишины = undefined;
-      if (!this.#ходДержится) return;
-      const прошло = Date.now() - this.#последняяЗапись;
+  #watchSilence(): void {
+    const limit = this.options.backgroundIdleMs ?? 600_000;
+    const checkNow = () => {
+      this.#silenceDeadline = undefined;
+      if (!this.#turnHeld) return;
+      const elapsed = Date.now() - this.#lastRecordAt;
       // Открытый запрос модели кончится своим result — тишина его не закрывает.
-      if (прошло >= предел && this.#открытыхЗапросов === 0) {
-        this.#субагенты.clear();
-        const итог = this.#итогХода(
-          `ход завершён: субагенты не сообщили о завершении за ${Math.round(предел / 1000)} с тишины`,
+      if (elapsed >= limit && this.#openRequests === 0) {
+        this.#subagents.clear();
+        const result = this.#turnResult(
+          `ход завершён: субагенты не сообщили о завершении за ${Math.round(limit / 1000)} с тишины`,
           false,
         );
         // Сначала процесс со всем деревом, потом конец хода: иначе очередь ушла
         // бы в умирающий процесс, а рецензия — к ещё живому субагенту, и его
         // поздние init/result закончили бы следующий ход (рецензии Codex 28.09).
         // Сессия сохранена — следующее сообщение её продолжит.
-        void this.stop().then(() => this.#выдать("turn_completed", "turn", итог));
-      } else if (прошло >= предел) {
-        this.#срокТишины = setTimeout(проверить, предел);
+        void this.stop().then(() => this.#emit("turn_completed", "turn", result));
+      } else if (elapsed >= limit) {
+        this.#silenceDeadline = setTimeout(checkNow, limit);
       } else {
-        this.#срокТишины = setTimeout(проверить, предел - прошло);
+        this.#silenceDeadline = setTimeout(checkNow, limit - elapsed);
       }
     };
-    if (this.#срокТишины) clearTimeout(this.#срокТишины);
-    this.#срокТишины = setTimeout(проверить, предел);
+    if (this.#silenceDeadline) clearTimeout(this.#silenceDeadline);
+    this.#silenceDeadline = setTimeout(checkNow, limit);
   }
 
   /** Всё состояние фона — при остановке и смерти процесса. */
-  #сброситьФон(): void {
-    this.#субагенты.clear();
-    this.#чужиеСубагенты.clear();
+  #resetBackground(): void {
+    this.#subagents.clear();
+    this.#foreignSubagents.clear();
     // Уведомление и эхо умершего процесса к новому не относятся (рецензия Codex 28.09).
-    this.#последняяФоновая = undefined;
-    this.#ждёмЭха = 0;
-    this.#запросБезЭха = false;
+    this.#lastBackground = undefined;
+    this.#awaitingEcho = 0;
+    this.#requestWithoutEcho = false;
     // Расход умершего процесса к следующему ходу не относится (рецензия Codex 28.09).
-    this.#расходХода = NO_USAGE;
-    this.#сброситьХод();
+    this.#turnUsage = NO_USAGE;
+    this.#resetTurn();
   }
 
   /**
@@ -783,26 +783,26 @@ export class ClaudeAdapter implements Adapter {
    * ошибкой при работающем субагенте, его поздний итог должен держать
    * следующий ход, а не закончить его своим result (рецензия Codex 28.09).
    */
-  #сброситьХод(): void {
-    this.#самостоятельный = false;
-    this.#отменитьСрок();
-    this.#отменитьТишину();
-    this.#открытыхЗапросов = 0;
-    this.#ждёмПродолжения = false;
-    this.#ходДержится = false;
-    this.#отложенныеОтказы = [];
+  #resetTurn(): void {
+    this.#autonomous = false;
+    this.#cancelDeadline();
+    this.#cancelSilence();
+    this.#openRequests = 0;
+    this.#awaitingContinuation = false;
+    this.#turnHeld = false;
+    this.#deferredDenials = [];
   }
 
-  #начатьСамостоятельный(): void {
-    this.#самостоятельный = true;
-    this.#занят = true;
-    this.#выдать("turn_started", "turn", { unsolicited: true, text: this.#причинаСамостоятельного() });
+  #startAutonomous(): void {
+    this.#autonomous = true;
+    this.#busy = true;
+    this.#emit("turn_started", "turn", { unsolicited: true, text: this.#autonomousReason() });
   }
 
-  #причинаСамостоятельного(): string {
-    const причина = this.#последняяФоновая;
-    this.#последняяФоновая = undefined;
-    return причина ? `фоновая задача закончилась: ${причина}` : "Claude начал ход без сообщения панели";
+  #autonomousReason(): string {
+    const reason = this.#lastBackground;
+    this.#lastBackground = undefined;
+    return reason ? `фоновая задача закончилась: ${reason}` : "Claude начал ход без сообщения панели";
   }
 
   /**
@@ -810,164 +810,164 @@ export class ClaudeAdapter implements Adapter {
    * начатый раньше, чем CLI принял сообщение. Он выдаётся самостоятельным
    * целиком; ход панели продолжается — его запрос придёт следом.
    */
-  #чужойЗапросЗакончен(запись: Record<string, unknown>): void {
-    this.#запросБезЭха = false;
-    this.#безЭхаОтвечал = false;
-    this.#открытыхЗапросов = Math.max(0, this.#открытыхЗапросов - 1);
-    const расход = расходClaude(запись["usage"]);
-    const отказы = разобратьОтказы(запись["permission_denials"], this.#отклонённыеЧеловеком);
-    this.#выдать("turn_started", "turn", { unsolicited: true, text: this.#причинаСамостоятельного() });
-    this.#выдать("turn_completed", "turn", {
+  #foreignRequestDone(record: Record<string, unknown>): void {
+    this.#requestWithoutEcho = false;
+    this.#answeredWithoutEcho = false;
+    this.#openRequests = Math.max(0, this.#openRequests - 1);
+    const usage = toTurnUsage(record["usage"]);
+    const denials = parseDenials(record["permission_denials"], this.#deniedByHuman);
+    this.#emit("turn_started", "turn", { unsolicited: true, text: this.#autonomousReason() });
+    this.#emit("turn_completed", "turn", {
       unsolicited: true,
-      ...(отказы.length > 0 ? { denials: отказы } : {}),
-      ...(расход.input + расход.output > 0 ? { usage: расход } : {}),
-      ...(this.#лимит ? { limit: this.#лимит } : {}),
+      ...(denials.length > 0 ? { denials: denials } : {}),
+      ...(usage.input + usage.output > 0 ? { usage: usage } : {}),
+      ...(this.#limit ? { limit: this.#limit } : {}),
       text: "ход, начатый самим Claude, завершён",
-      raw: запись,
-      ...(запись["is_error"] === true ? { failed: true } : {}),
+      raw: record,
+      ...(record["is_error"] === true ? { failed: true } : {}),
     });
   }
 
-  #закончитьХод(текст: string, ошибка: boolean, запись?: Record<string, unknown>): void {
-    const итог = this.#итогХода(текст, ошибка, запись);
-    this.#занят = false;
-    this.#ходИдёт = undefined;
-    this.#выдать("turn_completed", "turn", итог);
+  #finishTurn(text: string, error: boolean, record?: Record<string, unknown>): void {
+    const result = this.#turnResult(text, error, record);
+    this.#busy = false;
+    this.#turnInProgress = undefined;
+    this.#emit("turn_completed", "turn", result);
   }
 
   /** Поля конца хода; состояние хода сбрасывается. */
-  #итогХода(текст: string, ошибка: boolean, запись?: Record<string, unknown>): Partial<PanelEvent> {
-    const сам = this.#самостоятельный;
-    const отказы = this.#отложенныеОтказы;
-    const расход = this.#расходХода;
-    this.#расходХода = NO_USAGE;
-    this.#сброситьХод();
+  #turnResult(text: string, error: boolean, record?: Record<string, unknown>): Partial<PanelEvent> {
+    const isAutonomous = this.#autonomous;
+    const denials = this.#deferredDenials;
+    const usage = this.#turnUsage;
+    this.#turnUsage = NO_USAGE;
+    this.#resetTurn();
     return {
-      ...(сам ? { unsolicited: true } : {}),
-      ...(отказы.length > 0 ? { denials: отказы } : {}),
-      ...(расход.input + расход.output > 0 ? { usage: расход } : {}),
-      ...(this.#лимит ? { limit: this.#лимит } : {}),
-      text: текст,
-      ...(запись ? { raw: запись } : {}),
-      ...(ошибка ? { failed: true } : {}),
+      ...(isAutonomous ? { unsolicited: true } : {}),
+      ...(denials.length > 0 ? { denials: denials } : {}),
+      ...(usage.input + usage.output > 0 ? { usage: usage } : {}),
+      ...(this.#limit ? { limit: this.#limit } : {}),
+      text: text,
+      ...(record ? { raw: record } : {}),
+      ...(error ? { failed: true } : {}),
     };
   }
 
   /** Запрос агента к панели. Необслуживаемый получает ошибку: без ответа агент ждал бы вечно. */
-  #запросАгента(запись: Record<string, unknown>): void {
-    const процесс = this.#процесс;
-    if (!процесс) return;
-    const id = String(запись["request_id"] ?? "");
-    const запрос = (запись["request"] ?? {}) as Record<string, unknown>;
+  #agentRequest(record: Record<string, unknown>): void {
+    const proc = this.#proc;
+    if (!proc) return;
+    const id = String(record["request_id"] ?? "");
+    const request = (record["request"] ?? {}) as Record<string, unknown>;
 
-    if (запрос["subtype"] !== "can_use_tool") {
-      this.#выдать("diagnostic", "stream", {
-        text: `запрос Claude «${String(запрос["subtype"])}» панелью не обслуживается — отвечено ошибкой`,
-        raw: запись,
+    if (request["subtype"] !== "can_use_tool") {
+      this.#emit("diagnostic", "stream", {
+        text: `запрос Claude «${String(request["subtype"])}» панелью не обслуживается — отвечено ошибкой`,
+        raw: record,
       });
-      this.#записать(процесс, {
+      this.#write(proc, {
         type: "control_response",
         response: {
           subtype: "error",
           request_id: id,
-          error: `панель не обслуживает запрос ${String(запрос["subtype"])}`,
+          error: `панель не обслуживает запрос ${String(request["subtype"])}`,
         },
       });
       return;
     }
 
-    const правила = правилаСессии(запрос["permission_suggestions"]);
-    const вход = запрос["input"] ?? {};
-    this.#запросы.set(id, {
-      процесс,
-      вход,
-      вызов: typeof запрос["tool_use_id"] === "string" ? запрос["tool_use_id"] : undefined,
-      правила,
+    const rules = sessionRules(request["permission_suggestions"]);
+    const input = request["input"] ?? {};
+    this.#requests.set(id, {
+      proc,
+      input,
+      call: typeof request["tool_use_id"] === "string" ? request["tool_use_id"] : undefined,
+      rules,
     });
 
-    const строки = [сутьВвода(вход)];
-    if (typeof запрос["description"] === "string" && запрос["description"] !== строки[0]) {
-      строки.push(запрос["description"]);
+    const lines = [inputGist(input)];
+    if (typeof request["description"] === "string" && request["description"] !== lines[0]) {
+      lines.push(request["description"]);
     }
-    if (typeof запрос["blocked_path"] === "string") строки.push(`путь: ${запрос["blocked_path"]}`);
+    if (typeof request["blocked_path"] === "string") lines.push(`путь: ${request["blocked_path"]}`);
 
-    this.#выдать("approval_requested", "turn", {
-      tool: String(запрос["display_name"] ?? запрос["tool_name"] ?? "?"),
+    this.#emit("approval_requested", "turn", {
+      tool: String(request["display_name"] ?? request["tool_name"] ?? "?"),
       callId: id,
-      ...(typeof запрос["tool_use_id"] === "string" ? { toolCallId: запрос["tool_use_id"] } : {}),
-      text: clamp(строки.join("\n")),
-      sessionRules: подписиПравил(правила),
-      raw: запись,
+      ...(typeof request["tool_use_id"] === "string" ? { toolCallId: request["tool_use_id"] } : {}),
+      text: clamp(lines.join("\n")),
+      sessionRules: ruleLabels(rules),
+      raw: record,
     });
     // Режим сменён на «без вопросов», а процесс ещё старый: разрешает панель.
-    if (this.#режим === "bypassPermissions") void this.#решить(id, "allow", ПОДПИСЬ_БЕЗ_ВОПРОСОВ);
+    if (this.#mode === "bypassPermissions") void this.#decide(id, "allow", NO_QUESTIONS_NOTE);
   }
 
-  #дельта(запись: Record<string, unknown>): void {
+  #delta(record: Record<string, unknown>): void {
     // Поток субагента в живой пузырь Claude не идёт: его текст придёт целиком
     // записью assistant с parent_tool_use_id.
-    if (родительИз(запись).parentCallId) return;
-    const событие = запись["event"] as Record<string, unknown> | undefined;
-    if (!событие) return;
-    if (событие["type"] === "message_start") {
-      this.#ходИдёт = newEventId();
+    if (parentFrom(record).parentCallId) return;
+    const event = record["event"] as Record<string, unknown> | undefined;
+    if (!event) return;
+    if (event["type"] === "message_start") {
+      this.#turnInProgress = newEventId();
       return;
     }
-    if (событие["type"] !== "content_block_delta") return;
-    const дельта = событие["delta"] as Record<string, unknown> | undefined;
-    if (дельта?.["type"] === "text_delta" && typeof дельта["text"] === "string") {
-      this.#выдать("text_delta", "stream", { text: дельта["text"] });
+    if (event["type"] !== "content_block_delta") return;
+    const delta = event["delta"] as Record<string, unknown> | undefined;
+    if (delta?.["type"] === "text_delta" && typeof delta["text"] === "string") {
+      this.#emit("text_delta", "stream", { text: delta["text"] });
     }
   }
 
-  #блокиАссистента(запись: Record<string, unknown>): void {
-    const родитель = родительИз(запись);
-    for (const блок of this.#блоки(запись)) {
-      if (блок["type"] === "text" && typeof блок["text"] === "string") {
-        this.#выдать("message", "turn", { text: clamp(блок["text"]), ...родитель });
-      } else if (блок["type"] === "tool_use") {
-        const id = String(блок["id"] ?? "");
-        const имя = String(блок["name"] ?? "?");
-        this.#вызовы.set(id, имя);
-        this.#выдать("tool_call", "turn", {
-          ...родитель,
-          tool: имя,
+  #assistantBlocks(record: Record<string, unknown>): void {
+    const parent = parentFrom(record);
+    for (const block of this.#blocks(record)) {
+      if (block["type"] === "text" && typeof block["text"] === "string") {
+        this.#emit("message", "turn", { text: clamp(block["text"]), ...parent });
+      } else if (block["type"] === "tool_use") {
+        const id = String(block["id"] ?? "");
+        const name = String(block["name"] ?? "?");
+        this.#calls.set(id, name);
+        this.#emit("tool_call", "turn", {
+          ...parent,
+          tool: name,
           callId: id,
-          text: clamp(JSON.stringify(блок["input"] ?? {}, null, 1)),
-          raw: блок,
+          text: clamp(JSON.stringify(block["input"] ?? {}, null, 1)),
+          raw: block,
         });
-        this.#выдать("tool_running", "stream", { tool: имя, callId: id });
+        this.#emit("tool_running", "stream", { tool: name, callId: id });
       }
     }
   }
 
-  #блокиПользователя(запись: Record<string, unknown>): void {
-    const родитель = родительИз(запись);
-    for (const блок of this.#блоки(запись)) {
-      if (блок["type"] !== "tool_result") continue;
-      const id = String(блок["tool_use_id"] ?? "");
+  #userBlocks(record: Record<string, unknown>): void {
+    const parent = parentFrom(record);
+    for (const block of this.#blocks(record)) {
+      if (block["type"] !== "tool_result") continue;
+      const id = String(block["tool_use_id"] ?? "");
       // Сырой вывод, а не пересказ: рецензент без права запуска зависит от него.
-      const текст = текстРезультата(блок["content"]);
-      this.#выдать("tool_result", "turn", {
-        tool: this.#вызовы.get(id) ?? "?",
+      const text = toolResultText(block["content"]);
+      this.#emit("tool_result", "turn", {
+        tool: this.#calls.get(id) ?? "?",
         callId: id,
-        ...родитель,
-        ...clampKeepingFull(текст),
-        raw: блок,
+        ...parent,
+        ...clampKeepingFull(text),
+        raw: block,
       });
-      this.#вызовы.delete(id);
+      this.#calls.delete(id);
     }
   }
 
-  #блоки(запись: Record<string, unknown>): Record<string, unknown>[] {
-    const содержимое = (запись["message"] as Record<string, unknown> | undefined)?.["content"];
-    return Array.isArray(содержимое) ? (содержимое as Record<string, unknown>[]) : [];
+  #blocks(record: Record<string, unknown>): Record<string, unknown>[] {
+    const content = (record["message"] as Record<string, unknown> | undefined)?.["content"];
+    return Array.isArray(content) ? (content as Record<string, unknown>[]) : [];
   }
 
-  #выдать(
+  #emit(
     kind: PanelEvent["kind"],
     visibility: PanelEvent["visibility"],
-    остальное: Partial<PanelEvent>,
+    rest: Partial<PanelEvent>,
   ): void {
     this.sink({
       id: newEventId(),
@@ -975,8 +975,8 @@ export class ClaudeAdapter implements Adapter {
       kind,
       visibility,
       at: Date.now(),
-      ...(this.#ходИдёт ? { turnId: this.#ходИдёт } : {}),
-      ...остальное,
+      ...(this.#turnInProgress ? { turnId: this.#turnInProgress } : {}),
+      ...rest,
     } as PanelEvent);
   }
 }

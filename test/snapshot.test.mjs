@@ -14,63 +14,63 @@ import { join } from "node:path";
 
 import { takeSnapshot } from "../out/snapshot.js";
 
-function репозиторий() {
-  const к = mkdtempSync(join(tmpdir(), "snap-"));
-  const g = (...а) => execFileSync("git", а, { cwd: к, stdio: "ignore" });
+function repo() {
+  const k = mkdtempSync(join(tmpdir(), "snap-"));
+  const g = (...a) => execFileSync("git", a, { cwd: k, stdio: "ignore" });
   g("init", "-q");
   g("config", "user.email", "t@example.com");
   g("config", "user.name", "t");
-  writeFileSync(join(к, "a.txt"), "первая версия");
+  writeFileSync(join(k, "a.txt"), "первая версия");
   g("add", "-A");
   g("commit", "-q", "-m", "первый");
-  return { к, g };
+  return { k, g };
 }
 
 test("правка нового файла меняет отпечаток", async () => {
-  const { к } = репозиторий();
-  writeFileSync(join(к, "новый.txt"), "содержимое один");
-  const до = await takeSnapshot(к);
-  writeFileSync(join(к, "новый.txt"), "содержимое два, той же длины!!");
-  const после = await takeSnapshot(к);
+  const { k } = repo();
+  writeFileSync(join(k, "новый.txt"), "содержимое один");
+  const until = await takeSnapshot(k);
+  writeFileSync(join(k, "новый.txt"), "содержимое два, той же длины!!");
+  const after = await takeSnapshot(k);
   assert.notEqual(
-    после.id,
-    до.id,
+    after.id,
+    until.id,
     "отпечаток обязан меняться: иначе замечание привяжется к другому коду",
   );
 });
 
 test("правка отслеживаемого файла меняет отпечаток", async () => {
-  const { к } = репозиторий();
-  const до = await takeSnapshot(к);
-  writeFileSync(join(к, "a.txt"), "вторая версия");
-  const после = await takeSnapshot(к);
-  assert.notEqual(после.id, до.id);
-  assert.equal(после.dirty, true);
+  const { k } = repo();
+  const until = await takeSnapshot(k);
+  writeFileSync(join(k, "a.txt"), "вторая версия");
+  const after = await takeSnapshot(k);
+  assert.notEqual(after.id, until.id);
+  assert.equal(after.dirty, true);
 });
 
 test("без изменений отпечаток тот же", async () => {
-  const { к } = репозиторий();
-  const первый = await takeSnapshot(к);
-  const второй = await takeSnapshot(к);
-  assert.equal(первый.id, второй.id);
-  assert.equal(первый.dirty, false);
-  assert.equal(первый.source, "git");
+  const { k } = repo();
+  const first = await takeSnapshot(k);
+  const second = await takeSnapshot(k);
+  assert.equal(first.id, second.id);
+  assert.equal(first.dirty, false);
+  assert.equal(first.source, "git");
 });
 
 test("новый файл делает состояние грязным", async () => {
-  const { к } = репозиторий();
-  writeFileSync(join(к, "новый.txt"), "x");
-  const с = await takeSnapshot(к);
-  assert.equal(с.dirty, true, "новый файл — тоже изменение версии");
+  const { k } = repo();
+  writeFileSync(join(k, "новый.txt"), "x");
+  const s = await takeSnapshot(k);
+  assert.equal(s.dirty, true, "новый файл — тоже изменение версии");
 });
 
 test("вне git отпечаток всё равно выдаётся и помечен источником", async () => {
-  const к = mkdtempSync(join(tmpdir(), "nogit-"));
-  writeFileSync(join(к, "f.txt"), "раз");
-  const до = await takeSnapshot(к);
-  assert.equal(до.source, "filesystem");
-  assert.equal(до.dirty, true, "отсутствие git не значит «чисто»");
-  writeFileSync(join(к, "f.txt"), "два");
-  const после = await takeSnapshot(к);
-  assert.notEqual(после.id, до.id);
+  const k = mkdtempSync(join(tmpdir(), "nogit-"));
+  writeFileSync(join(k, "f.txt"), "раз");
+  const until = await takeSnapshot(k);
+  assert.equal(until.source, "filesystem");
+  assert.equal(until.dirty, true, "отсутствие git не значит «чисто»");
+  writeFileSync(join(k, "f.txt"), "два");
+  const after = await takeSnapshot(k);
+  assert.notEqual(after.id, until.id);
 });

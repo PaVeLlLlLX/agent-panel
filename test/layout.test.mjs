@@ -14,114 +14,114 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const корень = join(import.meta.dirname, "..");
+const root = join(import.meta.dirname, "..");
 
 /**
  * chrome-headless-shell, поставленный `npx @puppeteer/browsers install
  * chrome-headless-shell@stable --path %LOCALAPPDATA%/agent-panel-browser`:
  * безголовый Edge 153 на этой машине вывода не отдаёт.
  */
-function безголовыйChrome() {
-  const каталог = join(process.env.LOCALAPPDATA ?? "", "agent-panel-browser", "chrome-headless-shell");
-  if (!process.env.LOCALAPPDATA || !existsSync(каталог)) return undefined;
-  for (const версия of readdirSync(каталог).sort().reverse()) {
-    const путь = join(каталог, версия, "chrome-headless-shell-win64", "chrome-headless-shell.exe");
-    if (existsSync(путь)) return путь;
+function headlessChrome() {
+  const catalog = join(process.env.LOCALAPPDATA ?? "", "agent-panel-browser", "chrome-headless-shell");
+  if (!process.env.LOCALAPPDATA || !existsSync(catalog)) return undefined;
+  for (const version of readdirSync(catalog).sort().reverse()) {
+    const filePath = join(catalog, version, "chrome-headless-shell-win64", "chrome-headless-shell.exe");
+    if (existsSync(filePath)) return filePath;
   }
   return undefined;
 }
 
-const браузер = [
-  безголовыйChrome(),
+const browser = [
+  headlessChrome(),
   "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
   "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
   "C:/Program Files/Google/Chrome/Application/chrome.exe",
   "/usr/bin/google-chrome",
   "/usr/bin/chromium",
-].find((путь) => путь && existsSync(путь));
+].find((filePath) => filePath && existsSync(filePath));
 /** Безголовой оболочке режим не указывают; обычному браузеру — новый безголовый. */
-const безголовый = браузер && /chrome-headless-shell/.test(браузер) ? [] : ["--headless=new"];
+const headlessArgs = browser && /chrome-headless-shell/.test(browser) ? [] : ["--headless=new"];
 
-const ШИРИНА = 600;
-const медиа = (имя) => pathToFileURL(join(корень, "media", имя)).href;
+const WIDTH = 600;
+const media = (name) => pathToFileURL(join(root, "media", name)).href;
 
 /**
  * Открыть разметку панели, выполнить скрипт проверки и вернуть то, что он
  * положил в window.итог. С panel.js — вместе со скриптами интерфейса и
  * заглушкой API VS Code, которая копит отправленное в window.отправленное.
  */
-function открыть(проверка, { сИнтерфейсом = false, ширина = ШИРИНА, тема = "vscode-dark" } = {}) {
-  const исходник = readFileSync(join(корень, "src", "extension.ts"), "utf8");
-  const тело = исходник.match(/<body>([\s\S]*?)<script nonce/)?.[1];
-  assert.ok(тело, "разметка панели не найдена в extension.ts");
+function open(check, { withUi = false, width = WIDTH, theme = "vscode-dark" } = {}) {
+  const source = readFileSync(join(root, "src", "extension.ts"), "utf8");
+  const body = source.match(/<body>([\s\S]*?)<script nonce/)?.[1];
+  assert.ok(body, "разметка панели не найдена в extension.ts");
 
-  const интерфейс = сИнтерфейсом
+  const ui = withUi
     ? `<script>
-  window.отправленное = [];
+  window.sentMessages = [];
   window.acquireVsCodeApi = () => ({
-    postMessage: (м) => window.отправленное.push(м),
+    postMessage: (m) => window.sentMessages.push(m),
     getState: () => undefined,
     setState: () => {},
   });
 </script>
-<link rel="stylesheet" href="${медиа("vendor/katex/katex.min.css")}">
-<script src="${медиа("format.js")}"></script>
-<script src="${медиа("thread.js")}"></script>
-<script src="${медиа("vendor/markdown.js")}"></script>
-<script src="${медиа("panel.js")}"></script>`
+<link rel="stylesheet" href="${media("vendor/katex/katex.min.css")}">
+<script src="${media("format.js")}"></script>
+<script src="${media("thread.js")}"></script>
+<script src="${media("vendor/markdown.js")}"></script>
+<script src="${media("panel.js")}"></script>`
     : "";
 
-  const страница = `<!DOCTYPE html><html><head><meta charset="utf-8">
+  const page = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <script>
   // Ошибки страницы — в атрибут корня: иначе упавший скрипт виден только как «не выполнился».
-  window.ошибки = [];
-  window.addEventListener("error", (е) => {
-    window.ошибки.push(е.message);
-    document.documentElement.dataset.errors = encodeURIComponent(JSON.stringify(window.ошибки));
+  window.errors = [];
+  window.addEventListener("error", (e) => {
+    window.errors.push(e.message);
+    document.documentElement.dataset.errors = encodeURIComponent(JSON.stringify(window.errors));
   });
 </script>
-<link rel="stylesheet" href="${медиа("panel.css")}"></head><body class="${тема}">${тело}
-${интерфейс}
+<link rel="stylesheet" href="${media("panel.css")}"></head><body class="${theme}">${body}
+${ui}
 <script>
-  window.итог = {};
+  window.result = {};
   // Синхронная доставка: window.postMessage асинхронен и не успел бы до снимка DOM.
-  const послать = (data) => window.dispatchEvent(new MessageEvent("message", { data }));
+  const postToPage = (data) => window.dispatchEvent(new MessageEvent("message", { data }));
   // Не «$»: panel.js объявляет её глобально, повторное объявление роняет весь скрипт.
-  const по = (id) => document.getElementById(id);
-  ${проверка}
-  document.body.dataset.result = encodeURIComponent(JSON.stringify(window.итог));
+  const getById = (id) => document.getElementById(id);
+  ${check}
+  document.body.dataset.result = encodeURIComponent(JSON.stringify(window.result));
 </script></body></html>`;
 
-  const папка = mkdtempSync(join(tmpdir(), "agent-panel-ui-"));
+  const dir = mkdtempSync(join(tmpdir(), "agent-panel-ui-"));
   try {
-    const файл = join(папка, "panel.html");
-    writeFileSync(файл, страница);
+    const file = join(dir, "panel.html");
+    writeFileSync(file, page);
     const dom = execFileSync(
-      браузер,
+      browser,
       [
-        ...безголовый,
+        ...headlessArgs,
         "--disable-gpu",
         "--no-first-run",
         "--allow-file-access-from-files",
-        `--user-data-dir=${join(папка, "профиль")}`,
-        `--window-size=${ширина},800`,
+        `--user-data-dir=${join(dir, "профиль")}`,
+        `--window-size=${width},800`,
         "--dump-dom",
-        pathToFileURL(файл).href,
+        pathToFileURL(file).href,
       ],
       { encoding: "utf8", timeout: 60_000, stdio: ["ignore", "pipe", "ignore"] },
     );
-    const ошибки = dom.match(/data-errors="([^"]*)"/)?.[1];
-    const закодированный = dom.match(/data-result="([^"]*)"/)?.[1];
+    const errors = dom.match(/data-errors="([^"]*)"/)?.[1];
+    const encoded = dom.match(/data-result="([^"]*)"/)?.[1];
     assert.ok(
-      закодированный && !ошибки,
-      `скрипт проверки не выполнился: ${ошибки ? decodeURIComponent(ошибки) : "ошибок не поймано"}`,
+      encoded && !errors,
+      `скрипт проверки не выполнился: ${errors ? decodeURIComponent(errors) : "ошибок не поймано"}`,
     );
-    return JSON.parse(decodeURIComponent(закодированный));
+    return JSON.parse(decodeURIComponent(encoded));
   } finally {
     // Дочерние процессы браузера отпускают профиль не сразу; мусор во
     // временной папке — не повод ронять проверку интерфейса.
     try {
-      rmSync(папка, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     } catch {
       /* останется во временной папке */
     }
@@ -133,528 +133,528 @@ ${интерфейс}
  * молчит даже на --version, хотя код возврата нулевой. Одна пробная страница
  * отличает «нечем проверять» от настоящей поломки интерфейса.
  */
-const БЕЗ_БРАУЗЕРА = (() => {
-  if (!браузер) return "нет Edge/Chrome";
+const NO_BROWSER = (() => {
+  if (!browser) return "нет Edge/Chrome";
   try {
-    открыть("итог.проба = 1;");
+    open("result.probe = 1;");
     return false;
-  } catch (беда) {
-    return `браузер не отдаёт вывод: ${(беда.message ?? "").slice(0, 80)}`;
+  } catch (err) {
+    return `браузер не отдаёт вывод: ${(err.message ?? "").slice(0, 80)}`;
   }
 })();
 
-for (const ширина of [ШИРИНА, 360]) test(`длинная задача, причина и лог не расширяют панель шириной ${ширина}`, { skip: БЕЗ_БРАУЗЕРА }, () => {
-  const { scroll, client, button, беседа, вылезли } = открыть(`
-    const лог = "[2026-09-15, 11:41:05 UTC] {taskinstance.py:1776} ERROR - Task failed with exception ".repeat(30);
-    const событие = (agent, kind, доп) => ({ id: kind + Math.random(), agent, kind, visibility: "turn", at: Date.now(), ...доп });
-    послать({ type: "state", состояние: { stage: "held", round: 1, maxRounds: 3, approvals: 0, queued: 2, auto: true,
-      task: лог, verdict: "human", trail: [{ who: "task" }, { who: "claude" }, { who: "codex", mark: "?" }, { who: "you" }],
+for (const width of [WIDTH, 360]) test(`длинная задача, причина и лог не расширяют панель шириной ${width}`, { skip: NO_BROWSER }, () => {
+  const { scroll, client, button, conversation, overflowed } = open(`
+    const logText = "[2026-09-15, 11:41:05 UTC] {taskinstance.py:1776} ERROR - Task failed with exception ".repeat(30);
+    const event = (agent, kind, extra) => ({ id: kind + Math.random(), agent, kind, visibility: "turn", at: Date.now(), ...extra });
+    postToPage({ type: "state", state: { stage: "held", round: 1, maxRounds: 3, approvals: 0, queued: 2, auto: true,
+      task: logText, verdict: "human", trail: [{ who: "task" }, { who: "claude" }, { who: "codex", mark: "?" }, { who: "you" }],
       held: { to: "claude", action: "send", reason: "Claude получил отказы в разрешениях (2): Bash: python -c " + "x".repeat(400) } } });
-    по("эстафета").click();
-    послать({ type: "event", событие: событие("human", "message", { text: лог }) });
-    послать({ type: "event", событие: событие("claude", "message", { text: лог + "a".repeat(500) }) });
-    послать({ type: "event", событие: событие("codex", "message", { text: "Код:" + String.fromCharCode(10, 10) + "    " + лог }) });
-    послать({ type: "event", событие: событие("claude", "tool_call", { tool: "Bash", callId: "c1", text: лог }) });
-    послать({ type: "event", событие: событие("claude", "approval_requested", { tool: "Bash", callId: "p1", text: лог, sessionRules: ["Bash(" + лог + ")"] }) });
-    по("модели-кнопка").click();
-    послать({ type: "models", agent: "codex", choice: { model: "", effort: "ultra" }, options: [
+    getById("эстафета").click();
+    postToPage({ type: "event", event: event("human", "message", { text: logText }) });
+    postToPage({ type: "event", event: event("claude", "message", { text: logText + "a".repeat(500) }) });
+    postToPage({ type: "event", event: event("codex", "message", { text: "Код:" + String.fromCharCode(10, 10) + "    " + logText }) });
+    postToPage({ type: "event", event: event("claude", "tool_call", { tool: "Bash", callId: "c1", text: logText }) });
+    postToPage({ type: "event", event: event("claude", "approval_requested", { tool: "Bash", callId: "p1", text: logText, sessionRules: ["Bash(" + logText + ")"] }) });
+    getById("модели-кнопка").click();
+    postToPage({ type: "models", agent: "codex", choice: { model: "", effort: "ultra" }, options: [
       { id: "", label: "по умолчанию " + "(очень длинное название модели) ".repeat(5), efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
     ] });
-    по("диагностика-кнопка").click();
-    итог.scroll = document.documentElement.scrollWidth;
-    итог.client = document.documentElement.clientWidth;
-    итог.беседа = по("беседа").scrollWidth - по("беседа").clientWidth;
-    итог.button = Math.round(по("отправить").getBoundingClientRect().right);
+    getById("диагностика-кнопка").click();
+    result.scroll = document.documentElement.scrollWidth;
+    result.client = document.documentElement.clientWidth;
+    result.conversation = getById("беседа").scrollWidth - getById("беседа").clientWidth;
+    result.button = Math.round(getById("отправить").getBoundingClientRect().right);
     // Кто вылез за край — самые внешние из вылезших, чтобы сообщение называло виновника.
-    const вылезли = [...document.querySelectorAll("body *")]
-      .filter((э) => э.getClientRects().length && э.getBoundingClientRect().right > итог.client + 0.5)
+    const overflowed = [...document.querySelectorAll("body *")]
+      .filter((el) => el.getClientRects().length && el.getBoundingClientRect().right > result.client + 0.5)
       // Внутри блоков с собственной прокруткой вылезать можно.
-      .filter((э) => !э.parentElement.closest("pre, table, .формула, .дорожка"));
-    итог.вылезли = вылезли.filter((э) => !вылезли.includes(э.parentElement)).slice(0, 5)
-      .map((э) => э.tagName.toLowerCase() + (э.id ? "#" + э.id : "") + (э.className && typeof э.className === "string" ? "." + э.className.split(" ").join(".") : ""));
-  `, { сИнтерфейсом: true, ширина });
-  assert.ok(client > 0 && client <= ширина, `ширина окна не измерена: ${client}`);
-  assert.ok(scroll <= client, `документ шире окна: ${scroll} > ${client}; за краем: ${вылезли.join(", ")}`);
+      .filter((el) => !el.parentElement.closest("pre, table, .формула, .дорожка"));
+    result.overflowed = overflowed.filter((el) => !overflowed.includes(el.parentElement)).slice(0, 5)
+      .map((el) => el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (el.className && typeof el.className === "string" ? "." + el.className.split(" ").join(".") : ""));
+  `, { withUi: true, width });
+  assert.ok(client > 0 && client <= width, `ширина окна не измерена: ${client}`);
+  assert.ok(scroll <= client, `документ шире окна: ${scroll} > ${client}; за краем: ${overflowed.join(", ")}`);
   assert.ok(button <= client, `кнопка «Отправить» за краем: ${button} > ${client}`);
-  assert.ok(беседа <= 0, `беседа прокручивается вбок на ${беседа} px`);
+  assert.ok(conversation <= 0, `беседа прокручивается вбок на ${conversation} px`);
 });
 
-test("реплика агента — Markdown с формулой, реплика человека — текст, ссылка — через расширение", { skip: БЕЗ_БРАУЗЕРА }, () => {
-  const р = открыть(
+test("реплика агента — Markdown с формулой, реплика человека — текст, ссылка — через расширение", { skip: NO_BROWSER }, () => {
+  const r = open(
     `
-    const реплика = (agent, text) => ({ id: agent + text.length, agent, kind: "message", visibility: "turn", at: Date.now(), text });
-    послать({ type: "event", событие: реплика("claude", "**жирно** и $x^2$\\n\\n[док](https://example.com/a)") });
-    послать({ type: "event", событие: реплика("human", "**не разметка** $x$") });
-    итог.сборкаЕсть = typeof window.PanelMarkdown?.render === "function";
-    итог.жирный = !!document.querySelector(".пузырь.claude .текст strong");
-    итог.формула = !!document.querySelector(".пузырь.claude .katex");
-    итог.человек = document.querySelector(".пузырь.human .текст").innerHTML;
+    const replyEvent = (agent, text) => ({ id: agent + text.length, agent, kind: "message", visibility: "turn", at: Date.now(), text });
+    postToPage({ type: "event", event: replyEvent("claude", "**жирно** и $x^2$\\n\\n[док](https://example.com/a)") });
+    postToPage({ type: "event", event: replyEvent("human", "**не разметка** $x$") });
+    result.bundleLoaded = typeof window.PanelMarkdown?.render === "function";
+    result.bold = !!document.querySelector(".пузырь.claude .текст strong");
+    result.formula = !!document.querySelector(".пузырь.claude .katex");
+    result.human = document.querySelector(".пузырь.human .текст").innerHTML;
     document.querySelector(".пузырь.claude a").click();
-    итог.ссылки = window.отправленное.filter((м) => м.type === "openLink");
+    result.links = window.sentMessages.filter((m) => m.type === "openLink");
   `,
-    { сИнтерфейсом: true },
+    { withUi: true },
   );
-  assert.equal(р.сборкаЕсть, true, "media/vendor/markdown.js не собран или не загрузился");
-  assert.equal(р.жирный, true);
-  assert.equal(р.формула, true);
-  assert.equal(р.человек, "**не разметка** $x$");
-  assert.deepEqual(р.ссылки, [{ type: "openLink", href: "https://example.com/a" }]);
+  assert.equal(r.bundleLoaded, true, "media/vendor/markdown.js не собран или не загрузился");
+  assert.equal(r.bold, true);
+  assert.equal(r.formula, true);
+  assert.equal(r.human, "**не разметка** $x$");
+  assert.deepEqual(r.links, [{ type: "openLink", href: "https://example.com/a" }]);
 });
 
-test("модели: список по кнопке, модель — списком, уровень — узлом нити", { skip: БЕЗ_БРАУЗЕРА }, () => {
-  const р = открыть(
+test("модели: список по кнопке, модель — списком, уровень — узлом нити", { skip: NO_BROWSER }, () => {
+  const r = open(
     `
-    const списки = () => window.отправленное.filter((м) => м.type === "listModels").length;
-    итог.доКнопки = списки();
-    по("модели-кнопка").click();
-    итог.панельОткрыта = !по("модели-панель").hidden;
-    по("модели-кнопка").click();
-    по("модели-кнопка").click();
-    итог.запросовСписка = списки();
+    const listCalls = () => window.sentMessages.filter((m) => m.type === "listModels").length;
+    result.beforeButton = listCalls();
+    getById("модели-кнопка").click();
+    result.panelOpen = !getById("модели-панель").hidden;
+    getById("модели-кнопка").click();
+    getById("модели-кнопка").click();
+    result.listRequests = listCalls();
 
-    послать({ type: "models", agent: "claude", choice: { model: "", effort: "" }, options: [
+    postToPage({ type: "models", agent: "claude", choice: { model: "", effort: "" }, options: [
       { id: "", label: "по умолчанию (Sonnet 5)", description: "", efforts: ["low", "high"] },
       { id: "opus", label: "Opus", description: "Opus 5", efforts: ["low", "high", "max"] },
       { id: "haiku", label: "Haiku", description: "Haiku 4.5", efforts: [] },
     ] });
-    послать({ type: "models", agent: "codex", choice: { model: "", effort: "" }, options: [
+    postToPage({ type: "models", agent: "codex", choice: { model: "", effort: "" }, options: [
       { id: "", label: "по умолчанию (GPT-Sol)", description: "", efforts: ["low", "high", "ultra"], defaultEffort: "low" },
     ] });
 
-    const узлы = (агент) => [...по("нить-" + агент).querySelectorAll(".нить-узел")];
-    const модель = по("модель-claude");
-    итог.модели = [...модель.options].map((о) => о.textContent);
-    итог.claudeБезВыбора = узлы("claude").every((у) => у.getAttribute("aria-checked") === "false");
-    итог.claudeПодпись = по("нить-уровень-claude").textContent;
-    модель.value = "opus";
-    модель.dispatchEvent(new Event("change"));
-    итог.уровни = узлы("claude").map((у) => у.getAttribute("aria-label"));
-    итог.подсказка = узлы("claude")[2].title;
-    узлы("claude")[2].click();
-    итог.выбран = узлы("claude").map((у) => у.getAttribute("aria-checked"));
-    итог.подписьПосле = по("нить-уровень-claude").textContent;
-    итог.колецНаМаксимуме = по("нить-claude").querySelectorAll(".нить-кольцо").length;
-    модель.value = "haiku";
-    модель.dispatchEvent(new Event("change"));
-    итог.узловУHaiku = узлы("claude").length;
-    итог.подписьHaiku = по("нить-уровень-claude").textContent;
+    const nodes = (agent) => [...getById("нить-" + agent).querySelectorAll(".нить-узел")];
+    const model = getById("модель-claude");
+    result.models = [...model.options].map((o) => o.textContent);
+    result.claudeWithoutSelection = nodes("claude").every((u) => u.getAttribute("aria-checked") === "false");
+    result.claudeCaption = getById("нить-уровень-claude").textContent;
+    model.value = "opus";
+    model.dispatchEvent(new Event("change"));
+    result.levels = nodes("claude").map((u) => u.getAttribute("aria-label"));
+    result.tooltip = nodes("claude")[2].title;
+    nodes("claude")[2].click();
+    result.selected = nodes("claude").map((u) => u.getAttribute("aria-checked"));
+    result.captionAfter = getById("нить-уровень-claude").textContent;
+    result.ringsAtMax = getById("нить-claude").querySelectorAll(".нить-кольцо").length;
+    model.value = "haiku";
+    model.dispatchEvent(new Event("change"));
+    result.haikuNodes = nodes("claude").length;
+    result.haikuCaption = getById("нить-уровень-claude").textContent;
 
-    итог.codexПоУмолчанию = узлы("codex").map((у) => у.getAttribute("aria-checked"));
-    итог.чёрточка = !!по("нить-codex").querySelector(".нить-по-умолчанию");
-    узлы("codex")[2].click();
-    итог.ветвей = по("нить-codex").querySelectorAll(".нить-ветвь").length;
-    узлы("codex")[0].click();
+    result.codexDefaults = nodes("codex").map((u) => u.getAttribute("aria-checked"));
+    result.dash = !!getById("нить-codex").querySelector(".нить-по-умолчанию");
+    nodes("codex")[2].click();
+    result.forkCount = getById("нить-codex").querySelectorAll(".нить-ветвь").length;
+    nodes("codex")[0].click();
 
-    итог.выборы = window.отправленное.filter((м) => м.type === "setModel");
-    итог.сводка = по("модели-кнопка").title;
-    const окно = по("модели-панель").getBoundingClientRect();
-    итог.нитьВнутриОкна = [...по("модели-панель").querySelectorAll(".нить-узел")]
-      .every((у) => у.getBoundingClientRect().right <= окно.right + 1 && у.getBoundingClientRect().left >= окно.left - 1);
+    result.choices = window.sentMessages.filter((m) => m.type === "setModel");
+    result.summary = getById("модели-кнопка").title;
+    const windowLabel = getById("модели-панель").getBoundingClientRect();
+    result.threadInsideWindow = [...getById("модели-панель").querySelectorAll(".нить-узел")]
+      .every((u) => u.getBoundingClientRect().right <= windowLabel.right + 1 && u.getBoundingClientRect().left >= windowLabel.left - 1);
 
-    послать({ type: "permissions", mode: "bypassPermissions" });
-    итог.режимДо = по("без-вопросов").getAttribute("aria-pressed");
-    по("без-вопросов").click();
-    итог.режимПосле = по("без-вопросов").textContent;
-    итог.режимы = window.отправленное.filter((м) => м.type === "setPermissionMode");
-    итог.сводкаРежима = по("модели-кнопка").title;
+    postToPage({ type: "permissions", mode: "bypassPermissions" });
+    result.modeBefore = getById("без-вопросов").getAttribute("aria-pressed");
+    getById("без-вопросов").click();
+    result.modeAfter = getById("без-вопросов").textContent;
+    result.modes = window.sentMessages.filter((m) => m.type === "setPermissionMode");
+    result.modeSummary = getById("модели-кнопка").title;
   `,
-    { сИнтерфейсом: true },
+    { withUi: true },
   );
-  assert.equal(р.доКнопки, 0, "список моделей не должен запрашиваться при открытии панели");
-  assert.equal(р.панельОткрыта, true);
-  assert.equal(р.запросовСписка, 1, "повторное открытие не должно заново поднимать агентов");
-  assert.deepEqual(р.модели, ["по умолчанию (Sonnet 5)", "Opus", "Haiku"]);
-  assert.equal(р.claudeБезВыбора, true, "умолчание Claude неизвестно — узел наугад не выбирается");
-  assert.equal(р.claudeПодпись, "По умолчанию");
-  assert.deepEqual(р.уровни, ["Низкое", "Высокое", "Максимум"]);
-  assert.match(р.подсказка, /Без ограничений на расход/, "определение уровня — в подсказке узла");
-  assert.deepEqual(р.выбран, ["false", "false", "true"]);
-  assert.equal(р.подписьПосле, "Максимум");
-  assert.equal(р.колецНаМаксимуме, 2, "«Максимум» — двойное кольцо");
-  assert.equal(р.узловУHaiku, 0, "у модели без уровней выбирать нечего");
-  assert.equal(р.подписьHaiku, "Без уровней");
-  assert.deepEqual(р.codexПоУмолчанию, ["true", "false", "false"], "умолчание из каталога выбрано");
-  assert.equal(р.чёрточка, true);
-  assert.equal(р.ветвей, 3, "«Ультра» — нить ветвится");
-  assert.deepEqual(р.выборы, [
+  assert.equal(r.beforeButton, 0, "список моделей не должен запрашиваться при открытии панели");
+  assert.equal(r.panelOpen, true);
+  assert.equal(r.listRequests, 1, "повторное открытие не должно заново поднимать агентов");
+  assert.deepEqual(r.models, ["по умолчанию (Sonnet 5)", "Opus", "Haiku"]);
+  assert.equal(r.claudeWithoutSelection, true, "умолчание Claude неизвестно — узел наугад не выбирается");
+  assert.equal(r.claudeCaption, "По умолчанию");
+  assert.deepEqual(r.levels, ["Низкое", "Высокое", "Максимум"]);
+  assert.match(r.tooltip, /Без ограничений на расход/, "определение уровня — в подсказке узла");
+  assert.deepEqual(r.selected, ["false", "false", "true"]);
+  assert.equal(r.captionAfter, "Максимум");
+  assert.equal(r.ringsAtMax, 2, "«Максимум» — двойное кольцо");
+  assert.equal(r.haikuNodes, 0, "у модели без уровней выбирать нечего");
+  assert.equal(r.haikuCaption, "Без уровней");
+  assert.deepEqual(r.codexDefaults, ["true", "false", "false"], "умолчание из каталога выбрано");
+  assert.equal(r.dash, true);
+  assert.equal(r.forkCount, 3, "«Ультра» — нить ветвится");
+  assert.deepEqual(r.choices, [
     { type: "setModel", agent: "claude", model: "opus", effort: "" },
     { type: "setModel", agent: "claude", model: "opus", effort: "max" },
     { type: "setModel", agent: "claude", model: "haiku", effort: "" },
     { type: "setModel", agent: "codex", model: "", effort: "ultra" },
     { type: "setModel", agent: "codex", model: "", effort: "" },
   ]);
-  assert.match(р.сводка, /Claude: Haiku/);
-  assert.match(р.сводка, /Codex: по умолчанию/);
-  assert.equal(р.нитьВнутриОкна, true, "узлы нити не выходят за окно «Модели»");
-  assert.equal(р.режимДо, "true", "режим из расширения должен отразиться на кнопке");
-  assert.equal(р.режимПосле, "Спрашивать");
-  assert.deepEqual(р.режимы, [{ type: "setPermissionMode", mode: "default" }]);
-  assert.match(р.сводкаРежима, /спрашивать/);
+  assert.match(r.summary, /Claude: Haiku/);
+  assert.match(r.summary, /Codex: по умолчанию/);
+  assert.equal(r.threadInsideWindow, true, "узлы нити не выходят за окно «Модели»");
+  assert.equal(r.modeBefore, "true", "режим из расширения должен отразиться на кнопке");
+  assert.equal(r.modeAfter, "Спрашивать");
+  assert.deepEqual(r.modes, [{ type: "setPermissionMode", mode: "default" }]);
+  assert.match(r.modeSummary, /спрашивать/);
 });
 
-test("карточка разрешения: кнопки, ответ уходит расширению, решение закрывает карточку", { skip: БЕЗ_БРАУЗЕРА }, () => {
-  const р = открыть(
+test("карточка разрешения: кнопки, ответ уходит расширению, решение закрывает карточку", { skip: NO_BROWSER }, () => {
+  const r = open(
     `
-    const запрос = (callId, доп = {}) => ({
+    const request = (callId, extra = {}) => ({
       id: callId, agent: "claude", kind: "approval_requested", visibility: "turn", at: Date.now(),
-      tool: "Bash", callId, text: "mkdir probe-dir", sessionRules: ["Bash(mkdir probe-dir *)"], ...доп,
+      tool: "Bash", callId, text: "mkdir probe-dir", sessionRules: ["Bash(mkdir probe-dir *)"], ...extra,
     });
-    послать({ type: "event", событие: запрос("perm-1") });
-    послать({ type: "state", состояние: { stage: "working", round: 0, maxRounds: 3, approvals: 1, queued: 0, auto: true } });
-    const карточка = document.querySelector(".разрешение");
-    итог.кнопки = [...карточка.querySelectorAll("button")].map((к) => к.textContent);
-    итог.этап = по("этап").textContent;
+    postToPage({ type: "event", event: request("perm-1") });
+    postToPage({ type: "state", state: { stage: "working", round: 0, maxRounds: 3, approvals: 1, queued: 0, auto: true } });
+    const card = document.querySelector(".разрешение");
+    result.buttons = [...card.querySelectorAll("button")].map((k) => k.textContent);
+    result.stage = getById("этап").textContent;
 
-    карточка.querySelectorAll("button")[1].click();
-    итог.отправлено = window.отправленное.filter((м) => м.type === "approval");
-    итог.отключены = [...карточка.querySelectorAll("button")].every((к) => к.disabled);
+    card.querySelectorAll("button")[1].click();
+    result.sent = window.sentMessages.filter((m) => m.type === "approval");
+    result.disabled = [...card.querySelectorAll("button")].every((k) => k.disabled);
 
-    послать({ type: "event", событие: {
+    postToPage({ type: "event", event: {
       id: "d1", agent: "claude", kind: "approval_decided", visibility: "turn", at: Date.now(),
       callId: "perm-1", text: "разрешено в этой сессии: Bash(mkdir probe-dir *)",
     } });
-    итог.кнопкиПосле = карточка.querySelectorAll("button").length;
-    итог.надпись = карточка.querySelector(".итог").textContent;
+    result.buttonsAfter = card.querySelectorAll("button").length;
+    result.labelText = card.querySelector(".итог").textContent;
 
-    послать({ type: "event", история: true, событие: запрос("old-1") });
-    итог.кнопкиИзЖурнала = document.querySelectorAll(".разрешение")[1].querySelectorAll("button").length;
+    postToPage({ type: "event", history: true, event: request("old-1") });
+    result.buttonsFromJournal = document.querySelectorAll(".разрешение")[1].querySelectorAll("button").length;
 
-    послать({ type: "event", событие: запрос("perm-2") });
-    const карточки = document.querySelectorAll(".разрешение");
-    const безВопросов = [...карточки[карточки.length - 1].querySelectorAll("button")]
-      .find((к) => к.textContent === "Больше не спрашивать");
-    безВопросов.click();
-    итог.безВопросов = window.отправленное.filter((м) => м.type === "setPermissionMode");
+    postToPage({ type: "event", event: request("perm-2") });
+    const cards = document.querySelectorAll(".разрешение");
+    const noQuestions = [...cards[cards.length - 1].querySelectorAll("button")]
+      .find((k) => k.textContent === "Больше не спрашивать");
+    noQuestions.click();
+    result.noQuestions = window.sentMessages.filter((m) => m.type === "setPermissionMode");
   `,
-    { сИнтерфейсом: true },
+    { withUi: true },
   );
-  assert.deepEqual(р.кнопки, ["Разрешить", "В этой сессии", "Больше не спрашивать", "Отклонить"]);
-  assert.equal(р.этап, "Ждёт разрешения");
-  assert.deepEqual(р.отправлено, [{ type: "approval", id: "perm-1", choice: "allowSession" }]);
-  assert.equal(р.отключены, true, "повторное нажатие отправило бы второй ответ");
-  assert.equal(р.кнопкиПосле, 0);
-  assert.match(р.надпись, /разрешено в этой сессии/);
-  assert.equal(р.кнопкиИзЖурнала, 0, "на запрос прошлого запуска ответить нельзя");
-  assert.deepEqual(р.безВопросов, [{ type: "setPermissionMode", mode: "bypassPermissions" }]);
+  assert.deepEqual(r.buttons, ["Разрешить", "В этой сессии", "Больше не спрашивать", "Отклонить"]);
+  assert.equal(r.stage, "Ждёт разрешения");
+  assert.deepEqual(r.sent, [{ type: "approval", id: "perm-1", choice: "allowSession" }]);
+  assert.equal(r.disabled, true, "повторное нажатие отправило бы второй ответ");
+  assert.equal(r.buttonsAfter, 0);
+  assert.match(r.labelText, /разрешено в этой сессии/);
+  assert.equal(r.buttonsFromJournal, 0, "на запрос прошлого запуска ответить нельзя");
+  assert.deepEqual(r.noQuestions, [{ type: "setPermissionMode", mode: "bypassPermissions" }]);
 });
 
-test("вердикт рецензента: значок и слова, исходная строка видна, текст выше — разметкой", { skip: БЕЗ_БРАУЗЕРА }, () => {
-  const р = открыть(
+test("вердикт рецензента: значок и слова, исходная строка видна, текст выше — разметкой", { skip: NO_BROWSER }, () => {
+  const r = open(
     `
-    const перевод = String.fromCharCode(10);
-    const реплика = (agent, text) => ({ id: agent + text.length, agent, kind: "message", visibility: "turn", at: Date.now(), text });
-    послать({ type: "event", событие: реплика("codex", ["**Два** замечания.", "", "ВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ"].join(перевод)) });
-    послать({ type: "event", событие: реплика("claude", ["Итог.", "ВЕРДИКТ: ПРИНЯТО"].join(перевод)) });
+    const newline = String.fromCharCode(10);
+    const replyEvent = (agent, text) => ({ id: agent + text.length, agent, kind: "message", visibility: "turn", at: Date.now(), text });
+    postToPage({ type: "event", event: replyEvent("codex", ["**Два** замечания.", "", "ВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ"].join(newline)) });
+    postToPage({ type: "event", event: replyEvent("claude", ["Итог.", "ВЕРДИКТ: ПРИНЯТО"].join(newline)) });
     const codex = document.querySelector(".пузырь.codex");
-    итог.слово = codex.querySelector(".вердикт-строка .слово")?.textContent;
-    итог.исходная = codex.querySelector(".вердикт-строка .исходная")?.textContent;
-    итог.класс = codex.querySelector(".вердикт-строка")?.className;
-    итог.текстБезСтроки = !codex.querySelector(".текст").textContent.includes("ВЕРДИКТ");
-    итог.жирный = !!codex.querySelector(".текст strong");
-    итог.уClaude = !!document.querySelector(".пузырь.claude .вердикт-строка");
+    result.word = codex.querySelector(".вердикт-строка .слово")?.textContent;
+    result.originalLine = codex.querySelector(".вердикт-строка .исходная")?.textContent;
+    result.className = codex.querySelector(".вердикт-строка")?.className;
+    result.textWithoutLine = !codex.querySelector(".текст").textContent.includes("ВЕРДИКТ");
+    result.bold = !!codex.querySelector(".текст strong");
+    result.onClaude = !!document.querySelector(".пузырь.claude .вердикт-строка");
   `,
-    { сИнтерфейсом: true },
+    { withUi: true },
   );
-  assert.equal(р.слово, "Есть замечания");
-  assert.equal(р.исходная, "ВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
-  assert.match(р.класс, /remarks/);
-  assert.equal(р.текстБезСтроки, true);
-  assert.equal(р.жирный, true);
-  assert.equal(р.уClaude, false, "вердикт выносит только рецензент");
+  assert.equal(r.word, "Есть замечания");
+  assert.equal(r.originalLine, "ВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  assert.match(r.className, /remarks/);
+  assert.equal(r.textWithoutLine, true);
+  assert.equal(r.bold, true);
+  assert.equal(r.onClaude, false, "вердикт выносит только рецензент");
 });
 
-test("действия хода: бусина на вызов, форма по виду, счётчики и отказ", { skip: БЕЗ_БРАУЗЕРА }, () => {
-  const р = открыть(
+test("действия хода: бусина на вызов, форма по виду, счётчики и отказ", { skip: NO_BROWSER }, () => {
+  const r = open(
     `
-    const с = (kind, доп) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...доп });
-    послать({ type: "event", событие: с("tool_call", { tool: "Read", callId: "r1", text: "docs/a.md" }) });
-    послать({ type: "event", событие: с("tool_result", { tool: "Read", callId: "r1", text: "ok" }) });
-    послать({ type: "event", событие: с("tool_call", { tool: "Bash", callId: "b1", text: "python -m pytest -q" }) });
-    послать({ type: "event", событие: с("tool_running", { tool: "Bash", callId: "b1" }) });
-    итог.идёт = document.querySelector(".действия .идёт-сейчас").textContent;
-    послать({ type: "event", событие: с("tool_result", { tool: "Bash", callId: "b1", text: "5 passed" }) });
-    послать({ type: "event", событие: с("tool_call", { tool: "Bash", callId: "b2", text: "git push" }) });
-    послать({ type: "event", событие: с("approval_decided", { callId: "b2", text: "отказано: git push" }) });
-    послать({ type: "event", событие: с("tool_call", { tool: "Edit", callId: "e1", text: "src/x.ts" }) });
-    итог.бусины = [...document.querySelectorAll(".действия .чётки .бусина")].map((б) => б.className);
-    итог.счётчики = [...document.querySelectorAll(".действия .счётчик")].map((с) => с.title + " " + с.textContent);
-    итог.идётПосле = document.querySelector(".действия .идёт-сейчас").hidden;
-    итог.строк = document.querySelectorAll(".действия .вызов").length;
-    итог.отказСтрока = document.querySelector(".действия .вызов.отказ .метка")?.textContent;
+    const s = (kind, extra) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...extra });
+    postToPage({ type: "event", event: s("tool_call", { tool: "Read", callId: "r1", text: "docs/a.md" }) });
+    postToPage({ type: "event", event: s("tool_result", { tool: "Read", callId: "r1", text: "ok" }) });
+    postToPage({ type: "event", event: s("tool_call", { tool: "Bash", callId: "b1", text: "python -m pytest -q" }) });
+    postToPage({ type: "event", event: s("tool_running", { tool: "Bash", callId: "b1" }) });
+    result.inProgress = document.querySelector(".действия .идёт-сейчас").textContent;
+    postToPage({ type: "event", event: s("tool_result", { tool: "Bash", callId: "b1", text: "5 passed" }) });
+    postToPage({ type: "event", event: s("tool_call", { tool: "Bash", callId: "b2", text: "git push" }) });
+    postToPage({ type: "event", event: s("approval_decided", { callId: "b2", text: "отказано: git push" }) });
+    postToPage({ type: "event", event: s("tool_call", { tool: "Edit", callId: "e1", text: "src/x.ts" }) });
+    result.beadClasses = [...document.querySelectorAll(".действия .чётки .бусина")].map((b) => b.className);
+    result.counters = [...document.querySelectorAll(".действия .счётчик")].map((s) => s.title + " " + s.textContent);
+    result.inProgressAfter = document.querySelector(".действия .идёт-сейчас").hidden;
+    result.lineCount = document.querySelectorAll(".действия .вызов").length;
+    result.deniedRow = document.querySelector(".действия .вызов.отказ .метка")?.textContent;
   `,
-    { сИнтерфейсом: true },
+    { withUi: true },
   );
-  assert.equal(р.идёт, "выполняется: python -m pytest -q");
-  assert.deepEqual(р.бусины, ["бусина ring done", "бусина square done", "бусина square denied", "бусина diamond formed"]);
-  assert.deepEqual(р.счётчики, ["Команды 2", "Чтения и поиск 1", "Правки 1", "Отказано 1"]);
-  assert.equal(р.идётПосле, true);
-  assert.equal(р.строк, 4);
-  assert.equal(р.отказСтрока, "отказано");
+  assert.equal(r.inProgress, "выполняется: python -m pytest -q");
+  assert.deepEqual(r.beadClasses, ["бусина ring done", "бусина square done", "бусина square denied", "бусина diamond formed"]);
+  assert.deepEqual(r.counters, ["Команды 2", "Чтения и поиск 1", "Правки 1", "Отказано 1"]);
+  assert.equal(r.inProgressAfter, true);
+  assert.equal(r.lineCount, 4);
+  assert.equal(r.deniedRow, "отказано");
 });
 
-test("эстафета и дорожка цикла: кто работает, счёт проверок, след по клику", { skip: БЕЗ_БРАУЗЕРА }, () => {
-  const р = открыть(
+test("эстафета и дорожка цикла: кто работает, счёт проверок, след по клику", { skip: NO_BROWSER }, () => {
+  const r = open(
     `
-    const состояние = (доп) => ({ stage: "idle", round: 0, maxRounds: 3, approvals: 0, queued: 0, auto: true,
-      claudeBusy: false, codexBusy: false, trail: [], ...доп });
-    послать({ type: "state", состояние: состояние({ stage: "reviewing", round: 2, verdict: "remarks", task: "Спецификация",
+    const state = (extra) => ({ stage: "idle", round: 0, maxRounds: 3, approvals: 0, queued: 0, auto: true,
+      claudeBusy: false, codexBusy: false, trail: [], ...extra });
+    postToPage({ type: "state", state: state({ stage: "reviewing", round: 2, verdict: "remarks", task: "Спецификация",
       trail: [{ who: "task" }, { who: "claude" }, { who: "codex", mark: "!" }, { who: "claude" }, { who: "codex" }] }) });
-    итог.активен = по("нить-статус").dataset.active;
-    итог.поток = по("нить-статус").dataset.flow;
-    итог.этап = по("этап").textContent;
-    итог.пояснение = по("этап-пояснение").textContent;
-    итог.точки = [...по("раунд").children].map((т) => т.className);
-    итог.дорожкаДо = по("дорожка").hidden;
-    по("эстафета").click();
-    итог.дорожкаПосле = по("дорожка").hidden;
-    итог.шаги = [...по("дорожка").querySelectorAll(".шаг-узел")].map((у) => у.className);
-    итог.отметки = [...по("дорожка").querySelectorAll(".шаг-отметка")].map((о) => о.textContent);
-    послать({ type: "state", состояние: состояние({ stage: "held", verdict: "human",
+    result.active = getById("нить-статус").dataset.active;
+    result.flow = getById("нить-статус").dataset.flow;
+    result.stage = getById("этап").textContent;
+    result.hint = getById("этап-пояснение").textContent;
+    result.dots = [...getById("раунд").children].map((t) => t.className);
+    result.trackBefore = getById("дорожка").hidden;
+    getById("эстафета").click();
+    result.trackAfter = getById("дорожка").hidden;
+    result.steps = [...getById("дорожка").querySelectorAll(".шаг-узел")].map((u) => u.className);
+    result.marks = [...getById("дорожка").querySelectorAll(".шаг-отметка")].map((o) => o.textContent);
+    postToPage({ type: "state", state: state({ stage: "held", verdict: "human",
       held: { to: "claude", reason: "Рецензент просит решения", action: "send" } }) });
-    итог.человек = по("нить-статус").dataset.active;
-    итог.плашка = !по("удержано").hidden;
-    итог.кнопка = по("отпустить").textContent;
+    result.human = getById("нить-статус").dataset.active;
+    result.banner = !getById("удержано").hidden;
+    result.button = getById("отпустить").textContent;
   `,
-    { сИнтерфейсом: true },
+    { withUi: true },
   );
-  assert.equal(р.активен, "codex");
-  assert.equal(р.поток, "to-codex");
-  assert.equal(р.этап, "Codex проверяет");
-  assert.equal(р.пояснение, "есть замечания");
-  assert.deepEqual(р.точки, ["пройдена", "пройдена", ""]);
-  assert.equal(р.дорожкаДо, true, "дорожка раскрывается по клику");
-  assert.equal(р.дорожкаПосле, false);
-  assert.deepEqual(р.шаги, [
+  assert.equal(r.active, "codex");
+  assert.equal(r.flow, "to-codex");
+  assert.equal(r.stage, "Codex проверяет");
+  assert.equal(r.hint, "есть замечания");
+  assert.deepEqual(r.dots, ["пройдена", "пройдена", ""]);
+  assert.equal(r.trackBefore, true, "дорожка раскрывается по клику");
+  assert.equal(r.trackAfter, false);
+  assert.deepEqual(r.steps, [
     "шаг-узел task", "шаг-узел claude", "шаг-узел codex", "шаг-узел claude", "шаг-узел codex текущий",
     "шаг-узел claude пустой", "шаг-узел codex пустой",
   ]);
-  assert.deepEqual(р.отметки, ["!"]);
-  assert.equal(р.человек, "human");
-  assert.equal(р.плашка, true);
-  assert.equal(р.кнопка, "Отправить Claude");
+  assert.deepEqual(r.marks, ["!"]);
+  assert.equal(r.human, "human");
+  assert.equal(r.banner, true);
+  assert.equal(r.button, "Отправить Claude");
 });
 
-test("режим отправки: переключатель, меню по названию, выбор уходит с сообщением", { skip: БЕЗ_БРАУЗЕРА }, () => {
-  const р = открыть(
+test("режим отправки: переключатель, меню по названию, выбор уходит с сообщением", { skip: NO_BROWSER }, () => {
+  const r = open(
     `
-    итог.кнопок = по("режимы").querySelectorAll("[role=radio]").length;
-    итог.название = по("маршрут-название").textContent;
-    по("режимы").querySelector("[data-маршрут=both]").click();
-    итог.послеПереключателя = по("маршрут-название").textContent;
-    по("маршрут").click();
-    итог.менюОткрыто = !по("маршрут-меню").hidden;
-    по("маршрут-меню").querySelector("[data-маршрут=codex]").click();
-    итог.менюЗакрыто = по("маршрут-меню").hidden;
-    итог.отмечен = по("режимы").querySelector("[aria-checked=true]").dataset.маршрут;
-    по("ввод").value = "вопрос";
-    по("отправить").click();
-    итог.отправлено = window.отправленное.filter((м) => м.type === "send");
+    result.buttonCount = getById("режимы").querySelectorAll("[role=radio]").length;
+    result.title = getById("маршрут-название").textContent;
+    getById("режимы").querySelector("[data-route=both]").click();
+    result.afterToggle = getById("маршрут-название").textContent;
+    getById("маршрут").click();
+    result.menuOpen = !getById("маршрут-меню").hidden;
+    getById("маршрут-меню").querySelector("[data-route=codex]").click();
+    result.menuClosed = getById("маршрут-меню").hidden;
+    result.checked = getById("режимы").querySelector("[aria-checked=true]").dataset.route;
+    getById("ввод").value = "вопрос";
+    getById("отправить").click();
+    result.sent = window.sentMessages.filter((m) => m.type === "send");
   `,
-    { сИнтерфейсом: true },
+    { withUi: true },
   );
-  assert.equal(р.кнопок, 4);
-  assert.equal(р.название, "Задача с рецензией");
-  assert.equal(р.послеПереключателя, "Спросить обоих");
-  assert.equal(р.менюОткрыто, true);
-  assert.equal(р.менюЗакрыто, true);
-  assert.equal(р.отмечен, "codex");
-  assert.deepEqual(р.отправлено, [{ type: "send", text: "вопрос", route: "codex" }]);
+  assert.equal(r.buttonCount, 4);
+  assert.equal(r.title, "Задача с рецензией");
+  assert.equal(r.afterToggle, "Спросить обоих");
+  assert.equal(r.menuOpen, true);
+  assert.equal(r.menuClosed, true);
+  assert.equal(r.checked, "codex");
+  assert.deepEqual(r.sent, [{ type: "send", text: "вопрос", route: "codex" }]);
 });
 
-test("светлая тема: у агентов свои цвета, различимые на белом", { skip: БЕЗ_БРАУЗЕРА }, () => {
-  const р = открыть(
+test("светлая тема: у агентов свои цвета, различимые на белом", { skip: NO_BROWSER }, () => {
+  const r = open(
     `
-    const стиль = getComputedStyle(document.body);
-    итог.claude = стиль.getPropertyValue("--claude").trim();
-    итог.codex = стиль.getPropertyValue("--codex").trim();
+    const style = getComputedStyle(document.body);
+    result.claude = style.getPropertyValue("--claude").trim();
+    result.codex = style.getPropertyValue("--codex").trim();
   `,
-    { сИнтерфейсом: true, тема: "vscode-light" },
+    { withUi: true, theme: "vscode-light" },
   );
-  assert.equal(р.claude, "#B8702F");
-  assert.equal(р.codex, "#1E8C96");
+  assert.equal(r.claude, "#B8702F");
+  assert.equal(r.codex, "#1E8C96");
 });
 
-test("отказ человека в карточке окрашивает бусину вызова по tool_use_id", { skip: БЕЗ_БРАУЗЕРА }, () => {
-  const р = открыть(
+test("отказ человека в карточке окрашивает бусину вызова по tool_use_id", { skip: NO_BROWSER }, () => {
+  const r = open(
     `
-    const с = (kind, доп) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...доп });
-    послать({ type: "event", событие: с("tool_call", { tool: "Bash", callId: "toolu_1", text: "git push" }) });
-    послать({ type: "event", событие: с("approval_requested", { tool: "Bash", callId: "perm-1", toolCallId: "toolu_1", text: "git push" }) });
-    послать({ type: "event", событие: с("approval_decided", { callId: "perm-1", toolCallId: "toolu_1", text: "отклонено человеком" }) });
-    послать({ type: "event", событие: с("tool_result", { tool: "Bash", callId: "toolu_1", text: "Отклонено человеком в панели." }) });
-    итог.бусины = [...document.querySelectorAll(".действия .чётки .бусина")].map((б) => б.className);
-    итог.счётчики = [...document.querySelectorAll(".действия .счётчик")].map((с) => с.title + " " + с.textContent);
-    итог.карточка = document.querySelector(".разрешение").className;
+    const s = (kind, extra) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...extra });
+    postToPage({ type: "event", event: s("tool_call", { tool: "Bash", callId: "toolu_1", text: "git push" }) });
+    postToPage({ type: "event", event: s("approval_requested", { tool: "Bash", callId: "perm-1", toolCallId: "toolu_1", text: "git push" }) });
+    postToPage({ type: "event", event: s("approval_decided", { callId: "perm-1", toolCallId: "toolu_1", text: "отклонено человеком" }) });
+    postToPage({ type: "event", event: s("tool_result", { tool: "Bash", callId: "toolu_1", text: "Отклонено человеком в панели." }) });
+    result.beadClasses = [...document.querySelectorAll(".действия .чётки .бусина")].map((b) => b.className);
+    result.counters = [...document.querySelectorAll(".действия .счётчик")].map((s) => s.title + " " + s.textContent);
+    result.card = document.querySelector(".разрешение").className;
   `,
-    { сИнтерфейсом: true },
+    { withUi: true },
   );
-  assert.deepEqual(р.бусины, ["бусина square denied"]);
-  assert.deepEqual(р.счётчики, ["Команды 1", "Отказано 1"]);
-  assert.match(р.карточка, /отклонено/);
+  assert.deepEqual(r.beadClasses, ["бусина square denied"]);
+  assert.deepEqual(r.counters, ["Команды 1", "Отказано 1"]);
+  assert.match(r.card, /отклонено/);
 });
 
-test("режим: после выбора фокус остаётся на переключателе или возвращается на название", { skip: БЕЗ_БРАУЗЕРА }, () => {
-  const р = открыть(
+test("режим: после выбора фокус остаётся на переключателе или возвращается на название", { skip: NO_BROWSER }, () => {
+  const r = open(
     `
-    по("режимы").querySelector("[data-маршрут=both]").focus();
-    по("режимы").querySelector("[data-маршрут=both]").click();
-    итог.послеПереключателя = document.activeElement?.dataset?.маршрут;
-    по("маршрут").click();
-    по("маршрут-меню").querySelector("[data-маршрут=codex]").focus();
-    по("маршрут-меню").querySelector("[data-маршрут=codex]").click();
-    итог.послеМеню = document.activeElement?.id;
-    по("маршрут").click();
+    getById("режимы").querySelector("[data-route=both]").focus();
+    getById("режимы").querySelector("[data-route=both]").click();
+    result.afterToggle = document.activeElement?.dataset?.route;
+    getById("маршрут").click();
+    getById("маршрут-меню").querySelector("[data-route=codex]").focus();
+    getById("маршрут-меню").querySelector("[data-route=codex]").click();
+    result.afterMenu = document.activeElement?.id;
+    getById("маршрут").click();
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    итог.послеEscape = document.activeElement?.id;
-    итог.менюЗакрыто = по("маршрут-меню").hidden;
+    result.afterEscape = document.activeElement?.id;
+    result.menuClosed = getById("маршрут-меню").hidden;
   `,
-    { сИнтерфейсом: true },
+    { withUi: true },
   );
-  assert.equal(р.послеПереключателя, "both");
-  assert.equal(р.послеМеню, "маршрут");
-  assert.equal(р.послеEscape, "маршрут");
-  assert.equal(р.менюЗакрыто, true);
+  assert.equal(r.afterToggle, "both");
+  assert.equal(r.afterMenu, "маршрут");
+  assert.equal(r.afterEscape, "маршрут");
+  assert.equal(r.menuClosed, true);
 });
 
-test("уровень рассуждения можно вернуть к умолчанию агента", { skip: БЕЗ_БРАУЗЕРА }, () => {
+test("уровень рассуждения можно вернуть к умолчанию агента", { skip: NO_BROWSER }, () => {
   // Рецензия Codex 28.09: у Claude умолчание неизвестно, и после выбора узла
   // вернуть «по умолчанию» было нечем — прежний список это позволял.
-  const р = открыть(
+  const r = open(
     `
-    по("модели-кнопка").click();
-    послать({ type: "models", agent: "claude", choice: { model: "", effort: "" }, options: [
+    getById("модели-кнопка").click();
+    postToPage({ type: "models", agent: "claude", choice: { model: "", effort: "" }, options: [
       { id: "", label: "по умолчанию", description: "", efforts: ["low", "high", "max"] },
     ] });
-    const сброс = по("нить-сброс-claude");
-    итог.сбросДо = сброс.hidden;
-    по("нить-claude").querySelectorAll(".нить-узел")[1].click();
-    итог.сбросПосле = сброс.hidden;
-    сброс.click();
-    итог.выбран = [...по("нить-claude").querySelectorAll(".нить-узел")].some((у) => у.getAttribute("aria-checked") === "true");
-    итог.сбросВКонце = сброс.hidden;
-    итог.выборы = window.отправленное.filter((м) => м.type === "setModel").map((м) => м.effort);
+    const resetButton = getById("нить-сброс-claude");
+    result.resetBefore = resetButton.hidden;
+    getById("нить-claude").querySelectorAll(".нить-узел")[1].click();
+    result.resetAfter = resetButton.hidden;
+    resetButton.click();
+    result.selected = [...getById("нить-claude").querySelectorAll(".нить-узел")].some((u) => u.getAttribute("aria-checked") === "true");
+    result.resetAtEnd = resetButton.hidden;
+    result.choices = window.sentMessages.filter((m) => m.type === "setModel").map((m) => m.effort);
   `,
-    { сИнтерфейсом: true },
+    { withUi: true },
   );
-  assert.equal(р.сбросДо, true, "при умолчании сбрасывать нечего");
-  assert.equal(р.сбросПосле, false);
-  assert.equal(р.выбран, false);
-  assert.equal(р.сбросВКонце, true);
-  assert.deepEqual(р.выборы, ["high", ""]);
+  assert.equal(r.resetBefore, true, "при умолчании сбрасывать нечего");
+  assert.equal(r.resetAfter, false);
+  assert.equal(r.selected, false);
+  assert.equal(r.resetAtEnd, true);
+  assert.deepEqual(r.choices, ["high", ""]);
 });
 
-test("действия субагента отмечены в чётках и в списке", { skip: БЕЗ_БРАУЗЕРА }, () => {
-  const р = открыть(
+test("действия субагента отмечены в чётках и в списке", { skip: NO_BROWSER }, () => {
+  const r = open(
     `
-    const с = (kind, доп) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...доп });
-    послать({ type: "event", событие: с("tool_call", { tool: "Agent", callId: "toolu_agent", text: "{}" }) });
-    послать({ type: "event", событие: с("tool_call", { tool: "Read", callId: "toolu_sub", parentCallId: "toolu_agent", text: "a.txt" }) });
-    послать({ type: "event", событие: с("tool_result", { tool: "Read", callId: "toolu_sub", parentCallId: "toolu_agent", text: "alpha" }) });
-    итог.бусины = [...document.querySelectorAll(".действия .чётки .бусина")].map((б) => б.classList.contains("субагент"));
-    итог.метки = [...document.querySelectorAll(".действия .вызов .кто")].map((м) => м.textContent);
+    const s = (kind, extra) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...extra });
+    postToPage({ type: "event", event: s("tool_call", { tool: "Agent", callId: "toolu_agent", text: "{}" }) });
+    postToPage({ type: "event", event: s("tool_call", { tool: "Read", callId: "toolu_sub", parentCallId: "toolu_agent", text: "a.txt" }) });
+    postToPage({ type: "event", event: s("tool_result", { tool: "Read", callId: "toolu_sub", parentCallId: "toolu_agent", text: "alpha" }) });
+    result.beadClasses = [...document.querySelectorAll(".действия .чётки .бусина")].map((b) => b.classList.contains("субагент"));
+    result.labels = [...document.querySelectorAll(".действия .вызов .кто")].map((m) => m.textContent);
   `,
-    { сИнтерфейсом: true },
+    { withUi: true },
   );
-  assert.deepEqual(р.бусины, [false, true]);
-  assert.deepEqual(р.метки, ["субагент"]);
+  assert.deepEqual(r.beadClasses, [false, true]);
+  assert.deepEqual(r.labels, ["субагент"]);
 });
 
-test("реплика самостоятельного хода Claude помечена «сам», следующая — нет", { skip: БЕЗ_БРАУЗЕРА }, () => {
+test("реплика самостоятельного хода Claude помечена «сам», следующая — нет", { skip: NO_BROWSER }, () => {
   // Снимок сцены 28.09 и рецензия Codex: реплика хода, который Claude начал
   // сам после фоновой команды, выглядела как работа по задаче.
-  const р = открыть(
+  const r = open(
     `
-    const с = (kind, доп) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...доп });
-    послать({ type: "event", событие: с("turn_started", { unsolicited: true, text: "фоновая задача закончилась: pytest" }) });
-    послать({ type: "event", событие: с("text_delta", { text: "Тесты" }) });
-    послать({ type: "event", событие: с("message", { text: "Тесты прошли." }) });
-    послать({ type: "event", событие: с("turn_completed", { unsolicited: true }) });
-    послать({ type: "event", событие: с("message", { text: "Ответ по задаче." }) });
-    итог.пузыри = [...document.querySelectorAll(".пузырь.claude")].map((п) => [п.classList.contains("сам"), п.querySelector(".автор .имя").textContent]);
+    const s = (kind, extra) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...extra });
+    postToPage({ type: "event", event: s("turn_started", { unsolicited: true, text: "фоновая задача закончилась: pytest" }) });
+    postToPage({ type: "event", event: s("text_delta", { text: "Тесты" }) });
+    postToPage({ type: "event", event: s("message", { text: "Тесты прошли." }) });
+    postToPage({ type: "event", event: s("turn_completed", { unsolicited: true }) });
+    postToPage({ type: "event", event: s("message", { text: "Ответ по задаче." }) });
+    result.bubbles = [...document.querySelectorAll(".пузырь.claude")].map((p) => [p.classList.contains("сам"), p.querySelector(".автор .имя").textContent]);
   `,
-    { сИнтерфейсом: true },
+    { withUi: true },
   );
-  assert.deepEqual(р.пузыри, [[true, "Claude · сам"], [false, "Claude"]]);
+  assert.deepEqual(r.bubbles, [[true, "Claude · сам"], [false, "Claude"]]);
 });
 
-test("реплика субагента — отдельный приглушённый блок, пузырь Claude не трогает", { skip: БЕЗ_БРАУЗЕРА }, () => {
+test("реплика субагента — отдельный приглушённый блок, пузырь Claude не трогает", { skip: NO_BROWSER }, () => {
   // Живая трасса 28.09: текст фонового субагента приходит в поток и без
   // --forward-subagent-text, с parent_tool_use_id.
-  const р = открыть(
+  const r = open(
     `
-    const с = (kind, доп) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...доп });
-    послать({ type: "event", событие: с("text_delta", { text: "Claude пишет" }) });
-    послать({ type: "event", событие: с("message", { text: "Прочитал файл.", parentCallId: "toolu_agent" }) });
-    послать({ type: "event", событие: с("message", { text: "Claude пишет итог" }) });
-    итог.субагент = [...document.querySelectorAll(".пузырь.субагент")].map((п) => п.querySelector(".автор .имя").textContent + ": " + п.querySelector(".текст").textContent.trim());
-    итог.claude = [...document.querySelectorAll(".пузырь.claude:not(.субагент)")].map((п) => п.querySelector(".текст").textContent.trim());
+    const s = (kind, extra) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...extra });
+    postToPage({ type: "event", event: s("text_delta", { text: "Claude пишет" }) });
+    postToPage({ type: "event", event: s("message", { text: "Прочитал файл.", parentCallId: "toolu_agent" }) });
+    postToPage({ type: "event", event: s("message", { text: "Claude пишет итог" }) });
+    result.subagent = [...document.querySelectorAll(".пузырь.субагент")].map((p) => p.querySelector(".автор .имя").textContent + ": " + p.querySelector(".текст").textContent.trim());
+    result.claude = [...document.querySelectorAll(".пузырь.claude:not(.субагент)")].map((p) => p.querySelector(".текст").textContent.trim());
   `,
-    { сИнтерфейсом: true },
+    { withUi: true },
   );
-  assert.deepEqual(р.субагент, ["Субагент: Прочитал файл."]);
-  assert.deepEqual(р.claude, ["Claude пишет итог"]);
+  assert.deepEqual(r.subagent, ["Субагент: Прочитал файл."]);
+  assert.deepEqual(r.claude, ["Claude пишет итог"]);
 });
 
-test("расход задачи и недельный лимит Codex видны в дорожке цикла", { skip: БЕЗ_БРАУЗЕРА }, () => {
-  const р = открыть(
+test("расход задачи и недельный лимит Codex видны в дорожке цикла", { skip: NO_BROWSER }, () => {
+  const r = open(
     `
-    послать({ type: "state", состояние: { stage: "working", round: 0, maxRounds: 3, approvals: 0, queued: 0, auto: true,
+    postToPage({ type: "state", state: { stage: "working", round: 0, maxRounds: 3, approvals: 0, queued: 0, auto: true,
       trail: [{ who: "task" }, { who: "claude" }],
       usage: { task: { claude: { input: 1250000, cached: 1100000, output: 12000 }, codex: { input: 17522, cached: 7936, output: 5 } },
                limits: { codex: { percent: 8, window: "week" }, claude: { status: "allowed", window: "five_hour" } } } } });
-    по("эстафета").click();
-    итог.расход = по("расход").textContent;
+    getById("эстафета").click();
+    result.usage = getById("расход").textContent;
   `,
-    { сИнтерфейсом: true },
+    { withUi: true },
   );
-  assert.match(р.расход, /Claude 1,26 млн/);
-  assert.match(р.расход, /из кеша 1,1 млн/);
-  assert.match(р.расход, /Codex 17,5 тыс\./);
-  assert.match(р.расход, /неделя 8%/);
+  assert.match(r.usage, /Claude 1,26 млн/);
+  assert.match(r.usage, /из кеша 1,1 млн/);
+  assert.match(r.usage, /Codex 17,5 тыс\./);
+  assert.match(r.usage, /неделя 8%/);
 });
 
-test("недельная доля Claude и окно сессии видны рядом с лимитом Codex", { skip: БЕЗ_БРАУЗЕРА }, () => {
-  const р = открыть(
+test("недельная доля Claude и окно сессии видны рядом с лимитом Codex", { skip: NO_BROWSER }, () => {
+  const r = open(
     `
-    послать({ type: "state", состояние: { stage: "idle", round: 0, maxRounds: 3, approvals: 0, queued: 0, auto: true,
+    postToPage({ type: "state", state: { stage: "idle", round: 0, maxRounds: 3, approvals: 0, queued: 0, auto: true,
       trail: [],
       usage: { task: {},
                limits: { codex: { percent: 8, window: "week" },
                          claude: { status: "allowed_warning", window: "five_hour" },
                          claudeWeek: { percent: 4, session: 28 } } } } });
-    по("эстафета").click();
-    итог.расход = по("расход").textContent;
+    getById("эстафета").click();
+    result.usage = getById("расход").textContent;
   `,
-    { сИнтерфейсом: true },
+    { withUi: true },
   );
-  assert.match(р.расход, /Claude: неделя 4%, окно 5 ч 28%, близко к пределу/);
-  assert.doesNotMatch(р.расход, /на \d/);
-  assert.match(р.расход, /Codex: неделя 8%/);
+  assert.match(r.usage, /Claude: неделя 4%, окно 5 ч 28%, близко к пределу/);
+  assert.doesNotMatch(r.usage, /на \d/);
+  assert.match(r.usage, /Codex: неделя 8%/);
 });
 
-test("устаревшая недельная доля Claude показана со временем сведения", { skip: БЕЗ_БРАУЗЕРА }, () => {
-  const р = открыть(
+test("устаревшая недельная доля Claude показана со временем сведения", { skip: NO_BROWSER }, () => {
+  const r = open(
     `
     const at = new Date(2026, 8, 20, 5, 14).getTime();
-    послать({ type: "state", состояние: { stage: "idle", round: 0, maxRounds: 3, approvals: 0, queued: 0, auto: true,
+    postToPage({ type: "state", state: { stage: "idle", round: 0, maxRounds: 3, approvals: 0, queued: 0, auto: true,
       trail: [], usage: { task: {}, limits: { claudeWeek: { percent: 4, at, stale: true } } } } });
-    по("эстафета").click();
-    итог.расход = по("расход").textContent;
+    getById("эстафета").click();
+    result.usage = getById("расход").textContent;
   `,
-    { сИнтерфейсом: true },
+    { withUi: true },
   );
-  assert.match(р.расход, /Claude: неделя 4% \(на 20\.09 05:14\)/);
+  assert.match(r.usage, /Claude: неделя 4% \(на 20\.09 05:14\)/);
 });
 
-test("ссылка «новая сессия» в карточке модели просит расширение начать сессию заново", { skip: БЕЗ_БРАУЗЕРА }, () => {
-  const р = открыть(
+test("ссылка «новая сессия» в карточке модели просит расширение начать сессию заново", { skip: NO_BROWSER }, () => {
+  const r = open(
     `
-    по("модели-кнопка").click();
-    по("новая-сессия-claude").click();
-    по("новая-сессия-codex").click();
-    итог.запросы = window.отправленное.filter((м) => м.type === "newSession");
+    getById("модели-кнопка").click();
+    getById("новая-сессия-claude").click();
+    getById("новая-сессия-codex").click();
+    result.requests = window.sentMessages.filter((m) => m.type === "newSession");
   `,
-    { сИнтерфейсом: true },
+    { withUi: true },
   );
-  assert.deepEqual(р.запросы, [{ type: "newSession", agent: "claude" }, { type: "newSession", agent: "codex" }]);
+  assert.deepEqual(r.requests, [{ type: "newSession", agent: "claude" }, { type: "newSession", agent: "codex" }]);
 });

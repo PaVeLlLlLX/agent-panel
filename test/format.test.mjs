@@ -14,14 +14,14 @@ const require_ = createRequire(import.meta.url);
 const { plural, toolCategory, summarizeTools, stickToBottom } = require_("../media/format.js");
 
 test("склонение числительных по правилам русского языка", () => {
-  const формы = ["команда", "команды", "команд"];
-  const ожидание = {
+  const forms = ["команда", "команды", "команд"];
+  const waiter = {
     1: "команда", 2: "команды", 4: "команды", 5: "команд", 11: "команд",
     12: "команд", 14: "команд", 21: "команда", 22: "команды", 25: "команд",
     111: "команд", 0: "команд",
   };
-  for (const [n, форма] of Object.entries(ожидание)) {
-    assert.equal(plural(Number(n), формы), форма, `для ${n}`);
+  for (const [n, form] of Object.entries(waiter)) {
+    assert.equal(plural(Number(n), forms), form, `для ${n}`);
   }
 });
 
@@ -47,12 +47,12 @@ test("элементы Codex раскладываются по видам", () =
 });
 
 test("сводка на реальных числах из журнала живого прогона", () => {
-  const вызовы = [
+  const calls = [
     ...Array(9).fill("Bash"),
     ...Array(2).fill("Read"),
     ...Array(3).fill("mcp__om__remember"),
   ];
-  assert.equal(summarizeTools(вызовы), "9 команд, 2 чтения, 3 записи в память");
+  assert.equal(summarizeTools(calls), "9 команд, 2 чтения, 3 записи в память");
 });
 
 test("порядок видов в сводке не зависит от порядка вызовов", () => {

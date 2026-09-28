@@ -32,59 +32,59 @@ export const VERDICT_REQUEST =
   "«ВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА», если без решения или данных человека продолжать обмен бессмысленно.";
 
 /** Ограда блока кода: отступ до трёх пробелов, три и более одинаковых знака, остаток строки. */
-const ОГРАДА = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 /** Отступ в четыре пробела или табуляцию — блок кода с отступом. */
-const ОТСТУП_КОДА = /^(?: {4}|\t)/;
+const CODE_INDENT = /^(?: {4}|\t)/;
 /** Обратные кавычки в ведущие знаки не входят: строка в них — пример, а не решение. */
-const СТРОКА = /^[\s*_]*ВЕРДИКТ[\s*_]*:\s*(.+)$/iu;
+const VERDICT_LINE = /^[\s*_]*ВЕРДИКТ[\s*_]*:\s*(.+)$/iu;
 
-const ЗНАЧЕНИЯ: Record<string, Verdict> = {
+const VERDICT_VALUES: Record<string, Verdict> = {
   "ПРИНЯТО": "accepted",
   "ЕСТЬ ЗАМЕЧАНИЯ": "remarks",
   "НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА": "human",
 };
 
 /** Строки кода и ограды — null; остальные как есть. */
-function разметить(текст: string): (string | null)[] {
-  let открытая: { знак: string; длина: number } | undefined;
-  return текст.split(/\r?\n/).map((строка) => {
-    const ограда = ОГРАДА.exec(строка);
-    const метка = ограда?.[1] ?? "";
-    const остаток = ограда?.[2] ?? "";
+function markCode(text: string): (string | null)[] {
+  let openFence: { char: string; length: number } | undefined;
+  return text.split(/\r?\n/).map((line) => {
+    const fence = FENCE.exec(line);
+    const label = fence?.[1] ?? "";
+    const remainder = fence?.[2] ?? "";
 
-    if (открытая) {
-      const закрывает =
-        ограда !== null && метка[0] === открытая.знак && метка.length >= открытая.длина && остаток.trim() === "";
-      if (закрывает) открытая = undefined;
+    if (openFence) {
+      const closes =
+        fence !== null && label[0] === openFence.char && label.length >= openFence.length && remainder.trim() === "";
+      if (closes) openFence = undefined;
       return null;
     }
-    if (ограда) {
+    if (fence) {
       // В информационной строке ограды из кавычек самих кавычек быть не может.
-      if (!(метка[0] === "`" && остаток.includes("`"))) {
-        открытая = { знак: метка[0] as string, длина: метка.length };
+      if (!(label[0] === "`" && remainder.includes("`"))) {
+        openFence = { char: label[0] as string, length: label.length };
         return null;
       }
     }
-    return ОТСТУП_КОДА.test(строка) ? null : строка;
+    return CODE_INDENT.test(line) ? null : line;
   });
 }
 
-export function parseVerdict(текст: string | undefined): Verdict {
-  if (!текст) return "missing";
+export function parseVerdict(text: string | undefined): Verdict {
+  if (!text) return "missing";
 
-  const строки = разметить(текст);
-  const последняя = [...строки].reverse().find((с) => с === null || с.trim() !== "");
-  if (последняя === undefined || последняя === null) return "missing";
-  if (/^\s*>/.test(последняя)) return "missing";
+  const lines = markCode(text);
+  const last = [...lines].reverse().find((s) => s === null || s.trim() !== "");
+  if (last === undefined || last === null) return "missing";
+  if (/^\s*>/.test(last)) return "missing";
 
-  const м = СТРОКА.exec(последняя);
-  if (!м?.[1]) return "missing";
-  const значение = м[1]
+  const m = VERDICT_LINE.exec(last);
+  if (!m?.[1]) return "missing";
+  const value = m[1]
     .replace(/[*_]/g, "")
     .replace(/[.!\s]+$/u, "")
     .trim()
     .replace(/\s+/g, " ")
     .toUpperCase();
 
-  return ЗНАЧЕНИЯ[значение] ?? "missing";
+  return VERDICT_VALUES[value] ?? "missing";
 }

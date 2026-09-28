@@ -25,11 +25,11 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
 
-export const ТАЙМАУТ_ОСТАНОВКИ = 5000;
+export const STOP_TIMEOUT = 5000;
 
 const WINDOWS = process.platform === "win32";
 
-export function запуститьПроцесс(
+export function spawnProcess(
   command: string,
   args: readonly string[],
   cwd: string,
@@ -39,11 +39,11 @@ export function запуститьПроцесс(
   // кавычек стал бы несколькими словами (рецензия Codex 28.09).
   // Строка вида «node script.js» — команда с аргументом, её не трогать:
   // кавычки нужны только пути к существующему файлу.
-  const команда =
+  const quotedCommand =
     shell && WINDOWS && /\s/.test(command) && !command.startsWith('"') && existsSync(resolve(cwd, command))
       ? `"${command}"`
       : command;
-  return spawn(команда, [...args], {
+  return spawn(quotedCommand, [...args], {
     cwd,
     shell,
     stdio: ["pipe", "pipe", "pipe"],
@@ -53,65 +53,65 @@ export function запуститьПроцесс(
 }
 
 /** Остановить процесс вместе с потомками и дождаться подтверждения. */
-export function остановитьДерево(
-  процесс: ChildProcessWithoutNullStreams,
-  таймаут: number = ТАЙМАУТ_ОСТАНОВКИ,
+export function killTree(
+  proc: ChildProcessWithoutNullStreams,
+  timeout: number = STOP_TIMEOUT,
 ): Promise<void> {
   return new Promise((resolve) => {
-    const уже = процесс.exitCode !== null || процесс.signalCode !== null;
-    const pid = процесс.pid;
+    const alreadyExited = proc.exitCode !== null || proc.signalCode !== null;
+    const pid = proc.pid;
     if (pid === undefined) {
       resolve();
       return;
     }
 
-    let вышел = уже;
-    let деревоСнято = false;
-    let готово = false;
-    const таймер = setTimeout(закончить, таймаут);
-    function закончить(): void {
-      if (готово) return;
-      готово = true;
-      clearTimeout(таймер);
+    let exited = alreadyExited;
+    let treeKilled = false;
+    let done = false;
+    const timer = setTimeout(finish, timeout);
+    function finish(): void {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
       resolve();
     }
-    const проверить = () => {
-      if (вышел && деревоСнято) закончить();
+    const checkNow = () => {
+      if (exited && treeKilled) finish();
     };
-    if (!уже) {
-      процесс.once("exit", () => {
-        вышел = true;
-        проверить();
+    if (!alreadyExited) {
+      proc.once("exit", () => {
+        exited = true;
+        checkNow();
       });
     }
 
     if (WINDOWS) {
       execFile("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true }, () => {
         // Ошибка допустима: процесс мог уже завершиться сам.
-        деревоСнято = true;
-        закрытьВвод(процесс);
-        проверить();
+        treeKilled = true;
+        closeStdin(proc);
+        checkNow();
       });
     } else {
       try {
         process.kill(-pid, "SIGTERM");
       } catch {
         try {
-          процесс.kill("SIGTERM");
+          proc.kill("SIGTERM");
         } catch {
           // процесс уже завершён
         }
       }
-      деревоСнято = true;
-      закрытьВвод(процесс);
-      проверить();
+      treeKilled = true;
+      closeStdin(proc);
+      checkNow();
     }
   });
 }
 
-function закрытьВвод(процесс: ChildProcessWithoutNullStreams): void {
+function closeStdin(proc: ChildProcessWithoutNullStreams): void {
   try {
-    процесс.stdin.end();
+    proc.stdin.end();
   } catch {
     // канал уже закрыт
   }

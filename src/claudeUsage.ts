@@ -14,7 +14,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { запуститьПроцесс, остановитьДерево } from "./adapters/process.js";
+import { spawnProcess, killTree } from "./adapters/process.js";
 
 /** Срок ответа: обычный — 4 с, запас на холодный старт CLI. */
 export const USAGE_TIMEOUT_MS = 30_000;
@@ -29,31 +29,31 @@ export interface ClaudeUsage {
 }
 
 /** Доля из текста `/usage`; без строки общей недели — undefined. */
-export function parseClaudeUsage(текст: string): ClaudeUsage | undefined {
-  const неделя = /Current week \(all models\):\s*(\d+(?:\.\d+)?)%\s*used(?:\s*·\s*resets\s+([^\r\n]+))?/.exec(текст);
-  if (!неделя) return undefined;
-  const сессия = /Current session:\s*(\d+(?:\.\d+)?)%\s*used/.exec(текст);
+export function parseClaudeUsage(text: string): ClaudeUsage | undefined {
+  const week = /Current week \(all models\):\s*(\d+(?:\.\d+)?)%\s*used(?:\s*·\s*resets\s+([^\r\n]+))?/.exec(text);
+  if (!week) return undefined;
+  const session = /Current session:\s*(\d+(?:\.\d+)?)%\s*used/.exec(text);
   return {
-    weekPercent: Number(неделя[1]),
-    ...(сессия ? { sessionPercent: Number(сессия[1]) } : {}),
-    ...(неделя[2] ? { weekResets: неделя[2].trim() } : {}),
+    weekPercent: Number(week[1]),
+    ...(session ? { sessionPercent: Number(session[1]) } : {}),
+    ...(week[2] ? { weekResets: week[2].trim() } : {}),
   };
 }
 
 /** Ответ `claude -p --output-format json`: текст — в поле result. */
 export function parseUsageOutput(stdout: string): ClaudeUsage | undefined {
-  let ответ: unknown;
+  let reply: unknown;
   try {
-    ответ = JSON.parse(stdout);
+    reply = JSON.parse(stdout);
   } catch {
     return undefined;
   }
-  const запись = (ответ ?? {}) as { is_error?: unknown; result?: unknown };
-  if (запись.is_error === true || typeof запись.result !== "string") return undefined;
-  return parseClaudeUsage(запись.result);
+  const record = (reply ?? {}) as { is_error?: unknown; result?: unknown };
+  if (record.is_error === true || typeof record.result !== "string") return undefined;
+  return parseClaudeUsage(record.result);
 }
 
-let пустойКаталог: string | undefined;
+let emptyDir: string | undefined;
 
 /**
  * Пустой каталог для `/usage`, один на процесс. Из каталога проекта CLI
@@ -61,8 +61,8 @@ let пустойКаталог: string | undefined;
  * `/usage` с `--setting-sources project,local`); доля от каталога не зависит.
  */
 export function usageDirectory(): string {
-  пустойКаталог ??= mkdtempSync(join(tmpdir(), "agent-panel-usage-"));
-  return пустойКаталог;
+  emptyDir ??= mkdtempSync(join(tmpdir(), "agent-panel-usage-"));
+  return emptyDir;
 }
 
 export interface UsageRequest {
@@ -79,10 +79,10 @@ export interface UsageRequest {
  * Спросить `/usage`. Сбой запуска или срок — отказ промиса: «доля неизвестна»
  * и «запрос сломан» различаются в диагностике.
  */
-export function fetchClaudeUsage(запрос: UsageRequest): Promise<ClaudeUsage | undefined> {
-  const таймаут = запрос.timeoutMs ?? USAGE_TIMEOUT_MS;
-  const аргументы = [
-    ...(запрос.commandArgs ?? []),
+export function fetchClaudeUsage(request: UsageRequest): Promise<ClaudeUsage | undefined> {
+  const timeout = request.timeoutMs ?? USAGE_TIMEOUT_MS;
+  const args = [
+    ...(request.commandArgs ?? []),
     "-p",
     "/usage",
     "--no-session-persistence",
@@ -94,23 +94,23 @@ export function fetchClaudeUsage(запрос: UsageRequest): Promise<ClaudeUsag
     "json",
   ];
   return new Promise((resolve, reject) => {
-    const процесс = запуститьПроцесс(запрос.command, аргументы, запрос.cwd ?? usageDirectory(), запрос.shell);
-    процесс.stdin.end();
-    let вывод = "";
-    const таймер = setTimeout(() => {
-      void остановитьДерево(процесс);
-      reject(new Error(`/usage не ответил за ${Math.max(1, Math.round(таймаут / 1000))} с`));
-    }, таймаут);
-    процесс.stdout.setEncoding("utf8");
-    процесс.stdout.on("data", (кусок: string) => (вывод += кусок));
-    процесс.stderr.resume();
-    процесс.on("error", (беда) => {
-      clearTimeout(таймер);
-      reject(беда);
+    const proc = spawnProcess(request.command, args, request.cwd ?? usageDirectory(), request.shell);
+    proc.stdin.end();
+    let output = "";
+    const timer = setTimeout(() => {
+      void killTree(proc);
+      reject(new Error(`/usage не ответил за ${Math.max(1, Math.round(timeout / 1000))} с`));
+    }, timeout);
+    proc.stdout.setEncoding("utf8");
+    proc.stdout.on("data", (chunk: string) => (output += chunk));
+    proc.stderr.resume();
+    proc.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
     });
-    процесс.on("close", () => {
-      clearTimeout(таймер);
-      resolve(parseUsageOutput(вывод.trim()));
+    proc.on("close", () => {
+      clearTimeout(timer);
+      resolve(parseUsageOutput(output.trim()));
     });
   });
 }

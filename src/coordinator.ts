@@ -91,7 +91,7 @@ export interface RoomState {
    * След текущего цикла для «Дорожки»: кто получал работу и чем кончилась
    * каждая проверка (✓ принято, ! замечания, ? решение человека, – без вердикта).
    */
-  readonly trail: readonly Шаг[];
+  readonly trail: readonly Step[];
   readonly auto: boolean;
   readonly claudeBusy: boolean;
   readonly codexBusy: boolean;
@@ -112,8 +112,8 @@ export interface CoordinatorOptions {
   readonly room: string;
   readonly cwd: string;
   readonly maxAutoRounds: number;
-  readonly onEvent: (событие: PanelEvent) => void;
-  readonly onState?: (состояние: RoomState) => void;
+  readonly onEvent: (event: PanelEvent) => void;
+  readonly onState?: (state: RoomState) => void;
   /** Снимок версии файлов. Подменяется в тестах, чтобы воспроизводить гонки. */
   readonly snapshot?: (cwd: string) => Promise<Snapshot>;
   /** Сколько символов выводов инструментов уходит рецензенту за проверку (по умолчанию EVIDENCE_BUDGET). */
@@ -122,7 +122,7 @@ export interface CoordinatorOptions {
    * Поиск заметок памяти к сообщению человека (см. memory.ts). Нет — заметки
    * не прикладываются. Ошибка поиска сообщения не задерживает.
    */
-  readonly memory?: (текст: string, cwd: string) => Promise<{ readonly text: string; readonly titles: readonly string[] } | undefined>;
+  readonly memory?: (text: string, cwd: string) => Promise<{ readonly text: string; readonly titles: readonly string[] } | undefined>;
   /**
    * Недельная доля лимита Claude (claudeUsage.ts). Спрашивается после хода
    * Claude и при открытии панели, не чаще claudeUsageEveryMs. Нет — доли нет.
@@ -137,145 +137,145 @@ export interface CoordinatorOptions {
   readonly taskTokenLimit?: number;
 }
 
-type Роль = "work" | "review" | "direct";
+type Role = "work" | "review" | "direct";
 
-interface Цель {
-  readonly роль: Роль;
+interface Target {
+  readonly role: Role;
   /** Номер цикла; у прямого вопроса отсутствует. */
-  readonly цикл: number | undefined;
+  readonly cycle: number | undefined;
 }
 
-interface Отправка {
+interface Outgoing {
   readonly to: AgentId;
   readonly prompt: AgentPrompt;
-  readonly цель: Цель;
-  readonly снимок: Snapshot | undefined;
+  readonly target: Target;
+  readonly snapshot: Snapshot | undefined;
 }
 
-type Удержанное = Отправка & { причина: string; действие: "send" | "retry" };
+type Held = Outgoing & { reason: string; action: "send" | "retry" };
 
-export interface Шаг {
+export interface Step {
   readonly who: "task" | "claude" | "codex" | "you";
   mark?: string;
 }
 
-const ОТМЕТКИ: Record<Verdict, string> = { accepted: "✓", remarks: "!", human: "?", missing: "–" };
+const MARKS: Record<Verdict, string> = { accepted: "✓", remarks: "!", human: "?", missing: "–" };
 
 export class Coordinator {
-  #цикл = 0;
+  #cycle = 0;
   /** Сколько раз человек останавливал или прерывал: сообщение, ждавшее поиска, после этого не уходит. */
-  #остановок = 0;
+  #stops = 0;
   /** Расход с начала задачи и последние сведения о лимитах. */
-  #расход: { claude: TurnUsage; codex: TurnUsage } = { claude: NO_USAGE, codex: NO_USAGE };
-  #лимиты: { claude?: LimitInfo; codex?: LimitInfo } = {};
-  #неделяClaude: ClaudeWeek | undefined;
-  #доляСпрошена = 0;
-  #доляИдёт = false;
-  #этап: Stage = "idle";
-  #задача: string | undefined;
-  #раунд = 0;
-  #вердикт: Verdict | undefined;
-  #удержано: Удержанное | undefined;
+  #usage: { claude: TurnUsage; codex: TurnUsage } = { claude: NO_USAGE, codex: NO_USAGE };
+  #limits: { claude?: LimitInfo; codex?: LimitInfo } = {};
+  #claudeWeek: ClaudeWeek | undefined;
+  #shareAskedAt = 0;
+  #shareInFlight = false;
+  #stage: Stage = "idle";
+  #task: string | undefined;
+  #round = 0;
+  #verdict: Verdict | undefined;
+  #held: Held | undefined;
   /** Последняя рабочая отправка Claude в цикле — для повтора после отказов. */
-  #последняяРабота: Отправка | undefined;
-  #автоматика = true;
-  #снимокКомнаты: Snapshot | undefined;
-  readonly #снимки = new Map<AgentId, Snapshot>();
-  readonly #накопители = new Map<AgentId, PanelEvent[]>();
-  readonly #цели = new Map<AgentId, Цель[]>();
-  readonly #очередь: Отправка[] = [];
+  #lastWork: Outgoing | undefined;
+  #auto = true;
+  #roomSnapshot: Snapshot | undefined;
+  readonly #snapshots = new Map<AgentId, Snapshot>();
+  readonly #buffers = new Map<AgentId, PanelEvent[]>();
+  readonly #targets = new Map<AgentId, Target[]>();
+  readonly #queue: Outgoing[] = [];
   /** Открытые запросы разрешений: id запроса → агент, который спросил. */
-  readonly #запросы = new Map<string, AgentId>();
+  readonly #requests = new Map<string, AgentId>();
   /** Заметки памяти, приложенные к задаче текущего цикла: их видит и рецензент. */
-  #памятьЗадачи: string | undefined;
-  #след: Шаг[] = [];
-  readonly #снять: (cwd: string) => Promise<Snapshot>;
+  #taskMemory: string | undefined;
+  #trail: Step[] = [];
+  readonly #capture: (cwd: string) => Promise<Snapshot>;
 
   constructor(
     private readonly claude: Adapter,
     private readonly codex: Adapter,
     private readonly journal: Journal,
-    private readonly опции: CoordinatorOptions,
+    private readonly options: CoordinatorOptions,
   ) {
-    this.#снять = опции.snapshot ?? takeSnapshot;
+    this.#capture = options.snapshot ?? takeSnapshot;
   }
 
   get round(): number {
-    return this.#раунд;
+    return this.#round;
   }
 
   get snapshot(): Snapshot | undefined {
-    return this.#снимокКомнаты;
+    return this.#roomSnapshot;
   }
 
   get state(): RoomState {
     return {
-      task: this.#задача,
-      stage: this.#этап,
-      round: this.#раунд,
-      maxRounds: this.опции.maxAutoRounds,
-      verdict: this.#вердикт,
-      held: this.#удержано
-        ? { to: this.#удержано.to, reason: this.#удержано.причина, action: this.#удержано.действие }
+      task: this.#task,
+      stage: this.#stage,
+      round: this.#round,
+      maxRounds: this.options.maxAutoRounds,
+      verdict: this.#verdict,
+      held: this.#held
+        ? { to: this.#held.to, reason: this.#held.reason, action: this.#held.action }
         : undefined,
-      queued: this.#очередь.length,
-      approvals: this.#запросы.size,
-      trail: this.#след.map((ш) => ({ ...ш })),
-      auto: this.#автоматика,
+      queued: this.#queue.length,
+      approvals: this.#requests.size,
+      trail: this.#trail.map((sh) => ({ ...sh })),
+      auto: this.#auto,
       claudeBusy: this.claude.busy,
       codexBusy: this.codex.busy,
       usage: {
-        task: { claude: this.#расход.claude, codex: this.#расход.codex },
-        limits: { ...this.#лимиты, ...(this.#неделяClaude ? { claudeWeek: this.#неделяClaude } : {}) },
+        task: { claude: this.#usage.claude, codex: this.#usage.codex },
+        limits: { ...this.#limits, ...(this.#claudeWeek ? { claudeWeek: this.#claudeWeek } : {}) },
       },
-      snapshot: this.#снимокКомнаты?.id,
+      snapshot: this.#roomSnapshot?.id,
     };
   }
 
-  handle(событие: PanelEvent): void {
-    const агент = событие.agent;
-    const снимок =
-      агент === "claude" || агент === "codex"
-        ? (this.#снимки.get(агент) ?? this.#снимокКомнаты)
-        : this.#снимокКомнаты;
-    const сПометкой: PanelEvent = снимок ? { ...событие, snapshot: снимок.id } : событие;
-    this.journal.append(this.опции.room, сПометкой);
-    this.опции.onEvent(сПометкой);
+  handle(event: PanelEvent): void {
+    const agent = event.agent;
+    const snapshot =
+      agent === "claude" || agent === "codex"
+        ? (this.#snapshots.get(agent) ?? this.#roomSnapshot)
+        : this.#roomSnapshot;
+    const marked: PanelEvent = snapshot ? { ...event, snapshot: snapshot.id } : event;
+    this.journal.append(this.options.room, marked);
+    this.options.onEvent(marked);
 
-    if (агент !== "claude" && агент !== "codex") return;
+    if (agent !== "claude" && agent !== "codex") return;
 
-    if (сПометкой.visibility === "turn" && ПЕРЕДАВАЕМЫЕ.has(сПометкой.kind)) {
-      const накопитель = this.#накопители.get(агент) ?? [];
-      накопитель.push(сПометкой);
-      this.#накопители.set(агент, накопитель);
+    if (marked.visibility === "turn" && FORWARDED_KINDS.has(marked.kind)) {
+      const buffer = this.#buffers.get(agent) ?? [];
+      buffer.push(marked);
+      this.#buffers.set(agent, buffer);
     }
 
-    if (агент === "claude" && сПометкой.kind === "turn_completed") void this.refreshClaudeUsage();
+    if (agent === "claude" && marked.kind === "turn_completed") void this.refreshClaudeUsage();
 
-    if (сПометкой.kind === "approval_requested" && сПометкой.callId) {
-      this.#запросы.set(сПометкой.callId, агент);
-      this.#обновить();
-    } else if (сПометкой.kind === "approval_decided" && сПометкой.callId) {
-      this.#запросы.delete(сПометкой.callId);
-      this.#обновить();
-    } else if (сПометкой.kind === "turn_completed" && сПометкой.unsolicited) {
-      if (сПометкой.limit) this.#лимиты[агент] = сПометкой.limit;
-      void this.#самостоятельныйЗакончен(агент);
-    } else if (сПометкой.kind === "turn_completed") {
-      if (сПометкой.limit) this.#лимиты[агент] = сПометкой.limit;
-      void this.#ходЗакончен(агент, сПометкой.failed === true, сПометкой.denials ?? [], сПометкой.usage);
-    } else if (сПометкой.kind === "error" && сПометкой.failed) {
-      for (const [id, кто] of this.#запросы) if (кто === агент) this.#запросы.delete(id);
-      void this.#агентУпал(агент);
-    } else if (сПометкой.kind === "turn_started") {
-      if (сПометкой.unsolicited) {
-        this.#сообщить(
-          `${ИМЕНА[агент]} продолжил сам${сПометкой.text ? ` (${сПометкой.text})` : ""}. ` +
+    if (marked.kind === "approval_requested" && marked.callId) {
+      this.#requests.set(marked.callId, agent);
+      this.#refresh();
+    } else if (marked.kind === "approval_decided" && marked.callId) {
+      this.#requests.delete(marked.callId);
+      this.#refresh();
+    } else if (marked.kind === "turn_completed" && marked.unsolicited) {
+      if (marked.limit) this.#limits[agent] = marked.limit;
+      void this.#autonomousFinished(agent);
+    } else if (marked.kind === "turn_completed") {
+      if (marked.limit) this.#limits[agent] = marked.limit;
+      void this.#turnFinished(agent, marked.failed === true, marked.denials ?? [], marked.usage);
+    } else if (marked.kind === "error" && marked.failed) {
+      for (const [id, who] of this.#requests) if (who === agent) this.#requests.delete(id);
+      void this.#agentCrashed(agent);
+    } else if (marked.kind === "turn_started") {
+      if (marked.unsolicited) {
+        this.#report(
+          `${NAMES[agent]} продолжил сам${marked.text ? ` (${marked.text})` : ""}. ` +
             "Этот ход не относится к задаче: рецензенту не передаётся и в расход задачи не входит; " +
             "сообщения ему подождут конца хода.",
         );
       }
-      this.#обновить();
+      this.#refresh();
     }
   }
 
@@ -284,169 +284,169 @@ export class Coordinator {
    * Сбой — доля остаётся прежней (или неизвестной), работа не задерживается.
    */
   async refreshClaudeUsage(): Promise<void> {
-    const спросить = this.опции.claudeUsage;
-    if (!спросить || this.#доляИдёт) return;
-    const период = this.опции.claudeUsageEveryMs ?? 5 * 60_000;
-    if (this.#доляСпрошена && Date.now() - this.#доляСпрошена < период) return;
-    this.#доляИдёт = true;
-    this.#доляСпрошена = Date.now();
+    const ask = this.options.claudeUsage;
+    if (!ask || this.#shareInFlight) return;
+    const period = this.options.claudeUsageEveryMs ?? 5 * 60_000;
+    if (this.#shareAskedAt && Date.now() - this.#shareAskedAt < period) return;
+    this.#shareInFlight = true;
+    this.#shareAskedAt = Date.now();
     try {
-      const доля = await спросить();
-      if (доля) {
-        this.#неделяClaude = {
-          percent: доля.weekPercent,
-          ...(доля.sessionPercent !== undefined ? { session: доля.sessionPercent } : {}),
-          ...(доля.weekResets ? { resets: доля.weekResets } : {}),
+      const fraction = await ask();
+      if (fraction) {
+        this.#claudeWeek = {
+          percent: fraction.weekPercent,
+          ...(fraction.sessionPercent !== undefined ? { session: fraction.sessionPercent } : {}),
+          ...(fraction.weekResets ? { resets: fraction.weekResets } : {}),
           at: Date.now(),
         };
       } else {
-        this.#доляУстарела();
+        this.#shareStale();
       }
     } catch {
-      this.#доляУстарела();
+      this.#shareStale();
     } finally {
-      this.#доляИдёт = false;
-      this.#обновить();
+      this.#shareInFlight = false;
+      this.#refresh();
     }
   }
 
   /** Новой доли нет: прежняя остаётся, но помечена (рецензия Codex 28.09); нулём не становится. */
-  #доляУстарела(): void {
-    if (this.#неделяClaude && !this.#неделяClaude.stale) this.#неделяClaude = { ...this.#неделяClaude, stale: true };
+  #shareStale(): void {
+    if (this.#claudeWeek && !this.#claudeWeek.stale) this.#claudeWeek = { ...this.#claudeWeek, stale: true };
   }
 
-  async fromHuman(текст: string, маршрут: Route): Promise<void> {
+  async fromHuman(text: string, route: Route): Promise<void> {
     // Новая задача регистрируется ДО ожидания снимка: иначе продолжение
     // прежнего цикла, ждущее тот же снимок, успело бы отправить устаревшее.
-    const цикл = маршрут === "review" ? this.#начатьЦикл(текст) : undefined;
-    this.#обновить();
+    const cycle = route === "review" ? this.#startCycle(text) : undefined;
+    this.#refresh();
 
     // Остановка во время снимка или поиска по памяти отменяет сообщение
     // (рецензия Codex 28.09: прежде счётчик запоминался после снимка).
-    const остановок = this.#остановок;
-    this.#снимокКомнаты = await this.#снять(this.опции.cwd);
+    const stops = this.#stops;
+    this.#roomSnapshot = await this.#capture(this.options.cwd);
     this.handle({
       id: `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       agent: "human",
       kind: "message",
       visibility: "turn",
       at: Date.now(),
-      text: текст,
+      text: text,
     });
-    const память = await this.#найтиВПамяти(текст);
-    if (this.#остановок !== остановок) {
+    const memory = await this.#searchMemory(text);
+    if (this.#stops !== stops) {
       // Человек остановил панель, пока шёл поиск: сообщение не уходит.
-      this.#сообщить("Сообщение не отправлено: панель остановлена, пока оно готовилось (снимок файлов, поиск по памяти).");
-      this.#обновить();
+      this.#report("Сообщение не отправлено: панель остановлена, пока оно готовилось (снимок файлов, поиск по памяти).");
+      this.#refresh();
       return;
     }
-    if (цикл !== undefined && !this.#текущий(цикл)) return;
+    if (cycle !== undefined && !this.#isCurrent(cycle)) return;
     // Заметки называются человеку, только когда сообщение действительно уходит.
-    if (память) this.#сообщить(память.заметка);
-    if (цикл !== undefined) this.#памятьЗадачи = память?.блок;
+    if (memory) this.#report(memory.note);
+    if (cycle !== undefined) this.#taskMemory = memory?.block;
     const prompt: AgentPrompt = {
-      text: память ? `${текст}${НС}${НС}${память.блок}` : текст,
+      text: memory ? `${text}${NL}${NL}${memory.block}` : text,
       from: "human",
-      snapshot: describeSnapshot(this.#снимокКомнаты),
+      snapshot: describeSnapshot(this.#roomSnapshot),
     };
 
-    if (цикл !== undefined) {
-      await this.#отправить({
+    if (cycle !== undefined) {
+      await this.#send({
         to: "claude",
         prompt,
-        цель: { роль: "work", цикл },
-        снимок: this.#снимокКомнаты,
+        target: { role: "work", cycle },
+        snapshot: this.#roomSnapshot,
       });
     } else {
-      const прямо: Цель = { роль: "direct", цикл: undefined };
-      for (const кому of маршрут === "both" ? (["claude", "codex"] as const) : [маршрут as AgentId]) {
-        await this.#отправить({ to: кому, prompt, цель: прямо, снимок: this.#снимокКомнаты });
+      const direct: Target = { role: "direct", cycle: undefined };
+      for (const recipient of route === "both" ? (["claude", "codex"] as const) : [route as AgentId]) {
+        await this.#send({ to: recipient, prompt, target: direct, snapshot: this.#roomSnapshot });
       }
     }
-    this.#обновить();
+    this.#refresh();
   }
 
   /**
    * Заметки памяти к сообщению человека — с пояснением для агента и строкой
    * для человека: какие заметки ушли агентам, он должен видеть.
    */
-  async #найтиВПамяти(текст: string): Promise<{ блок: string; заметка: string } | undefined> {
-    if (!this.опции.memory) return undefined;
+  async #searchMemory(text: string): Promise<{ block: string; note: string } | undefined> {
+    if (!this.options.memory) return undefined;
     try {
-      const найдено = await this.опции.memory(текст, this.опции.cwd);
-      if (!найдено) return undefined;
-      const названия = найдено.titles.map((название) => `«${название}»`).join(", ");
+      const found = await this.options.memory(text, this.options.cwd);
+      if (!found) return undefined;
+      const titles = found.titles.map((title) => `«${title}»`).join(", ");
       return {
-        блок: `${ПРО_ПАМЯТЬ}${НС}${НС}${найдено.text}`,
-        заметка: `Память: к сообщению приложены заметки (${найдено.titles.length}): ${названия}.`,
+        block: `${ABOUT_MEMORY}${NL}${NL}${found.text}`,
+        note: `Память: к сообщению приложены заметки (${found.titles.length}): ${titles}.`,
       };
-    } catch (беда) {
-      const причина = беда instanceof Error ? беда.message : String(беда);
-      this.#сообщить(`Поиск по памяти не удался: ${причина}. Сообщение ушло без заметок.`);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.#report(`Поиск по памяти не удался: ${reason}. Сообщение ушло без заметок.`);
       return undefined;
     }
   }
 
   /** Расход задачи достиг предела agentPanel.taskTokenLimit. */
-  #сверхПредела(): boolean {
-    const предел = this.опции.taskTokenLimit ?? 0;
-    return предел > 0 && this.#токеныЗадачи() >= предел;
+  #overLimit(): boolean {
+    const limit = this.options.taskTokenLimit ?? 0;
+    return limit > 0 && this.#taskTokens() >= limit;
   }
 
-  #токеныЗадачи(): number {
-    const { claude, codex } = this.#расход;
+  #taskTokens(): number {
+    const { claude, codex } = this.#usage;
     return claude.input + claude.output + codex.input + codex.output;
   }
 
-  #причинаПредела(что: string): string {
+  #limitReason(what: string): string {
     return (
-      `Расход задачи — ${this.#токеныЗадачи()} токенов — достиг предела ${this.опции.taskTokenLimit} ` +
-      `(agentPanel.taskTokenLimit): ${что}. Решите, продолжать ли.`
+      `Расход задачи — ${this.#taskTokens()} токенов — достиг предела ${this.options.taskTokenLimit} ` +
+      `(agentPanel.taskTokenLimit): ${what}. Решите, продолжать ли.`
     );
   }
 
   /** Отправить удержанное по команде человека. */
   async releaseHeld(): Promise<void> {
-    const у = this.#удержано;
-    if (!у) return;
-    this.#удержано = undefined;
-    if (у.цель.цикл !== undefined && у.цель.цикл !== this.#цикл) {
-      this.#обновить();
+    const u = this.#held;
+    if (!u) return;
+    this.#held = undefined;
+    if (u.target.cycle !== undefined && u.target.cycle !== this.#cycle) {
+      this.#refresh();
       return;
     }
-    if (у.цель.роль === "review") this.#раунд += 1;
-    this.#этап = у.цель.роль === "review" ? "reviewing" : "working";
-    await this.#отправить(у);
-    this.#обновить();
+    if (u.target.role === "review") this.#round += 1;
+    this.#stage = u.target.role === "review" ? "reviewing" : "working";
+    await this.#send(u);
+    this.#refresh();
   }
 
   /** Решение человека по запросу разрешения — адаптеру того агента, который спросил. */
-  async answerApproval(id: string, выбор: ApprovalChoice): Promise<void> {
-    const агент = this.#запросы.get(id);
-    if (!агент) return;
-    const адаптер = агент === "claude" ? this.claude : this.codex;
-    const принято = (await адаптер.answerApproval?.(id, выбор)) ?? false;
+  async answerApproval(id: string, choice: ApprovalChoice): Promise<void> {
+    const agent = this.#requests.get(id);
+    if (!agent) return;
+    const adapter = agent === "claude" ? this.claude : this.codex;
+    const accepted = (await adapter.answerApproval?.(id, choice)) ?? false;
     // Не принят — запрос уже закрыт на стороне агента; карточка не должна висеть.
-    if (!принято) this.#запросы.delete(id);
-    this.#обновить();
+    if (!accepted) this.#requests.delete(id);
+    this.#refresh();
   }
 
   /** Служебное сообщение панели в беседу и журнал — например, о смене модели. */
-  notice(текст: string): void {
-    this.#сообщить(текст);
+  notice(text: string): void {
+    this.#report(text);
   }
 
-  setAuto(включена: boolean): void {
-    this.#автоматика = включена;
-    this.#обновить();
+  setAuto(enabled: boolean): void {
+    this.#auto = enabled;
+    this.#refresh();
   }
 
   async stopAll(): Promise<void> {
-    this.#остановок += 1;
-    this.#сброситьОжидание("stopped");
-    this.#очередь.length = 0;
+    this.#stops += 1;
+    this.#resetWait("stopped");
+    this.#queue.length = 0;
     await Promise.allSettled([this.claude.stop(), this.codex.stop()]);
-    this.#обновить();
+    this.#refresh();
   }
 
   /**
@@ -454,142 +454,142 @@ export class Coordinator {
    * не помнит. Нужна, когда возобновляемая сессия разрослась: каждый ход
    * возобновляет её целиком, а расход растёт с длиной контекста.
    */
-  async newSession(агент: "claude" | "codex"): Promise<void> {
-    const адаптер = агент === "claude" ? this.claude : this.codex;
-    const прежняя = адаптер.sessionId;
+  async newSession(agent: "claude" | "codex"): Promise<void> {
+    const adapter = agent === "claude" ? this.claude : this.codex;
+    const previousSession = adapter.sessionId;
     // Журнал — раньше остановки: закрытие панели во время неё не вернёт
     // прежнюю привязку (рецензия Codex 28.09).
-    this.journal.forgetSession(this.опции.room, агент);
-    if (адаптер.busy) {
+    this.journal.forgetSession(this.options.room, agent);
+    if (adapter.busy) {
       // Ход обрывается вместе с процессом: ждать его ответа циклу нечего.
-      this.#остановок += 1;
-      this.#сброситьОжидание("stopped");
+      this.#stops += 1;
+      this.#resetWait("stopped");
     }
-    if (this.#удержано?.to === агент) {
+    if (this.#held?.to === agent) {
       // Новая сессия не знает прежнего разговора: передача без него бессмысленна.
-      this.#удержано = undefined;
-      this.#этап = "stopped";
-      this.#сообщить(`Удержанная передача ${ИМЕНА[агент]} снята: новая сессия не знает прежнего разговора. Поставьте задачу заново.`);
+      this.#held = undefined;
+      this.#stage = "stopped";
+      this.#report(`Удержанная передача ${NAMES[agent]} снята: новая сессия не знает прежнего разговора. Поставьте задачу заново.`);
     }
-    await адаптер.forgetSession?.();
-    this.#сообщить(
-      `Новая сессия ${ИМЕНА[агент]}: прежняя${прежняя ? ` (${прежняя.slice(0, 8)})` : ""} сохранена в истории ` +
-        `${ИМЕНА[агент]}, но следующий ход её не продолжит — агент не будет помнить прежних разговоров.`,
+    await adapter.forgetSession?.();
+    this.#report(
+      `Новая сессия ${NAMES[agent]}: прежняя${previousSession ? ` (${previousSession.slice(0, 8)})` : ""} сохранена в истории ` +
+        `${NAMES[agent]}, но следующий ход её не продолжит — агент не будет помнить прежних разговоров.`,
     );
     // Сообщения, ждавшие занятого агента, уходят в новую сессию.
-    await this.#выгрузитьОчередь();
-    this.#обновить();
+    await this.#flushQueue();
+    this.#refresh();
   }
 
   async interruptAll(): Promise<void> {
-    this.#остановок += 1;
-    this.#сброситьОжидание("stopped");
+    this.#stops += 1;
+    this.#resetWait("stopped");
     // Прямые сообщения человека ждали конца хода, а его теперь не будет.
     // Отправлять их сразу нельзя: человек мог прервать именно чтобы отменить,
     // а поздний конец прерванного хода мешал бы новому. Сняты и названы
     // (рецензии Codex 28.09); пересылки цикла сняты выше.
-    const снято = this.#очередь.length;
-    this.#очередь.length = 0;
+    const removed = this.#queue.length;
+    this.#queue.length = 0;
     await Promise.allSettled([this.claude.interrupt(), this.codex.interrupt()]);
     // Написанное человеком уже после нажатия (пока агенты прерывались, оно
     // встало в очередь) — новое намерение: отправить (рецензия Codex 28.09).
-    await this.#выгрузитьОчередь();
-    this.#сообщить(
+    await this.#flushQueue();
+    this.#report(
       "Ход прерван человеком. Цикл рецензии остановлен." +
-        (снято > 0 ? ` Не отправлено сообщений из очереди: ${снято} — при необходимости отправьте заново.` : ""),
+        (removed > 0 ? ` Не отправлено сообщений из очереди: ${removed} — при необходимости отправьте заново.` : ""),
     );
-    this.#обновить();
+    this.#refresh();
   }
 
   // -------------------------------------------------------------------------
 
   /** Цикл текущий и не остановлен: только тогда продолжение имеет право действовать. */
-  #текущий(цикл: number): boolean {
-    return цикл === this.#цикл && this.#этап !== "stopped";
+  #isCurrent(cycle: number): boolean {
+    return cycle === this.#cycle && this.#stage !== "stopped";
   }
 
-  #начатьЦикл(задача: string): number {
-    const устаревшие = this.#убратьПересылкиЦиклов();
-    if (устаревшие > 0) {
-      this.#сообщить(`Новая задача: не доставлено устаревших пересылок прежней — ${устаревшие}.`);
+  #startCycle(task: string): number {
+    const stale = this.#dropCycleForwards();
+    if (stale > 0) {
+      this.#report(`Новая задача: не доставлено устаревших пересылок прежней — ${stale}.`);
     }
-    this.#цикл += 1;
-    this.#удержано = undefined;
-    this.#последняяРабота = undefined;
-    this.#памятьЗадачи = undefined;
-    this.#расход = { claude: NO_USAGE, codex: NO_USAGE };
-    this.#след = [{ who: "task" }];
-    this.#задача = задача;
-    this.#раунд = 0;
-    this.#вердикт = undefined;
-    this.#этап = "working";
-    return this.#цикл;
+    this.#cycle += 1;
+    this.#held = undefined;
+    this.#lastWork = undefined;
+    this.#taskMemory = undefined;
+    this.#usage = { claude: NO_USAGE, codex: NO_USAGE };
+    this.#trail = [{ who: "task" }];
+    this.#task = task;
+    this.#round = 0;
+    this.#verdict = undefined;
+    this.#stage = "working";
+    return this.#cycle;
   }
 
-  #сброситьОжидание(этап: Stage): void {
-    this.#убратьПересылкиЦиклов();
-    this.#цикл += 1; // всё, что принадлежало прежнему циклу, теперь чужое
-    this.#цели.clear();
-    this.#удержано = undefined;
+  #resetWait(stage: Stage): void {
+    this.#dropCycleForwards();
+    this.#cycle += 1; // всё, что принадлежало прежнему циклу, теперь чужое
+    this.#targets.clear();
+    this.#held = undefined;
     // Адаптеры закрывают свои запросы при остановке; здесь — на случай,
     // если закрытие не дойдёт (адаптер уже без процесса).
-    this.#запросы.clear();
-    this.#этап = этап;
+    this.#requests.clear();
+    this.#stage = stage;
   }
 
   /** Убрать из очереди всё, что относится к циклам; прямые сообщения человека остаются. */
-  #убратьПересылкиЦиклов(): number {
-    let убрано = 0;
-    for (let i = this.#очередь.length - 1; i >= 0; i -= 1) {
-      if (this.#очередь[i]?.цель.цикл !== undefined) {
-        this.#очередь.splice(i, 1);
-        убрано += 1;
+  #dropCycleForwards(): number {
+    let removedCount = 0;
+    for (let i = this.#queue.length - 1; i >= 0; i -= 1) {
+      if (this.#queue[i]?.target.cycle !== undefined) {
+        this.#queue.splice(i, 1);
+        removedCount += 1;
       }
     }
-    return убрано;
+    return removedCount;
   }
 
-  async #ходЗакончен(
-    агент: AgentId,
-    провал: boolean,
-    отказы: readonly string[],
-    расход?: TurnUsage,
+  async #turnFinished(
+    agent: AgentId,
+    failed: boolean,
+    denials: readonly string[],
+    usage?: TurnUsage,
   ): Promise<void> {
-    const цель = this.#цели.get(агент)?.shift() ?? { роль: "direct", цикл: undefined };
+    const target = this.#targets.get(agent)?.shift() ?? { role: "direct", cycle: undefined };
     // Расход — задаче, к циклу которой относится ход: поздний ход прежней
     // задачи и прямой вопрос в неё не идут (рецензия Codex 28.09).
-    if (расход && (агент === "claude" || агент === "codex") && цель.цикл !== undefined && цель.цикл === this.#цикл) {
-      this.#расход[агент] = addUsage(this.#расход[агент], расход);
+    if (usage && (agent === "claude" || agent === "codex") && target.cycle !== undefined && target.cycle === this.#cycle) {
+      this.#usage[agent] = addUsage(this.#usage[agent], usage);
     }
-    const материал = this.#забрать(агент);
-    const цикл = цель.цикл;
-    const текущий = цикл !== undefined && this.#текущий(цикл);
+    const material = this.#take(agent);
+    const cycle = target.cycle;
+    const current = cycle !== undefined && this.#isCurrent(cycle);
 
-    if (текущий && провал) {
-      this.#этап = "stopped";
-      this.#сообщить(`Ход ${ИМЕНА[агент]} завершился с ошибкой — цикл рецензии остановлен.`);
-    } else if (текущий && цель.роль === "work" && отказы.length > 0) {
+    if (current && failed) {
+      this.#stage = "stopped";
+      this.#report(`Ход ${NAMES[agent]} завершился с ошибкой — цикл рецензии остановлен.`);
+    } else if (current && target.role === "work" && denials.length > 0) {
       // Отказы — дело человека, а не рецензента: в живом прогоне три раунда
       // проверки ушли на спор о причинах блокировки.
-      const повтор = this.#последняяРабота;
-      if (повтор) {
-        this.#удержать(
-          повтор,
-          `Claude получил отказы в разрешениях (${отказы.length}): ${отказы.join("; ")}. ` +
+      const retry = this.#lastWork;
+      if (retry) {
+        this.#hold(
+          retry,
+          `Claude получил отказы в разрешениях (${denials.length}): ${denials.join("; ")}. ` +
             "Проверка не запускалась. Разрешите эти действия или измените задачу, затем повторите.",
           "retry",
         );
       }
-    } else if (текущий && цель.роль === "work") {
-      await this.#послеРаботы(материал, цикл, this.#задача ?? "");
-    } else if (текущий && цель.роль === "review") {
-      await this.#послеПроверки(материал, цикл);
-    } else if (отказы.length > 0) {
-      this.#сообщить(`${ИМЕНА[агент]} получил отказы в разрешениях (${отказы.length}): ${отказы.join("; ")}.`);
+    } else if (current && target.role === "work") {
+      await this.#afterWork(material, cycle, this.#task ?? "");
+    } else if (current && target.role === "review") {
+      await this.#afterReview(material, cycle);
+    } else if (denials.length > 0) {
+      this.#report(`${NAMES[agent]} получил отказы в разрешениях (${denials.length}): ${denials.join("; ")}.`);
     }
 
-    await this.#выгрузитьОчередь();
-    this.#обновить();
+    await this.#flushQueue();
+    this.#refresh();
   }
 
   /**
@@ -597,226 +597,226 @@ export class Coordinator {
    * (иначе ответ на следующее сообщение остался бы без адресата), его
    * реплики к материалу задачи не добавляются.
    */
-  async #самостоятельныйЗакончен(агент: AgentId): Promise<void> {
-    this.#забрать(агент);
-    await this.#выгрузитьОчередь();
-    this.#обновить();
+  async #autonomousFinished(agent: AgentId): Promise<void> {
+    this.#take(agent);
+    await this.#flushQueue();
+    this.#refresh();
   }
 
-  async #послеРаботы(материал: PanelEvent[], цикл: number, задача: string): Promise<void> {
-    const текст = собрать(материал, true, this.опции.evidenceBudget ?? EVIDENCE_BUDGET);
-    if (!текст) {
-      this.#этап = "stopped";
-      this.#сообщить("Claude не выдал законченной реплики — проверять нечего.");
+  async #afterWork(material: PanelEvent[], cycle: number, task: string): Promise<void> {
+    const text = assemble(material, true, this.options.evidenceBudget ?? EVIDENCE_BUDGET);
+    if (!text) {
+      this.#stage = "stopped";
+      this.#report("Claude не выдал законченной реплики — проверять нечего.");
       return;
     }
-    const снимок = await this.#снять(this.опции.cwd);
-    if (!this.#текущий(цикл)) return;
+    const snapshot = await this.#capture(this.options.cwd);
+    if (!this.#isCurrent(cycle)) return;
 
-    const память = this.#памятьЗадачи ? `${this.#памятьЗадачи}${НС}${НС}` : "";
-    const отправка: Отправка = {
+    const memory = this.#taskMemory ? `${this.#taskMemory}${NL}${NL}` : "";
+    const outgoing: Outgoing = {
       to: "codex",
       prompt: {
-        text: `Задача человека:\n${задача}\n\n${память}Материал разработчика:\n${текст}\n\n${ПРО_УСЕЧЕНИЕ}\n\n${VERDICT_REQUEST}`,
+        text: `Задача человека:\n${task}\n\n${memory}Материал разработчика:\n${text}\n\n${ABOUT_TRUNCATION}\n\n${VERDICT_REQUEST}`,
         from: "claude",
-        snapshot: describeSnapshot(снимок),
+        snapshot: describeSnapshot(snapshot),
       },
-      цель: { роль: "review", цикл },
-      снимок,
+      target: { role: "review", cycle },
+      snapshot,
     };
 
-    if (this.#раунд >= this.опции.maxAutoRounds) {
-      this.#удержать(
-        отправка,
-        `Предел проверок (${this.опции.maxAutoRounds}) достигнут: работа Claude не проверена рецензентом.`,
+    if (this.#round >= this.options.maxAutoRounds) {
+      this.#hold(
+        outgoing,
+        `Предел проверок (${this.options.maxAutoRounds}) достигнут: работа Claude не проверена рецензентом.`,
       );
       return;
     }
-    if (this.#сверхПредела()) {
-      this.#удержать(отправка, this.#причинаПредела("работа Claude ждёт отправки рецензенту"));
+    if (this.#overLimit()) {
+      this.#hold(outgoing, this.#limitReason("работа Claude ждёт отправки рецензенту"));
       return;
     }
-    if (!this.#автоматика) {
-      this.#удержать(отправка, "Автопересылка выключена: работа Claude ждёт отправки рецензенту.");
+    if (!this.#auto) {
+      this.#hold(outgoing, "Автопересылка выключена: работа Claude ждёт отправки рецензенту.");
       return;
     }
-    this.#раунд += 1;
-    this.#этап = "reviewing";
-    await this.#отправить(отправка);
+    this.#round += 1;
+    this.#stage = "reviewing";
+    await this.#send(outgoing);
   }
 
-  async #послеПроверки(материал: PanelEvent[], цикл: number): Promise<void> {
-    const текст = материал
-      .filter((е) => е.kind === "message" && е.text)
-      .map((е) => е.text as string)
+  async #afterReview(material: PanelEvent[], cycle: number): Promise<void> {
+    const text = material
+      .filter((e) => e.kind === "message" && e.text)
+      .map((e) => e.text as string)
       .join("\n\n");
-    const вердикт = parseVerdict(текст);
-    this.#вердикт = вердикт;
-    const проверка = [...this.#след].reverse().find((ш) => ш.who === "codex");
-    if (проверка) проверка.mark = ОТМЕТКИ[вердикт];
+    const verdict = parseVerdict(text);
+    this.#verdict = verdict;
+    const check = [...this.#trail].reverse().find((sh) => sh.who === "codex");
+    if (check) check.mark = MARKS[verdict];
 
-    if (вердикт === "accepted") {
-      this.#этап = "accepted";
-      this.#сообщить("Рецензент принял работу. Цикл завершён.");
+    if (verdict === "accepted") {
+      this.#stage = "accepted";
+      this.#report("Рецензент принял работу. Цикл завершён.");
       return;
     }
 
     // Замечания относятся к версии, которую рецензент проверял. Текущая
     // снимается отдельно: разработчик работает уже с ней, и если дерево
     // ушло вперёд, это надо сказать, а не подменить подпись.
-    const проверенный = this.#снимки.get("codex");
-    const снимок = await this.#снять(this.опции.cwd);
-    if (!this.#текущий(цикл)) return;
-    const сдвиг =
-      проверенный && проверенный.id !== снимок.id
-        ? `\n\nФайлы изменились после начала проверки: замечания относятся к версии ${describeSnapshot(проверенный)}, сейчас ${describeSnapshot(снимок)}.`
+    const reviewed = this.#snapshots.get("codex");
+    const snapshot = await this.#capture(this.options.cwd);
+    if (!this.#isCurrent(cycle)) return;
+    const shift =
+      reviewed && reviewed.id !== snapshot.id
+        ? `\n\nФайлы изменились после начала проверки: замечания относятся к версии ${describeSnapshot(reviewed)}, сейчас ${describeSnapshot(snapshot)}.`
         : "";
 
-    const отправка: Отправка = {
+    const outgoing: Outgoing = {
       to: "claude",
       prompt: {
-        text: `Замечания рецензента:\n${текст}${сдвиг}\n\nИсправьте или обоснуйте несогласие по каждому пункту.`,
+        text: `Замечания рецензента:\n${text}${shift}\n\nИсправьте или обоснуйте несогласие по каждому пункту.`,
         from: "codex",
-        snapshot: describeSnapshot(проверенный ?? снимок),
+        snapshot: describeSnapshot(reviewed ?? snapshot),
       },
-      цель: { роль: "work", цикл },
-      снимок,
+      target: { role: "work", cycle },
+      snapshot,
     };
 
-    if (вердикт === "human") {
-      this.#удержать(отправка, "Рецензент просит вашего решения: обмен остановлен. Ответ Codex можно отправить Claude.");
+    if (verdict === "human") {
+      this.#hold(outgoing, "Рецензент просит вашего решения: обмен остановлен. Ответ Codex можно отправить Claude.");
       return;
     }
-    if (вердикт === "missing") {
-      this.#удержать(отправка, "Рецензент не вынес вердикт: решите, передавать ли его ответ разработчику.");
+    if (verdict === "missing") {
+      this.#hold(outgoing, "Рецензент не вынес вердикт: решите, передавать ли его ответ разработчику.");
       return;
     }
-    if (this.#сверхПредела()) {
-      this.#удержать(отправка, this.#причинаПредела("замечания ждут отправки разработчику"));
+    if (this.#overLimit()) {
+      this.#hold(outgoing, this.#limitReason("замечания ждут отправки разработчику"));
       return;
     }
-    if (!this.#автоматика) {
-      this.#удержать(отправка, "Автопересылка выключена: замечания ждут отправки разработчику.");
+    if (!this.#auto) {
+      this.#hold(outgoing, "Автопересылка выключена: замечания ждут отправки разработчику.");
       return;
     }
-    this.#этап = "working";
-    await this.#отправить(отправка);
+    this.#stage = "working";
+    await this.#send(outgoing);
   }
 
-  #удержать(отправка: Отправка, причина: string, действие: "send" | "retry" = "send"): void {
-    this.#удержано = { ...отправка, причина, действие };
-    if (отправка.цель.цикл === this.#цикл) this.#след.push({ who: "you" });
-    this.#этап = "held";
-    this.#сообщить(причина);
+  #hold(outgoing: Outgoing, reason: string, action: "send" | "retry" = "send"): void {
+    this.#held = { ...outgoing, reason, action };
+    if (outgoing.target.cycle === this.#cycle) this.#trail.push({ who: "you" });
+    this.#stage = "held";
+    this.#report(reason);
   }
 
-  async #агентУпал(агент: AgentId): Promise<void> {
-    const ждали = (this.#цели.get(агент) ?? []).some((ц) => ц.цикл !== undefined && this.#текущий(ц.цикл));
-    this.#цели.delete(агент);
-    this.#накопители.delete(агент);
-    if (ждали) {
-      this.#этап = "stopped";
-      this.#сообщить(`Процесс ${ИМЕНА[агент]} завершился — ждать ответа нельзя, цикл остановлен.`);
+  async #agentCrashed(agent: AgentId): Promise<void> {
+    const waited = (this.#targets.get(agent) ?? []).some((c) => c.cycle !== undefined && this.#isCurrent(c.cycle));
+    this.#targets.delete(agent);
+    this.#buffers.delete(agent);
+    if (waited) {
+      this.#stage = "stopped";
+      this.#report(`Процесс ${NAMES[agent]} завершился — ждать ответа нельзя, цикл остановлен.`);
     }
-    await this.#выгрузитьОчередь();
-    this.#обновить();
+    await this.#flushQueue();
+    this.#refresh();
   }
 
-  #забрать(агент: AgentId): PanelEvent[] {
-    const материал = this.#накопители.get(агент) ?? [];
-    this.#накопители.set(агент, []);
-    return материал;
+  #take(agent: AgentId): PanelEvent[] {
+    const material = this.#buffers.get(agent) ?? [];
+    this.#buffers.set(agent, []);
+    return material;
   }
 
-  async #отправить(о: Отправка): Promise<void> {
-    const адаптер = о.to === "claude" ? this.claude : this.codex;
-    if (адаптер.busy) {
+  async #send(o: Outgoing): Promise<void> {
+    const adapter = o.to === "claude" ? this.claude : this.codex;
+    if (adapter.busy) {
       // Новее от того же цикла тому же адресату вытесняет старое.
-      if (о.цель.цикл !== undefined) {
-        for (let i = this.#очередь.length - 1; i >= 0; i -= 1) {
-          const с = this.#очередь[i];
-          if (с && с.to === о.to && с.цель.цикл === о.цель.цикл) this.#очередь.splice(i, 1);
+      if (o.target.cycle !== undefined) {
+        for (let i = this.#queue.length - 1; i >= 0; i -= 1) {
+          const s = this.#queue[i];
+          if (s && s.to === o.to && s.target.cycle === o.target.cycle) this.#queue.splice(i, 1);
         }
       }
-      this.#очередь.push(о);
+      this.#queue.push(o);
       return;
     }
-    if (о.снимок) this.#снимки.set(о.to, о.снимок);
-    if (о.to === "claude" && о.цель.роль === "work") this.#последняяРабота = о;
-    if (о.цель.цикл !== undefined && о.цель.цикл === this.#цикл && (о.to === "claude" || о.to === "codex")) {
-      this.#след.push({ who: о.to });
+    if (o.snapshot) this.#snapshots.set(o.to, o.snapshot);
+    if (o.to === "claude" && o.target.role === "work") this.#lastWork = o;
+    if (o.target.cycle !== undefined && o.target.cycle === this.#cycle && (o.to === "claude" || o.to === "codex")) {
+      this.#trail.push({ who: o.to });
     }
-    this.#накопители.set(о.to, []);
+    this.#buffers.set(o.to, []);
 
     // Цель регистрируется ДО отправки: быстрый агент может завершить ход,
     // пока отправка ещё не вернула управление.
-    const цели = this.#цели.get(о.to) ?? [];
-    const цель = { ...о.цель };
-    цели.push(цель);
-    this.#цели.set(о.to, цели);
+    const targets = this.#targets.get(o.to) ?? [];
+    const target = { ...o.target };
+    targets.push(target);
+    this.#targets.set(o.to, targets);
 
     try {
-      await адаптер.send(о.prompt);
-    } catch (беда) {
-      const список = this.#цели.get(о.to);
-      const i = список?.indexOf(цель) ?? -1;
-      if (список && i >= 0) список.splice(i, 1);
+      await adapter.send(o.prompt);
+    } catch (err) {
+      const list = this.#targets.get(o.to);
+      const i = list?.indexOf(target) ?? -1;
+      if (list && i >= 0) list.splice(i, 1);
       this.handle({
         id: `x${Date.now().toString(36)}`,
-        agent: о.to,
+        agent: o.to,
         kind: "error",
         visibility: "turn",
         at: Date.now(),
-        text: `не удалось отправить: ${(беда as Error).message}`,
+        text: `не удалось отправить: ${(err as Error).message}`,
       });
-      if (о.цель.цикл !== undefined && о.цель.цикл === this.#цикл) {
-        this.#этап = "stopped";
-        this.#сообщить(`Отправка ${ИМЕНА[о.to]} не удалась — цикл остановлен.`);
+      if (o.target.cycle !== undefined && o.target.cycle === this.#cycle) {
+        this.#stage = "stopped";
+        this.#report(`Отправка ${NAMES[o.to]} не удалась — цикл остановлен.`);
       }
     }
   }
 
-  async #выгрузитьОчередь(): Promise<void> {
-    for (let i = 0; i < this.#очередь.length; ) {
-      const о = this.#очередь[i];
-      if (!о) {
+  async #flushQueue(): Promise<void> {
+    for (let i = 0; i < this.#queue.length; ) {
+      const o = this.#queue[i];
+      if (!o) {
         i += 1;
         continue;
       }
       // Пересылка нетекущего цикла устарела: отбросить, а не доставить.
-      if (о.цель.цикл !== undefined && !this.#текущий(о.цель.цикл)) {
-        this.#очередь.splice(i, 1);
+      if (o.target.cycle !== undefined && !this.#isCurrent(o.target.cycle)) {
+        this.#queue.splice(i, 1);
         continue;
       }
-      const адаптер = о.to === "claude" ? this.claude : this.codex;
-      if (адаптер.busy) {
+      const adapter = o.to === "claude" ? this.claude : this.codex;
+      if (adapter.busy) {
         i += 1;
         continue;
       }
-      this.#очередь.splice(i, 1);
-      await this.#отправить(о);
+      this.#queue.splice(i, 1);
+      await this.#send(o);
     }
   }
 
-  #сообщить(текст: string): void {
-    const событие: PanelEvent = {
+  #report(text: string): void {
+    const event: PanelEvent = {
       id: `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       agent: "system",
       kind: "message",
       visibility: "turn",
       at: Date.now(),
-      text: текст,
+      text: text,
     };
-    this.journal.append(this.опции.room, событие);
-    this.опции.onEvent(событие);
+    this.journal.append(this.options.room, event);
+    this.options.onEvent(event);
   }
 
-  #обновить(): void {
-    this.опции.onState?.(this.state);
+  #refresh(): void {
+    this.options.onState?.(this.state);
   }
 }
 
-const ИМЕНА: Record<AgentId, string> = {
+const NAMES: Record<AgentId, string> = {
   claude: "Claude",
   codex: "Codex",
   human: "человека",
@@ -826,7 +826,7 @@ const ИМЕНА: Record<AgentId, string> = {
 /** Сколько символов выводов инструментов по умолчанию уходит рецензенту за одну проверку. */
 export const EVIDENCE_BUDGET = 240_000;
 
-const НС = String.fromCharCode(10);
+const NL = String.fromCharCode(10);
 
 /**
  * Выводы инструментов уходят рецензенту целиком, пока помещаются в бюджет
@@ -835,113 +835,113 @@ const НС = String.fromCharCode(10);
  * для показа (64 000 символов), а пометка «сырой вывод» завышала полноту
  * переданного — замечание исследования Codex 27.09.2026.
  */
-const ПРО_УСЕЧЕНИЕ =
+const ABOUT_TRUNCATION =
   "У каждого вывода инструмента в заголовке указана полнота. «Полный» — передан целиком. " +
   "«Неполный» — вывод длиннее бюджета проверки: показаны начало и конец, пропущенный диапазон " +
   "указан внутри вывода. Полный вывод хранится в журнале панели — если он нужен, попросите человека.";
 
 /** Заметки памяти — справка, а не поручение: агент должен это различать. */
-const ПРО_ПАМЯТЬ =
+const ABOUT_MEMORY =
   "Ниже — заметки из памяти проекта, найденные панелью по словам этого сообщения. Это не слова человека, " +
   "а справка: у заметок бывают даты, оговорки и поздние исправления — проверяйте их, прежде чем опираться.";
 
 /** Что копится для передачи. Поток, диагностика и рассуждения — нет. */
-const ПЕРЕДАВАЕМЫЕ = new Set<PanelEvent["kind"]>(["message", "tool_call", "tool_result"]);
+const FORWARDED_KINDS = new Set<PanelEvent["kind"]>(["message", "tool_call", "tool_result"]);
 
 /** Число с пробелами между разрядами: 99 005. */
-function разряды(n: number): string {
-  const цифры = String(n);
-  let итог = "";
-  for (let i = 0; i < цифры.length; i++) {
-    if (i > 0 && (цифры.length - i) % 3 === 0) итог += " ";
-    итог += цифры[i];
+function groupDigits(n: number): string {
+  const digits = String(n);
+  let result = "";
+  for (let i = 0; i < digits.length; i++) {
+    if (i > 0 && (digits.length - i) % 3 === 0) result += " ";
+    result += digits[i];
   }
-  return итог;
+  return result;
 }
 
-function символов(n: number): string {
-  const сотни = n % 100;
-  const единицы = n % 10;
-  const форма =
-    сотни > 10 && сотни < 20
+function charsLabel(n: number): string {
+  const lastTwo = n % 100;
+  const ones = n % 10;
+  const form =
+    lastTwo > 10 && lastTwo < 20
       ? "символов"
-      : единицы === 1
+      : ones === 1
         ? "символ"
-        : единицы >= 2 && единицы <= 4
+        : ones >= 2 && ones <= 4
           ? "символа"
           : "символов";
-  return `${разряды(n)} ${форма}`;
+  return `${groupDigits(n)} ${form}`;
 }
 
 /**
  * Предел длины одного вывода при общем бюджете: короткие выводы идут целиком,
  * остаток бюджета делится поровну между длинными. Infinity — режется ничего.
  */
-export function evidenceCap(длины: readonly number[], бюджет: number): number {
-  if (длины.reduce((сумма, длина) => сумма + длина, 0) <= бюджет) return Infinity;
-  const поВозрастанию = [...длины].sort((а, б) => а - б);
-  let остаток = бюджет;
-  let осталось = поВозрастанию.length;
-  for (const длина of поВозрастанию) {
-    if (длина > остаток / осталось) break;
-    остаток -= длина;
-    осталось -= 1;
+export function evidenceCap(lengths: readonly number[], budget: number): number {
+  if (lengths.reduce((sum, length) => sum + length, 0) <= budget) return Infinity;
+  const ascending = [...lengths].sort((a, b) => a - b);
+  let remainder = budget;
+  let remaining = ascending.length;
+  for (const length of ascending) {
+    if (length > remainder / remaining) break;
+    remainder -= length;
+    remaining -= 1;
   }
-  return Math.max(0, Math.floor(остаток / осталось));
+  return Math.max(0, Math.floor(remainder / remaining));
 }
 
 /** Начало и конец текста в пределе; пропущенный диапазон назван словами. */
-function отрывок(текст: string, предел: number): string {
-  if (текст.length <= предел) return текст;
-  const голова = Math.floor(предел / 2);
-  const хвост = предел - голова;
-  const пропуск =
-    `[… пропущены символы ${разряды(голова + 1)}–${разряды(текст.length - хвост)} ` +
-    `из ${разряды(текст.length)} …]`;
-  return `${текст.slice(0, голова)}${НС}${пропуск}${НС}${текст.slice(текст.length - хвост)}`;
+function excerpt(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const head = Math.floor(limit / 2);
+  const tail = limit - head;
+  const skipped =
+    `[… пропущены символы ${groupDigits(head + 1)}–${groupDigits(text.length - tail)} ` +
+    `из ${groupDigits(text.length)} …]`;
+  return `${text.slice(0, head)}${NL}${skipped}${NL}${text.slice(text.length - tail)}`;
 }
 
-function время(at: number): string {
+function time(at: number): string {
   return `${new Date(at).toISOString().slice(11, 19)} UTC`;
 }
 
 /** Материал для другого агента; у каждого вывода инструмента — источник и полнота. */
-function собрать(
-  материал: PanelEvent[],
-  сИнструментами: boolean,
-  бюджет: number = EVIDENCE_BUDGET,
+function assemble(
+  material: PanelEvent[],
+  withTools: boolean,
+  budget: number = EVIDENCE_BUDGET,
 ): string | undefined {
-  const выводы = сИнструментами ? материал.filter((е) => е.kind === "tool_result") : [];
-  const прочее = материал
-    .filter((е) => е.kind !== "tool_result")
-    .reduce((сумма, е) => сумма + (е.text?.length ?? 0), 0);
+  const toolOutputs = withTools ? material.filter((e) => e.kind === "tool_result") : [];
+  const otherItems = material
+    .filter((e) => e.kind !== "tool_result")
+    .reduce((sum, e) => sum + (e.text?.length ?? 0), 0);
   // Реплики и вызовы идут целиком; выводам — остаток, но не меньше пятой части.
-  const предел = evidenceCap(
-    выводы.map((е) => (е.full ?? е.text ?? "").length),
-    Math.max(бюджет - прочее, Math.floor(бюджет / 5)),
+  const limit = evidenceCap(
+    toolOutputs.map((e) => (e.full ?? e.text ?? "").length),
+    Math.max(budget - otherItems, Math.floor(budget / 5)),
   );
-  const части: string[] = [];
-  for (const е of материал) {
-    const субагент = е.parentCallId ? ` · субагент вызова ${е.parentCallId}` : "";
-    const вызов = (е.callId ? ` · вызов ${е.callId}` : "") + субагент;
-    if (е.kind === "message" && е.text && е.parentCallId) {
+  const parts: string[] = [];
+  for (const e of material) {
+    const subagent = e.parentCallId ? ` · субагент вызова ${e.parentCallId}` : "";
+    const call = (e.callId ? ` · вызов ${e.callId}` : "") + subagent;
+    if (e.kind === "message" && e.text && e.parentCallId) {
       // Слова субагента — не слова Claude.
-      части.push(`--- реплика субагента вызова ${е.parentCallId} ---${НС}${е.text}`);
-    } else if (е.kind === "message" && е.text) части.push(е.text);
-    else if (сИнструментами && е.kind === "tool_call") {
-      части.push(`--- вызов инструмента ${е.tool ?? "?"}${вызов} ---${НС}${е.text ?? ""}`);
-    } else if (сИнструментами && е.kind === "tool_result") {
-      const полный = е.full ?? е.text ?? "";
-      const полнота =
-        полный.length <= предел
-          ? `полный, ${символов(полный.length)}`
-          : `неполный: показано ${разряды(предел)} из ${символов(полный.length)}`;
-      части.push(
-        `--- СЫРОЙ вывод инструмента ${е.tool ?? "?"}${вызов} · ${полнота} · ${время(е.at)} ---${НС}` +
-          отрывок(полный, предел),
+      parts.push(`--- реплика субагента вызова ${e.parentCallId} ---${NL}${e.text}`);
+    } else if (e.kind === "message" && e.text) parts.push(e.text);
+    else if (withTools && e.kind === "tool_call") {
+      parts.push(`--- вызов инструмента ${e.tool ?? "?"}${call} ---${NL}${e.text ?? ""}`);
+    } else if (withTools && e.kind === "tool_result") {
+      const full = e.full ?? e.text ?? "";
+      const completeness =
+        full.length <= limit
+          ? `полный, ${charsLabel(full.length)}`
+          : `неполный: показано ${groupDigits(limit)} из ${charsLabel(full.length)}`;
+      parts.push(
+        `--- СЫРОЙ вывод инструмента ${e.tool ?? "?"}${call} · ${completeness} · ${time(e.at)} ---${NL}` +
+          excerpt(full, limit),
       );
     }
   }
-  const текст = части.join(`${НС}${НС}`).trim();
-  return текст.length > 0 ? текст : undefined;
+  const text = parts.join(`${NL}${NL}`).trim();
+  return text.length > 0 ? text : undefined;
 }

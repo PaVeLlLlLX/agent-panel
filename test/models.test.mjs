@@ -11,29 +11,29 @@ import assert from "node:assert/strict";
 
 import { describeChoice, normalizeChoice } from "../out/models.js";
 
-const КАТАЛОГ = [
+const CATALOG = [
   { id: "", label: "по умолчанию (Sonnet 5)", description: "", efforts: ["low", "high"] },
   { id: "opus", label: "Opus", description: "", efforts: ["low", "high", "max"] },
   { id: "haiku", label: "Haiku", description: "", efforts: [] },
 ];
 
 test("допустимый выбор сохраняется", () => {
-  assert.deepEqual(normalizeChoice(КАТАЛОГ, { model: "opus", effort: "max" }), { model: "opus", effort: "max" });
-  assert.deepEqual(normalizeChoice(КАТАЛОГ, { model: "", effort: "high" }), { model: "", effort: "high" });
+  assert.deepEqual(normalizeChoice(CATALOG, { model: "opus", effort: "max" }), { model: "opus", effort: "max" });
+  assert.deepEqual(normalizeChoice(CATALOG, { model: "", effort: "high" }), { model: "", effort: "high" });
 });
 
 test("неизвестная модель сбрасывается к умолчанию вместе с уровнем", () => {
-  assert.deepEqual(normalizeChoice(КАТАЛОГ, { model: "gpt-4", effort: "high" }), { model: "", effort: "" });
+  assert.deepEqual(normalizeChoice(CATALOG, { model: "gpt-4", effort: "high" }), { model: "", effort: "" });
 });
 
 test("уровень, которого нет у модели, сбрасывается", () => {
-  assert.deepEqual(normalizeChoice(КАТАЛОГ, { model: "haiku", effort: "high" }), { model: "haiku", effort: "" });
-  assert.deepEqual(normalizeChoice(КАТАЛОГ, { model: "", effort: "max" }), { model: "", effort: "" });
+  assert.deepEqual(normalizeChoice(CATALOG, { model: "haiku", effort: "high" }), { model: "haiku", effort: "" });
+  assert.deepEqual(normalizeChoice(CATALOG, { model: "", effort: "max" }), { model: "", effort: "" });
 });
 
 test("мусор вместо выбора — умолчание", () => {
-  assert.deepEqual(normalizeChoice(КАТАЛОГ, undefined), { model: "", effort: "" });
-  assert.deepEqual(normalizeChoice(КАТАЛОГ, { model: 5, effort: null }), { model: "", effort: "" });
+  assert.deepEqual(normalizeChoice(CATALOG, undefined), { model: "", effort: "" });
+  assert.deepEqual(normalizeChoice(CATALOG, { model: 5, effort: null }), { model: "", effort: "" });
 });
 
 test("без каталога выбор не проверить — строки сохраняются как есть", () => {
@@ -42,8 +42,8 @@ test("без каталога выбор не проверить — строк�
 });
 
 test("подпись выбора для людей", () => {
-  assert.equal(describeChoice(КАТАЛОГ, { model: "opus", effort: "high" }), "Opus · high");
-  assert.equal(describeChoice(КАТАЛОГ, { model: "", effort: "" }), "по умолчанию (Sonnet 5)");
+  assert.equal(describeChoice(CATALOG, { model: "opus", effort: "high" }), "Opus · high");
+  assert.equal(describeChoice(CATALOG, { model: "", effort: "" }), "по умолчанию (Sonnet 5)");
   assert.equal(describeChoice(undefined, { model: "opus", effort: "" }), "opus");
   assert.equal(describeChoice(undefined, { model: "", effort: "" }), "по умолчанию");
 });

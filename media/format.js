@@ -5,17 +5,17 @@
  * (module.exports). Никаких обращений к DOM здесь быть не должно.
  */
 (function () {
-  function plural(n, формы) {
-    const н = Math.abs(n) % 100;
-    const е = н % 10;
-    if (н > 10 && н < 20) return формы[2];
-    if (е === 1) return формы[0];
-    if (е >= 2 && е <= 4) return формы[1];
-    return формы[2];
+  function plural(n, forms) {
+    const lastTwo = Math.abs(n) % 100;
+    const lastDigit = lastTwo % 10;
+    if (lastTwo > 10 && lastTwo < 20) return forms[2];
+    if (lastDigit === 1) return forms[0];
+    if (lastDigit >= 2 && lastDigit <= 4) return forms[1];
+    return forms[2];
   }
 
-  const ПАМЯТЬ = new Set(["mcp__om__remember", "mcp__om__record_work"]);
-  const ВИДЫ = {
+  const MEMORY_TOOLS = new Set(["mcp__om__remember", "mcp__om__record_work"]);
+  const KINDS = {
     Bash: "command",
     commandExecution: "command",
     Read: "read",
@@ -31,15 +31,15 @@
     dynamicToolCall: "mcp",
   };
 
-  function toolCategory(имя) {
-    if (ПАМЯТЬ.has(имя)) return "memory";
-    if (ВИДЫ[имя]) return ВИДЫ[имя];
-    if (typeof имя === "string" && имя.startsWith("mcp__")) return "mcp";
+  function toolCategory(name) {
+    if (MEMORY_TOOLS.has(name)) return "memory";
+    if (KINDS[name]) return KINDS[name];
+    if (typeof name === "string" && name.startsWith("mcp__")) return "mcp";
     return "other";
   }
 
-  const ПОРЯДОК = ["command", "read", "edit", "search", "memory", "mcp", "other"];
-  const ПОДПИСИ = {
+  const ORDER = ["command", "read", "edit", "search", "memory", "mcp", "other"];
+  const CAPTIONS = {
     command: ["команда", "команды", "команд"],
     read: ["чтение", "чтения", "чтений"],
     edit: ["правка", "правки", "правок"],
@@ -49,14 +49,14 @@
     other: ["прочее действие", "прочих действия", "прочих действий"],
   };
 
-  function summarizeTools(имена) {
-    const счёт = {};
-    for (const имя of имена) {
-      const вид = toolCategory(имя);
-      счёт[вид] = (счёт[вид] || 0) + 1;
+  function summarizeTools(names) {
+    const counts = {};
+    for (const name of names) {
+      const kind = toolCategory(name);
+      counts[kind] = (counts[kind] || 0) + 1;
     }
-    return ПОРЯДОК.filter((в) => счёт[в])
-      .map((в) => `${счёт[в]} ${plural(счёт[в], ПОДПИСИ[в])}`)
+    return ORDER.filter((v) => counts[v])
+      .map((v) => `${counts[v]} ${plural(counts[v], CAPTIONS[v])}`)
       .join(", ");
   }
 
@@ -64,8 +64,8 @@
    * Следовать ли прокрутке за новым текстом: только если человек уже внизу.
    * Иначе генерация утягивает его от текста, который он читает выше.
    */
-  function stickToBottom(scrollHeight, scrollTop, clientHeight, порог = 48) {
-    return scrollHeight - scrollTop - clientHeight <= порог;
+  function stickToBottom(scrollHeight, scrollTop, clientHeight, threshold = 48) {
+    return scrollHeight - scrollTop - clientHeight <= threshold;
   }
 
   const api = { plural, toolCategory, summarizeTools, stickToBottom };

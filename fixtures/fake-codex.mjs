@@ -22,173 +22,173 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
-const ВЕТКА = "fake-thread-1";
-const отправить = (о) => process.stdout.write(`${JSON.stringify(о)}\n`);
-const уведомить = (method, params) => отправить({ jsonrpc: "2.0", method, params });
+const THREAD = "fake-thread-1";
+const send = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
+const notify = (method, params) => send({ jsonrpc: "2.0", method, params });
 
 process.stderr.write(
   "\x1b[2m2026-09-14T17:07:57Z\x1b[0m \x1b[31mERROR\x1b[0m codex_models_manager::manager: failed to refresh available models\n",
 );
 
-const долгие = new Set();
-let номерХода = 0;
+const longRunning = new Set();
+let turnNumber = 0;
 
 // --die-once <файл>: первый запуск умирает на initialize, следующие работают.
-const iМетки = process.argv.indexOf("--die-once");
-if (iМетки > 0 && !existsSync(process.argv[iМетки + 1])) {
-  writeFileSync(process.argv[iМетки + 1], "умер");
+const markIndex = process.argv.indexOf("--die-once");
+if (markIndex > 0 && !existsSync(process.argv[markIndex + 1])) {
+  writeFileSync(process.argv[markIndex + 1], "умер");
   createInterface({ input: process.stdin }).once("line", () => process.exit(3));
   await new Promise(() => {});
 }
 
-const строки = createInterface({ input: process.stdin });
-строки.on("line", (строка) => {
-  let з;
+const lines = createInterface({ input: process.stdin });
+lines.on("line", (line) => {
+  let z;
   try {
-    з = JSON.parse(строка);
+    z = JSON.parse(line);
   } catch {
     return;
   }
 
   // Ответ клиента на наш запрос одобрения.
-  if (з.id === "srv-1" && !з.method) {
-    process.stderr.write(`ответ клиента: ${з.error ? "error" : "result"}\n`);
+  if (z.id === "srv-1" && !z.method) {
+    process.stderr.write(`ответ клиента: ${z.error ? "error" : "result"}\n`);
     return;
   }
-  if (!з.method || з.id === undefined) return; // нотификации клиента
+  if (!z.method || z.id === undefined) return; // нотификации клиента
 
-  const ответ = (result) => отправить({ jsonrpc: "2.0", id: з.id, result });
+  const reply = (result) => send({ jsonrpc: "2.0", id: z.id, result });
 
-  switch (з.method) {
+  switch (z.method) {
     case "initialize":
-      ответ({});
+      reply({});
       return;
     case "thread/start":
-      ответ({ thread: { id: ВЕТКА, sessionId: "fake-session" } });
-      уведомить("thread/started", { thread: { id: ВЕТКА } });
+      reply({ thread: { id: THREAD, sessionId: "fake-session" } });
+      notify("thread/started", { thread: { id: THREAD } });
       return;
     case "thread/resume":
       // Параметры возобновления — в stderr: тест читает их из диагностики.
       process.stderr.write(`ПАРАМЕТРЫ-ВЕТКИ ${JSON.stringify({
         resume: true,
-        sandbox: з.params.sandbox,
-        developerInstructions: String(з.params.developerInstructions ?? "").slice(0, 60),
+        sandbox: z.params.sandbox,
+        developerInstructions: String(z.params.developerInstructions ?? "").slice(0, 60),
       })}
 `);
-      ответ({ thread: { id: з.params.threadId } });
+      reply({ thread: { id: z.params.threadId } });
       return;
     case "model/list": {
       // Форма из схемы ModelListResponse (Codex 0.153.0); скрытая модель — чтобы
       // проверить, что панель её не показывает.
-      const модель = (id, имя, поУмолчанию, уровень, уровни, скрыта = false) => ({
-        id, model: id, displayName: имя, description: `${имя} description`, hidden: скрыта,
-        isDefault: поУмолчанию, defaultReasoningEffort: уровень,
-        supportedReasoningEfforts: уровни.map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort })),
+      const model = (id, name, isDefault, level, levels, hidden = false) => ({
+        id, model: id, displayName: name, description: `${name} description`, hidden: hidden,
+        isDefault: isDefault, defaultReasoningEffort: level,
+        supportedReasoningEfforts: levels.map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort })),
       });
-      ответ({
+      reply({
         data: [
-          модель("gpt-sol", "GPT-Sol", true, "low", ["low", "medium", "high", "ultra"]),
-          модель("gpt-luna", "GPT-Luna", false, "medium", ["low", "medium", "high"]),
-          модель("gpt-hidden", "GPT-Hidden", false, "medium", ["low"], true),
+          model("gpt-sol", "GPT-Sol", true, "low", ["low", "medium", "high", "ultra"]),
+          model("gpt-luna", "GPT-Luna", false, "medium", ["low", "medium", "high"]),
+          model("gpt-hidden", "GPT-Hidden", false, "medium", ["low"], true),
         ],
         nextCursor: null,
       });
       return;
     }
     case "turn/start": {
-      номерХода += 1;
-      const turnId = `turn-${номерХода}`;
-      const текстХода = (з.params.input ?? []).map((в) => в.text ?? "").join("");
+      turnNumber += 1;
+      const turnId = `turn-${turnNumber}`;
+      const turnText = (z.params.input ?? []).map((v) => v.text ?? "").join("");
       // УПАСТЬ-ХОД: процесс умирает посреди хода.
-      if (текстХода.includes("УПАСТЬ-ХОД")) {
-        ответ({ turn: { id: turnId, status: "inProgress" } });
+      if (turnText.includes("УПАСТЬ-ХОД")) {
+        reply({ turn: { id: turnId, status: "inProgress" } });
         setTimeout(() => process.exit(3), 20);
         return;
       }
       // ДОЛГИЙ-ХОД: ход идёт, пока его не прервут; ПОЗЖЕ — кончается через 400 мс.
-      if (текстХода.includes("ДОЛГИЙ-ХОД") || текстХода.includes("ПОЗЖЕ")) {
-        ответ({ turn: { id: turnId, status: "inProgress" } });
-        уведомить("turn/started", { threadId: ВЕТКА, turn: { id: turnId, status: "inProgress" } });
-        if (текстХода.includes("ДОЛГИЙ-ХОД")) {
-          долгие.add(turnId);
+      if (turnText.includes("ДОЛГИЙ-ХОД") || turnText.includes("ПОЗЖЕ")) {
+        reply({ turn: { id: turnId, status: "inProgress" } });
+        notify("turn/started", { threadId: THREAD, turn: { id: turnId, status: "inProgress" } });
+        if (turnText.includes("ДОЛГИЙ-ХОД")) {
+          longRunning.add(turnId);
           return;
         }
         setTimeout(() => {
-          уведомить("item/completed", { item: { type: "agentMessage", id: "i-поздно", text: "поздний ответ" }, threadId: ВЕТКА, turnId });
-          уведомить("turn/completed", { threadId: ВЕТКА, turn: { id: turnId, status: "completed" } });
+          notify("item/completed", { item: { type: "agentMessage", id: "i-поздно", text: "поздний ответ" }, threadId: THREAD, turnId });
+          notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "completed" } });
         }, 400);
         return;
       }
       // Модель и уровень хода — в stderr: тест читает их из диагностики.
-      process.stderr.write(`ПАРАМЕТРЫ-ХОДА ${JSON.stringify({ model: з.params.model, effort: з.params.effort })}\n`);
-      ответ({ turn: { id: turnId, status: "inProgress" } });
-      const текст = (з.params.input ?? []).map((в) => в.text ?? "").join("");
-      if (!текст.includes("РАСХОД-БЕЗ-ХОДА")) {
-        уведомить("turn/started", { threadId: ВЕТКА, turn: { id: turnId, status: "inProgress" } });
+      process.stderr.write(`ПАРАМЕТРЫ-ХОДА ${JSON.stringify({ model: z.params.model, effort: z.params.effort })}\n`);
+      reply({ turn: { id: turnId, status: "inProgress" } });
+      const text = (z.params.input ?? []).map((v) => v.text ?? "").join("");
+      if (!text.includes("РАСХОД-БЕЗ-ХОДА")) {
+        notify("turn/started", { threadId: THREAD, turn: { id: turnId, status: "inProgress" } });
       }
 
-      if (текст.includes("ЗАПИСАТЬ")) {
-        отправить({
+      if (text.includes("ЗАПИСАТЬ")) {
+        send({
           jsonrpc: "2.0",
           id: "srv-1",
           method: "item/fileChange/requestApproval",
-          params: { threadId: ВЕТКА, turnId },
+          params: { threadId: THREAD, turnId },
         });
       }
-      if (текст.includes("КОМАНДА")) {
-        const команда = { type: "commandExecution", id: "cmd-1", command: "git status", status: "inProgress" };
-        уведомить("item/started", { item: команда, threadId: ВЕТКА, turnId });
-        уведомить("item/completed", {
-          item: { ...команда, status: "completed", aggregatedOutput: "чисто", exitCode: 0 },
-          threadId: ВЕТКА,
+      if (text.includes("КОМАНДА")) {
+        const command = { type: "commandExecution", id: "cmd-1", command: "git status", status: "inProgress" };
+        notify("item/started", { item: command, threadId: THREAD, turnId });
+        notify("item/completed", {
+          item: { ...command, status: "completed", aggregatedOutput: "чисто", exitCode: 0 },
+          threadId: THREAD,
           turnId,
         });
       }
-      if (текст.includes("РАСХОД-БЕЗ-ХОДА")) {
+      if (text.includes("РАСХОД-БЕЗ-ХОДА")) {
         // Повтор расхода прежнего хода, а turn/started для текущего не пришёл.
-        уведомить("thread/tokenUsage/updated", {
-          threadId: ВЕТКА,
+        notify("thread/tokenUsage/updated", {
+          threadId: THREAD,
           turnId: "turn-old",
           tokenUsage: { total: { inputTokens: 5000, cachedInputTokens: 0, outputTokens: 400 }, last: { inputTokens: 900, cachedInputTokens: 0, outputTokens: 40 } },
         });
-        уведомить("turn/completed", { threadId: ВЕТКА, turn: { id: turnId, status: "completed" } });
+        notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "completed" } });
         return;
       }
-      if (текст.includes("РАСХОД-СЛОЖНЫЙ")) {
-        const расход = (ход, вход, выход, последнийВход, последнийВыход) =>
-          уведомить("thread/tokenUsage/updated", {
-            threadId: ВЕТКА,
-            turnId: ход,
+      if (text.includes("РАСХОД-СЛОЖНЫЙ")) {
+        const usage = (turn, input, output, lastInput, lastOutput) =>
+          notify("thread/tokenUsage/updated", {
+            threadId: THREAD,
+            turnId: turn,
             tokenUsage: {
-              total: { inputTokens: вход, cachedInputTokens: 0, outputTokens: выход },
-              last: { inputTokens: последнийВход, cachedInputTokens: 0, outputTokens: последнийВыход },
+              total: { inputTokens: input, cachedInputTokens: 0, outputTokens: output },
+              last: { inputTokens: lastInput, cachedInputTokens: 0, outputTokens: lastOutput },
             },
           });
-        расход("turn-old", 5000, 400, 900, 40); // повтор прежнего хода при возобновлении
-        расход(turnId, 1000, 10, 300, 10); // первый запрос хода; ветка возобновлена — базы нет
-        расход(turnId, 1500, 25, 500, 15); // второй запрос
-        расход(turnId, 400, 5, 400, 5); // сжатие контекста: итог сброшен
-        уведомить("turn/completed", { threadId: ВЕТКА, turn: { id: turnId, status: "completed" } });
+        usage("turn-old", 5000, 400, 900, 40); // повтор прежнего хода при возобновлении
+        usage(turnId, 1000, 10, 300, 10); // первый запрос хода; ветка возобновлена — базы нет
+        usage(turnId, 1500, 25, 500, 15); // второй запрос
+        usage(turnId, 400, 5, 400, 5); // сжатие контекста: итог сброшен
+        notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "completed" } });
         return;
       }
-      if (текст.includes("ОШИБКА-ХОДА")) {
-        уведомить("turn/completed", {
-          threadId: ВЕТКА,
+      if (text.includes("ОШИБКА-ХОДА")) {
+        notify("turn/completed", {
+          threadId: THREAD,
           turn: { id: turnId, status: "failed", error: { message: "сбой модели" } },
         });
         return;
       }
-      for (const кусок of ["при", "вет"]) {
-        уведомить("item/agentMessage/delta", { delta: кусок, itemId: "i1", threadId: ВЕТКА, turnId });
+      for (const chunk of ["при", "вет"]) {
+        notify("item/agentMessage/delta", { delta: chunk, itemId: "i1", threadId: THREAD, turnId });
       }
-      уведомить("item/completed", {
+      notify("item/completed", {
         item: { type: "agentMessage", id: "i1", text: "привет" },
-        threadId: ВЕТКА,
+        threadId: THREAD,
         turnId,
         completedAtMs: Date.now(),
       });
-      уведомить("thread/tokenUsage/updated", {
-        threadId: ВЕТКА,
+      notify("thread/tokenUsage/updated", {
+        threadId: THREAD,
         turnId,
         tokenUsage: {
           total: { totalTokens: 99999, inputTokens: 90000, cachedInputTokens: 80000, outputTokens: 9999, reasoningOutputTokens: 0 },
@@ -196,35 +196,35 @@ const строки = createInterface({ input: process.stdin });
           modelContextWindow: 258400,
         },
       });
-      уведомить("account/rateLimits/updated", {
+      notify("account/rateLimits/updated", {
         rateLimits: { limitId: "codex", primary: { usedPercent: 8, windowDurationMins: 10080, resetsAt: 1791057755 }, planType: "plus" },
       });
-      уведомить("turn/completed", { threadId: ВЕТКА, turn: { id: turnId, status: "completed" } });
+      notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "completed" } });
       return;
     }
     case "turn/interrupt":
-      ответ({});
+      reply({});
       // Настоящий Codex присылает конец прерванного хода отдельно и позже ответа.
-      if (долгие.delete(з.params.turnId)) {
+      if (longRunning.delete(z.params.turnId)) {
         // Перед концом — поздний элемент прерванного хода.
         setTimeout(() => {
-          уведомить("item/completed", {
+          notify("item/completed", {
             item: { type: "agentMessage", id: "i-прерванный", text: "поздний кусок" },
-            threadId: ВЕТКА,
-            turnId: з.params.turnId,
+            threadId: THREAD,
+            turnId: z.params.turnId,
           });
         }, 100);
         setTimeout(() => {
-          уведомить("turn/completed", { threadId: ВЕТКА, turn: { id: з.params.turnId, status: "interrupted" } });
+          notify("turn/completed", { threadId: THREAD, turn: { id: z.params.turnId, status: "interrupted" } });
         }, 150);
       }
       return;
     default:
-      отправить({
+      send({
         jsonrpc: "2.0",
-        id: з.id,
-        error: { code: -32601, message: `нет метода ${з.method}` },
+        id: z.id,
+        error: { code: -32601, message: `нет метода ${z.method}` },
       });
   }
 });
-строки.on("close", () => process.exit(0));
+lines.on("close", () => process.exit(0));

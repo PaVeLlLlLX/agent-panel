@@ -26,8 +26,8 @@ if (argv.includes("--close-stdin")) {
   process.stdin.destroy();
   setInterval(() => {}, 1000);
 }
-const СЕССИЯ = "fake-claude-session";
-const записать = (о) => process.stdout.write(`${JSON.stringify(о)}\n`);
+const SESSION = "fake-claude-session";
+const writeLine = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
 
 // `claude -p "/usage"` — ответ без запроса модели (CLI 2.1.220, 28.09). Доля
 // отдаётся, только если адаптер просит не оставлять файл сессии.
@@ -36,13 +36,13 @@ if (argv.includes("/usage") && argv.includes("--hang-usage")) {
   setInterval(() => {}, 1000);
   await new Promise(() => {});
 } else if (argv.includes("/usage")) {
-  const строки = [
+  const lines = [
     "Current session: 28% used · resets Sep 28, 6:50am (Asia/Novosibirsk)",
     argv.includes("--no-session-persistence")
       ? "Current week (all models): 4% used · resets Oct 4, 12am (Asia/Novosibirsk)"
       : "session would be persisted",
   ];
-  записать({ type: "result", subtype: "success", is_error: false, result: строки.join(String.fromCharCode(10)) });
+  writeLine({ type: "result", subtype: "success", is_error: false, result: lines.join(String.fromCharCode(10)) });
   process.exit(0);
 }
 
@@ -51,10 +51,10 @@ process.stderr.write(
   "\x1b[2m2026-09-14T17:07:57.727561Z\x1b[0m \x1b[33mWARN\x1b[0m фальшивый служебный лог\n",
 );
 
-записать({
+writeLine({
   type: "system",
   subtype: "init",
-  session_id: СЕССИЯ,
+  session_id: SESSION,
   model: "fake",
   tools: [],
   argv,
@@ -62,39 +62,39 @@ process.stderr.write(
 });
 
 /** Запросы к панели, ждущие control_response: request_id → продолжение хода. */
-const ожидающие = new Map();
+const pendingRequests = new Map();
 
-const строки = createInterface({ input: process.stdin });
-строки.on("line", (строка) => {
-  let запись;
+const lines = createInterface({ input: process.stdin });
+lines.on("line", (line) => {
+  let record;
   try {
-    запись = JSON.parse(строка);
+    record = JSON.parse(line);
   } catch {
     return;
   }
-  if (запись.type === "control_response") {
+  if (record.type === "control_response") {
     // Ответ панели — в stderr: тест читает его из диагностики и видит,
     // что именно ушло агенту.
-    process.stderr.write(`ОТВЕТ-ПАНЕЛИ ${JSON.stringify(запись.response)}\n`);
-    const продолжить = ожидающие.get(запись.response?.request_id);
-    ожидающие.delete(запись.response?.request_id);
-    продолжить?.(запись.response);
+    process.stderr.write(`ОТВЕТ-ПАНЕЛИ ${JSON.stringify(record.response)}\n`);
+    const resume = pendingRequests.get(record.response?.request_id);
+    pendingRequests.delete(record.response?.request_id);
+    resume?.(record.response);
     return;
   }
   // initialize: список моделей в форме, снятой пробой с Claude Code 2.1.220.
-  if (запись.type === "control_request" && запись.request?.subtype === "initialize") {
-    const уровни = ["low", "medium", "high", "xhigh", "max"];
-    записать({
+  if (record.type === "control_request" && record.request?.subtype === "initialize") {
+    const levels = ["low", "medium", "high", "xhigh", "max"];
+    writeLine({
       type: "control_response",
       response: {
         subtype: "success",
-        request_id: запись.request_id,
+        request_id: record.request_id,
         response: {
           commands: [],
           models: [
-            { value: "default", resolvedModel: "claude-sonnet-5", displayName: "Default (recommended)", description: "Sonnet 5 · Efficient for routine tasks", supportsEffort: true, supportedEffortLevels: уровни },
-            { value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet", description: "Sonnet 5 · Efficient for routine tasks", supportsEffort: true, supportedEffortLevels: уровни },
-            { value: "opus", resolvedModel: "claude-opus-5", displayName: "Opus", description: "Opus 5 · Best for everyday, complex tasks", supportsEffort: true, supportedEffortLevels: уровни },
+            { value: "default", resolvedModel: "claude-sonnet-5", displayName: "Default (recommended)", description: "Sonnet 5 · Efficient for routine tasks", supportsEffort: true, supportedEffortLevels: levels },
+            { value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet", description: "Sonnet 5 · Efficient for routine tasks", supportsEffort: true, supportedEffortLevels: levels },
+            { value: "opus", resolvedModel: "claude-opus-5", displayName: "Opus", description: "Opus 5 · Best for everyday, complex tasks", supportsEffort: true, supportedEffortLevels: levels },
             { value: "haiku", resolvedModel: "claude-haiku-4-5-20251001", displayName: "Haiku", description: "Haiku 4.5 · Fastest for quick answers" },
           ],
         },
@@ -102,92 +102,92 @@ const строки = createInterface({ input: process.stdin });
     });
     return;
   }
-  if (запись.type !== "user") return;
-  const текст = (запись.message?.content ?? []).map((б) => б.text ?? "").join("");
+  if (record.type !== "user") return;
+  const text = (record.message?.content ?? []).map((b) => b.text ?? "").join("");
   // --replay-user-messages: настоящий CLI повторяет сообщение с isReplay,
   // когда начинает его обрабатывать — внутри своего запроса, после init
   // (живая проба 28.09: второе сообщение, посланное во время первого хода,
   // повторено только в своём запросе).
-  const эхо = () => {
+  const echo = () => {
     if (argv.includes("--replay-user-messages")) {
-      записать({ type: "user", message: запись.message, session_id: СЕССИЯ, parent_tool_use_id: null, isReplay: true });
+      writeLine({ type: "user", message: record.message, session_id: SESSION, parent_tool_use_id: null, isReplay: true });
     }
   };
-  const initЗапроса = () => записать({ type: "system", subtype: "init", session_id: СЕССИЯ, model: "fake", tools: [], argv, pid: process.pid });
+  const emitInit = () => writeLine({ type: "system", subtype: "init", session_id: SESSION, model: "fake", tools: [], argv, pid: process.pid });
   // ГОНКА: CLI уже начал свой запрос (кончилась фоновая команда), когда
   // пришло сообщение панели; сообщение обрабатывается следом.
-  if (текст.includes("ГОНКА")) {
-    записать({ type: "system", subtype: "task_notification", task_id: "tb", status: "completed", summary: "Background command pytest completed (exit code 1)", session_id: СЕССИЯ });
-    initЗапроса();
-    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "итог фоновой" }] }, session_id: СЕССИЯ });
-    записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ, usage: { input_tokens: 70, output_tokens: 7 } });
-    initЗапроса();
-    эхо();
-    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "ответ на сообщение" }] }, session_id: СЕССИЯ });
-    записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ, usage: { input_tokens: 5, output_tokens: 5 } });
+  if (text.includes("ГОНКА")) {
+    writeLine({ type: "system", subtype: "task_notification", task_id: "tb", status: "completed", summary: "Background command pytest completed (exit code 1)", session_id: SESSION });
+    emitInit();
+    writeLine({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "итог фоновой" }] }, session_id: SESSION });
+    writeLine({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: SESSION, usage: { input_tokens: 70, output_tokens: 7 } });
+    emitInit();
+    echo();
+    writeLine({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "ответ на сообщение" }] }, session_id: SESSION });
+    writeLine({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: SESSION, usage: { input_tokens: 5, output_tokens: 5 } });
     return;
   }
   // ОШИБКА-ДО-ЭХА: свой запрос кончился ошибкой раньше, чем CLI повторил сообщение.
-  if (текст.includes("ОШИБКА-ДО-ЭХА")) {
-    initЗапроса();
-    записать({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 0, session_id: СЕССИЯ });
+  if (text.includes("ОШИБКА-ДО-ЭХА")) {
+    emitInit();
+    writeLine({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 0, session_id: SESSION });
     return;
   }
   // ЧУЖОЙ-СУБАГЕНТ: чужой запрос запускает субагента, потом идёт свой;
   // субагент чужого кончается позже, и CLI сам продолжает.
-  if (текст.includes("ЧУЖОЙ-СУБАГЕНТ")) {
-    записать({ type: "system", subtype: "task_notification", task_id: "tb", status: "completed", summary: "Background command lint completed", session_id: СЕССИЯ });
-    initЗапроса();
-    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "toolu_чужой", name: "Agent", input: { description: "чужой" } }] }, session_id: СЕССИЯ });
-    записать({ type: "system", subtype: "task_started", task_id: "t9", tool_use_id: "toolu_чужой", task_type: "local_agent", session_id: СЕССИЯ });
-    записать({ type: "user", parent_tool_use_id: null, message: { content: [{ type: "tool_result", tool_use_id: "toolu_чужой", content: "Async agent launched successfully." }] }, session_id: СЕССИЯ });
-    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "чужой ждёт субагента" }] }, session_id: СЕССИЯ });
-    const сОшибкой = текст.includes("С-ОШИБКОЙ");
-    записать({ type: "result", subtype: сОшибкой ? "error_during_execution" : "success", is_error: сОшибкой, num_turns: 2, session_id: СЕССИЯ });
-    initЗапроса();
-    эхо();
-    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "ответ на сообщение" }] }, session_id: СЕССИЯ });
-    записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ });
+  if (text.includes("ЧУЖОЙ-СУБАГЕНТ")) {
+    writeLine({ type: "system", subtype: "task_notification", task_id: "tb", status: "completed", summary: "Background command lint completed", session_id: SESSION });
+    emitInit();
+    writeLine({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "toolu_чужой", name: "Agent", input: { description: "чужой" } }] }, session_id: SESSION });
+    writeLine({ type: "system", subtype: "task_started", task_id: "t9", tool_use_id: "toolu_чужой", task_type: "local_agent", session_id: SESSION });
+    writeLine({ type: "user", parent_tool_use_id: null, message: { content: [{ type: "tool_result", tool_use_id: "toolu_чужой", content: "Async agent launched successfully." }] }, session_id: SESSION });
+    writeLine({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "чужой ждёт субагента" }] }, session_id: SESSION });
+    const withError = text.includes("С-ОШИБКОЙ");
+    writeLine({ type: "result", subtype: withError ? "error_during_execution" : "success", is_error: withError, num_turns: 2, session_id: SESSION });
+    emitInit();
+    echo();
+    writeLine({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "ответ на сообщение" }] }, session_id: SESSION });
+    writeLine({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: SESSION });
     setTimeout(() => {
-      записать({ type: "system", subtype: "task_notification", task_id: "t9", status: "completed", session_id: СЕССИЯ });
-      initЗапроса();
-      записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "итог чужого субагента" }] }, session_id: СЕССИЯ });
-      записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ });
+      writeLine({ type: "system", subtype: "task_notification", task_id: "t9", status: "completed", session_id: SESSION });
+      emitInit();
+      writeLine({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "итог чужого субагента" }] }, session_id: SESSION });
+      writeLine({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: SESSION });
     }, 200);
     return;
   }
   // ЧУЖОЙ-ПОТОК: чужой запрос успел начать ответ (только stream_event) и
   // кончился ошибкой; свой идёт следом. Эхо своего приходит раньше первого
   // stream_event (замер 28.09), значит, поток без эха — чужой.
-  if (текст.includes("ЧУЖОЙ-ПОТОК")) {
-    initЗапроса();
-    записать({ type: "stream_event", parent_tool_use_id: null, event: { type: "message_start" }, session_id: СЕССИЯ });
-    записать({ type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_delta", delta: { type: "text_delta", text: "чуж" } }, session_id: СЕССИЯ });
-    записать({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 1, session_id: СЕССИЯ });
-    initЗапроса();
-    эхо();
-    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "ответ на сообщение" }] }, session_id: СЕССИЯ });
-    записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ });
+  if (text.includes("ЧУЖОЙ-ПОТОК")) {
+    emitInit();
+    writeLine({ type: "stream_event", parent_tool_use_id: null, event: { type: "message_start" }, session_id: SESSION });
+    writeLine({ type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_delta", delta: { type: "text_delta", text: "чуж" } }, session_id: SESSION });
+    writeLine({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 1, session_id: SESSION });
+    emitInit();
+    echo();
+    writeLine({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "ответ на сообщение" }] }, session_id: SESSION });
+    writeLine({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: SESSION });
     return;
   }
-  эхо();
+  echo();
   // ФОН-УВЕДОМЛЕНИЕ-БЕЗ-ХОДА: фоновая команда кончилась, но CLI ход не начал.
-  if (текст.includes("ФОН-УВЕДОМЛЕНИЕ-БЕЗ-ХОДА")) {
-    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "запущено" }] }, session_id: СЕССИЯ });
-    записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ });
+  if (text.includes("ФОН-УВЕДОМЛЕНИЕ-БЕЗ-ХОДА")) {
+    writeLine({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "запущено" }] }, session_id: SESSION });
+    writeLine({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: SESSION });
     setTimeout(() => {
-      записать({ type: "system", subtype: "task_notification", task_id: "tc", status: "completed", summary: "Background command старая completed", session_id: СЕССИЯ });
+      writeLine({ type: "system", subtype: "task_notification", task_id: "tc", status: "completed", summary: "Background command старая completed", session_id: SESSION });
     }, 50);
     return;
   }
   // САМ-БЕЗ-ПРИЧИНЫ: после хода CLI сам начинает запрос без уведомления о задаче.
-  if (текст.includes("САМ-БЕЗ-ПРИЧИНЫ")) {
-    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "готово" }] }, session_id: СЕССИЯ });
-    записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ });
+  if (text.includes("САМ-БЕЗ-ПРИЧИНЫ")) {
+    writeLine({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "готово" }] }, session_id: SESSION });
+    writeLine({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: SESSION });
     setTimeout(() => {
-      initЗапроса();
-      записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "сам" }] }, session_id: СЕССИЯ });
-      записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ });
+      emitInit();
+      writeLine({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "сам" }] }, session_id: SESSION });
+      writeLine({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: SESSION });
     }, 50);
     return;
   }
@@ -195,22 +195,22 @@ const строки = createInterface({ input: process.stdin });
   // НУЖНО-РАЗРЕШЕНИЕ: запрос can_use_tool в форме, снятой пробой с Claude Code
   // 2.1.220 (--permission-prompt-tool stdio). Ход ждёт ответа панели; отказ,
   // как у настоящего, попадает в permission_denials итога.
-  if (текст.includes("НУЖНО-РАЗРЕШЕНИЕ")) {
-    const вход = { command: "mkdir probe-dir", description: "Create directory" };
-    записать({ type: "stream_event", event: { type: "message_start" }, session_id: СЕССИЯ });
-    записать({
+  if (text.includes("НУЖНО-РАЗРЕШЕНИЕ")) {
+    const input = { command: "mkdir probe-dir", description: "Create directory" };
+    writeLine({ type: "stream_event", event: { type: "message_start" }, session_id: SESSION });
+    writeLine({
       type: "assistant",
-      message: { content: [{ type: "tool_use", id: "toolu_perm", name: "Bash", input: вход }] },
-      session_id: СЕССИЯ,
+      message: { content: [{ type: "tool_use", id: "toolu_perm", name: "Bash", input: input }] },
+      session_id: SESSION,
     });
-    записать({
+    writeLine({
       type: "control_request",
       request_id: "perm-1",
       request: {
         subtype: "can_use_tool",
         tool_name: "Bash",
         display_name: "Bash",
-        input: вход,
+        input: input,
         description: "Create directory",
         permission_suggestions: [
           {
@@ -226,37 +226,37 @@ const строки = createInterface({ input: process.stdin });
         tool_use_id: "toolu_perm",
       },
     });
-    ожидающие.set("perm-1", (ответ) => {
-      const решение = ответ?.response ?? {};
-      const разрешено = решение.behavior === "allow";
-      записать({
+    pendingRequests.set("perm-1", (reply) => {
+      const decision = reply?.response ?? {};
+      const allowed = decision.behavior === "allow";
+      writeLine({
         type: "user",
         message: {
           content: [
             {
               type: "tool_result",
               tool_use_id: "toolu_perm",
-              content: разрешено ? "" : String(решение.message ?? ""),
-              is_error: !разрешено,
+              content: allowed ? "" : String(decision.message ?? ""),
+              is_error: !allowed,
             },
           ],
         },
-        session_id: СЕССИЯ,
+        session_id: SESSION,
       });
-      записать({
+      writeLine({
         type: "assistant",
-        message: { content: [{ type: "text", text: разрешено ? "каталог создан" : "не разрешили" }] },
-        session_id: СЕССИЯ,
+        message: { content: [{ type: "text", text: allowed ? "каталог создан" : "не разрешили" }] },
+        session_id: SESSION,
       });
-      записать({
+      writeLine({
         type: "result",
         subtype: "success",
         is_error: false,
         num_turns: 2,
-        session_id: СЕССИЯ,
-        ...(разрешено
+        session_id: SESSION,
+        ...(allowed
           ? {}
-          : { permission_denials: [{ tool_name: "Bash", tool_use_id: "toolu_perm", tool_input: вход }] }),
+          : { permission_denials: [{ tool_name: "Bash", tool_use_id: "toolu_perm", tool_input: input }] }),
       });
     });
     return;
@@ -264,13 +264,13 @@ const строки = createInterface({ input: process.stdin });
 
   // ДЛИННЫЙ-ВЫВОД: результат инструмента длиннее предела показа, блоками
   // текста — как у настоящего Claude для части инструментов.
-  if (текст.includes("ДЛИННЫЙ-ВЫВОД")) {
-    записать({
+  if (text.includes("ДЛИННЫЙ-ВЫВОД")) {
+    writeLine({
       type: "assistant",
       message: { content: [{ type: "tool_use", id: "toolu_long", name: "Bash", input: { command: "cat big.log" } }] },
-      session_id: СЕССИЯ,
+      session_id: SESSION,
     });
-    записать({
+    writeLine({
       type: "user",
       message: {
         content: [
@@ -284,99 +284,99 @@ const строки = createInterface({ input: process.stdin });
           },
         ],
       },
-      session_id: СЕССИЯ,
+      session_id: SESSION,
     });
-    записать({ type: "assistant", message: { content: [{ type: "text", text: "прочитал" }] }, session_id: СЕССИЯ });
-    записать({ type: "result", subtype: "success", is_error: false, num_turns: 2, session_id: СЕССИЯ });
+    writeLine({ type: "assistant", message: { content: [{ type: "text", text: "прочитал" }] }, session_id: SESSION });
+    writeLine({ type: "result", subtype: "success", is_error: false, num_turns: 2, session_id: SESSION });
     return;
   }
 
   // Трудные порядки для ожидания субагентов (рецензия Codex 28.09).
-  const субагентЗапущен = (id) => {
-    записать({ type: "system", subtype: "task_started", task_id: id, tool_use_id: "toolu_" + id, task_type: "local_agent", session_id: СЕССИЯ });
+  const subagentStarted = (id) => {
+    writeLine({ type: "system", subtype: "task_started", task_id: id, tool_use_id: "toolu_" + id, task_type: "local_agent", session_id: SESSION });
   };
-  const итог = (текстИтога, ошибка = false) => {
-    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: текстИтога }] }, session_id: СЕССИЯ });
-    записать({ type: "result", subtype: ошибка ? "error_during_execution" : "success", is_error: ошибка, num_turns: 1, session_id: СЕССИЯ });
+  const result = (resultText, error = false) => {
+    writeLine({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: resultText }] }, session_id: SESSION });
+    writeLine({ type: "result", subtype: error ? "error_during_execution" : "success", is_error: error, num_turns: 1, session_id: SESSION });
   };
-  const init = () => записать({ type: "system", subtype: "init", session_id: СЕССИЯ, model: "fake", tools: [], argv, pid: process.pid });
-  const готов = (id) => записать({ type: "system", subtype: "task_notification", task_id: id, status: "completed", session_id: СЕССИЯ });
+  const init = () => writeLine({ type: "system", subtype: "init", session_id: SESSION, model: "fake", tools: [], argv, pid: process.pid });
+  const taskDone = (id) => writeLine({ type: "system", subtype: "task_notification", task_id: id, status: "completed", session_id: SESSION });
   // ДВА-СУБАГЕНТА: второй кончается, пока модель отвечает итоговым запросом.
-  if (текст.includes("ДВА-СУБАГЕНТА")) {
-    субагентЗапущен("t1");
-    субагентЗапущен("t2");
-    итог("жду двоих");
+  if (text.includes("ДВА-СУБАГЕНТА")) {
+    subagentStarted("t1");
+    subagentStarted("t2");
+    result("жду двоих");
     setTimeout(() => {
-      готов("t1");
+      taskDone("t1");
       init();
-      готов("t2");
+      taskDone("t2");
       setTimeout(() => {
-        итог("итог-1");
+        result("итог-1");
         setTimeout(() => {
           init();
-          итог("итог-2");
+          result("итог-2");
         }, 50);
       }, 400);
     }, 100);
     return;
   }
   // ОДИН-МОЛЧИТ: первый субагент кончил, Claude ответил итоговым запросом, второй молчит.
-  if (текст.includes("ОДИН-МОЛЧИТ")) {
-    субагентЗапущен("t1");
-    субагентЗапущен("t2");
-    итог("жду двоих");
+  if (text.includes("ОДИН-МОЛЧИТ")) {
+    subagentStarted("t1");
+    subagentStarted("t2");
+    result("жду двоих");
     setTimeout(() => {
-      готов("t1");
+      taskDone("t1");
       init();
-      итог("первый готов");
+      result("первый готов");
     }, 100);
     return;
   }
   // ДОЛГИЙ-ЗАПРОС: итоговый запрос модели открыт и долго молчит, потом отвечает.
-  if (текст.includes("ДОЛГИЙ-ЗАПРОС")) {
-    субагентЗапущен("t1");
-    итог("жду");
+  if (text.includes("ДОЛГИЙ-ЗАПРОС")) {
+    subagentStarted("t1");
+    result("жду");
     setTimeout(() => {
-      готов("t1");
+      taskDone("t1");
       init();
-      setTimeout(() => итог("поздний"), 700);
+      setTimeout(() => result("поздний"), 700);
     }, 50);
     return;
   }
   // МОЛЧАЛИВЫЙ-СУБАГЕНТ: субагент запущен и больше о себе не сообщает.
-  if (текст.includes("МОЛЧАЛИВЫЙ-СУБАГЕНТ")) {
-    субагентЗапущен("t1");
-    итог("жду");
+  if (text.includes("МОЛЧАЛИВЫЙ-СУБАГЕНТ")) {
+    subagentStarted("t1");
+    result("жду");
     return;
   }
   // СНИМОК-БЕЗ-ТИПА: background_tasks_changed с известным id без task_type.
-  if (текст.includes("СНИМОК-БЕЗ-ТИПА")) {
-    субагентЗапущен("t1");
-    итог("жду");
-    записать({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "t1" }], session_id: СЕССИЯ });
+  if (text.includes("СНИМОК-БЕЗ-ТИПА")) {
+    subagentStarted("t1");
+    result("жду");
+    writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "t1" }], session_id: SESSION });
     setTimeout(() => {
-      готов("t1");
+      taskDone("t1");
       init();
-      итог("итог");
+      result("итог");
     }, 400);
     return;
   }
   // ОШИБКА-ПРИ-СУБАГЕНТЕ: result с ошибкой, пока субагент работает; его итог приходит позже.
-  if (текст.includes("ОШИБКА-ПРИ-СУБАГЕНТЕ")) {
-    субагентЗапущен("t1");
-    итог("сбой", true);
+  if (text.includes("ОШИБКА-ПРИ-СУБАГЕНТЕ")) {
+    subagentStarted("t1");
+    result("сбой", true);
     setTimeout(() => {
-      готов("t1");
+      taskDone("t1");
       init();
-      итог("поздний итог");
+      result("поздний итог");
     }, 400);
     return;
   }
   // УПАСТЬ-ПРИ-СУБАГЕНТЕ: процесс умирает, пока субагент работает.
-  if (текст.includes("УПАСТЬ-ПРИ-СУБАГЕНТЕ")) {
-    субагентЗапущен("t1");
-    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "жду" }] }, session_id: СЕССИЯ });
-    записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ, usage: { input_tokens: 777, output_tokens: 7 } });
+  if (text.includes("УПАСТЬ-ПРИ-СУБАГЕНТЕ")) {
+    subagentStarted("t1");
+    writeLine({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "жду" }] }, session_id: SESSION });
+    writeLine({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: SESSION, usage: { input_tokens: 777, output_tokens: 7 } });
     setTimeout(() => process.exit(3), 50);
     return;
   }
@@ -386,45 +386,45 @@ const строки = createInterface({ input: process.stdin });
   // умолчанию запускает субагента в фоне: result приходит раньше, чем субагент
   // закончил; потом записи субагента с parent_tool_use_id, task_notification,
   // новый init и настоящий итог со своим result.
-  if (текст.includes("ФОНОВЫЙ-")) {
-    const bash = текст.includes("ФОНОВЫЙ-BASH");
-    записать({
+  if (text.includes("ФОНОВЫЙ-")) {
+    const bash = text.includes("ФОНОВЫЙ-BASH");
+    writeLine({
       type: "assistant",
       parent_tool_use_id: null,
       message: { content: [{ type: "tool_use", id: "toolu_agent", name: bash ? "Bash" : "Agent", input: { description: "фон" } }] },
-      session_id: СЕССИЯ,
+      session_id: SESSION,
     });
-    записать({
+    writeLine({
       type: "system", subtype: "task_started", task_id: "t1", tool_use_id: "toolu_agent",
-      task_type: bash ? "local_bash" : "local_agent", description: bash ? "sleep 20 в фоне" : "фон", session_id: СЕССИЯ,
+      task_type: bash ? "local_bash" : "local_agent", description: bash ? "sleep 20 в фоне" : "фон", session_id: SESSION,
     });
-    записать({
+    writeLine({
       type: "user",
       parent_tool_use_id: null,
       message: { content: [{ type: "tool_result", tool_use_id: "toolu_agent", content: [{ type: "text", text: "Async agent launched successfully." }] }] },
-      session_id: СЕССИЯ,
+      session_id: SESSION,
     });
-    записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "агент запущен, жду" }] }, session_id: СЕССИЯ });
-    записать({ type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt: 1790553000, rateLimitType: "five_hour" }, session_id: СЕССИЯ });
-    записать({
-      type: "result", subtype: "success", is_error: false, num_turns: 2, session_id: СЕССИЯ,
+    writeLine({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "агент запущен, жду" }] }, session_id: SESSION });
+    writeLine({ type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt: 1790553000, rateLimitType: "five_hour" }, session_id: SESSION });
+    writeLine({
+      type: "result", subtype: "success", is_error: false, num_turns: 2, session_id: SESSION,
       usage: { input_tokens: 10, cache_read_input_tokens: 1000, cache_creation_input_tokens: 100, output_tokens: 20 },
     });
     // ФОНОВЫЙ-BASH-ПОЗЖЕ: команда кончается после result, и Claude сам
     // начинает новый ход — без сообщения панели (живая трасса 28.09, 2.1.220).
-    if (bash && текст.includes("ФОНОВЫЙ-BASH-ПОЗЖЕ")) {
+    if (bash && text.includes("ФОНОВЫЙ-BASH-ПОЗЖЕ")) {
       setTimeout(() => {
-        записать({ type: "system", subtype: "background_tasks_changed", tasks: [], session_id: СЕССИЯ });
-        записать({ type: "system", subtype: "task_updated", task_id: "t1", patch: { status: "completed" }, session_id: СЕССИЯ });
-        записать({
+        writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [], session_id: SESSION });
+        writeLine({ type: "system", subtype: "task_updated", task_id: "t1", patch: { status: "completed" }, session_id: SESSION });
+        writeLine({
           type: "system", subtype: "task_notification", task_id: "t1", tool_use_id: "toolu_agent", status: "completed",
-          summary: "Background command \"sleep 20 в фоне\" completed (exit code 0)", session_id: СЕССИЯ,
+          summary: "Background command \"sleep 20 в фоне\" completed (exit code 0)", session_id: SESSION,
         });
-        записать({ type: "system", subtype: "init", session_id: СЕССИЯ, model: "fake", tools: [], argv, pid: process.pid });
-        записать({ type: "system", subtype: "thinking_tokens", session_id: СЕССИЯ });
-        записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "Команда завершена успешно." }] }, session_id: СЕССИЯ });
-        записать({
-          type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ,
+        writeLine({ type: "system", subtype: "init", session_id: SESSION, model: "fake", tools: [], argv, pid: process.pid });
+        writeLine({ type: "system", subtype: "thinking_tokens", session_id: SESSION });
+        writeLine({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "Команда завершена успешно." }] }, session_id: SESSION });
+        writeLine({
+          type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: SESSION,
           usage: { input_tokens: 3, cache_read_input_tokens: 500, cache_creation_input_tokens: 0, output_tokens: 4 },
         });
       }, 300);
@@ -432,24 +432,24 @@ const строки = createInterface({ input: process.stdin });
     }
     if (bash) return;
     setTimeout(() => {
-      записать({
+      writeLine({
         type: "assistant",
         parent_tool_use_id: "toolu_agent",
         message: { content: [{ type: "tool_use", id: "toolu_sub", name: "Read", input: { file_path: "a.txt" } }] },
-        session_id: СЕССИЯ,
+        session_id: SESSION,
       });
-      записать({
+      writeLine({
         type: "user",
         parent_tool_use_id: "toolu_agent",
         message: { content: [{ type: "tool_result", tool_use_id: "toolu_sub", content: "alpha" }] },
-        session_id: СЕССИЯ,
+        session_id: SESSION,
       });
-      записать({ type: "system", subtype: "task_notification", task_id: "t1", tool_use_id: "toolu_agent", status: "completed", session_id: СЕССИЯ });
-      if (текст.includes("ФОНОВЫЙ-БЕЗ-ПРОДОЛЖЕНИЯ")) return;
-      записать({ type: "system", subtype: "init", session_id: СЕССИЯ, model: "fake", tools: [], argv, pid: process.pid });
-      записать({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "alpha" }] }, session_id: СЕССИЯ });
-      записать({
-        type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ,
+      writeLine({ type: "system", subtype: "task_notification", task_id: "t1", tool_use_id: "toolu_agent", status: "completed", session_id: SESSION });
+      if (text.includes("ФОНОВЫЙ-БЕЗ-ПРОДОЛЖЕНИЯ")) return;
+      writeLine({ type: "system", subtype: "init", session_id: SESSION, model: "fake", tools: [], argv, pid: process.pid });
+      writeLine({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "alpha" }] }, session_id: SESSION });
+      writeLine({
+        type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: SESSION,
         usage: { input_tokens: 5, cache_read_input_tokens: 2000, cache_creation_input_tokens: 0, output_tokens: 7 },
       });
     }, 300);
@@ -458,11 +458,11 @@ const строки = createInterface({ input: process.stdin });
 
   // ЧУЖОЙ-ЗАПРОС: control_request, который панель не обслуживает. Без ответа
   // настоящий Claude ждал бы вечно.
-  if (текст.includes("ЧУЖОЙ-ЗАПРОС")) {
-    записать({ type: "control_request", request_id: "hook-1", request: { subtype: "hook_callback", callback_id: "x" } });
-    ожидающие.set("hook-1", () => {
-      записать({ type: "assistant", message: { content: [{ type: "text", text: "дальше" }] }, session_id: СЕССИЯ });
-      записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ });
+  if (text.includes("ЧУЖОЙ-ЗАПРОС")) {
+    writeLine({ type: "control_request", request_id: "hook-1", request: { subtype: "hook_callback", callback_id: "x" } });
+    pendingRequests.set("hook-1", () => {
+      writeLine({ type: "assistant", message: { content: [{ type: "text", text: "дальше" }] }, session_id: SESSION });
+      writeLine({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: SESSION });
     });
     return;
   }
@@ -470,31 +470,31 @@ const строки = createInterface({ input: process.stdin });
   // ДОЛГАЯ-КОМАНДА <путь>: как настоящий Claude, выполняющий инструмент, —
   // запускает долгий дочерний процесс, пишет его pid в файл и хода не
   // завершает. Проверяет, что остановка убивает всё дерево.
-  const долгая = /ДОЛГАЯ-КОМАНДА (\S+)/.exec(текст);
-  if (долгая) {
-    const внук = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+  const longCmd = /ДОЛГАЯ-КОМАНДА (\S+)/.exec(text);
+  if (longCmd) {
+    const grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
       stdio: "ignore",
     });
-    writeFileSync(долгая[1], JSON.stringify({ агент: process.pid, внук: внук.pid }));
+    writeFileSync(longCmd[1], JSON.stringify({ agent: process.pid, grandchild: grandchild.pid }));
     return;
   }
-  if (текст.includes("УПАСТЬ")) {
+  if (text.includes("УПАСТЬ")) {
     process.exit(3);
   }
-  if (текст.includes("ОТКАЗ")) {
+  if (text.includes("ОТКАЗ")) {
     // Форма снята с настоящего result живого прогона 15 сентября:
     // отказы приходят при is_error: false.
-    записать({
+    writeLine({
       type: "assistant",
       message: { content: [{ type: "text", text: "команда заблокирована" }] },
-      session_id: СЕССИЯ,
+      session_id: SESSION,
     });
-    записать({
+    writeLine({
       type: "result",
       subtype: "success",
       is_error: false,
       num_turns: 1,
-      session_id: СЕССИЯ,
+      session_id: SESSION,
       permission_denials: [
         {
           tool_name: "Bash",
@@ -505,31 +505,31 @@ const строки = createInterface({ input: process.stdin });
     });
     return;
   }
-  if (текст.includes("ОШИБКА-ХОДА")) {
-    записать({
+  if (text.includes("ОШИБКА-ХОДА")) {
+    writeLine({
       type: "result",
       subtype: "error_during_execution",
       is_error: true,
       stop_reason: "error_during_execution",
       num_turns: 1,
-      session_id: СЕССИЯ,
+      session_id: SESSION,
     });
     return;
   }
 
-  записать({ type: "stream_event", event: { type: "message_start" }, session_id: СЕССИЯ });
-  for (const кусок of ["при", "вет"]) {
-    записать({
+  writeLine({ type: "stream_event", event: { type: "message_start" }, session_id: SESSION });
+  for (const chunk of ["при", "вет"]) {
+    writeLine({
       type: "stream_event",
-      event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: кусок } },
-      session_id: СЕССИЯ,
+      event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: chunk } },
+      session_id: SESSION,
     });
   }
-  записать({
+  writeLine({
     type: "assistant",
     message: { content: [{ type: "text", text: "привет" }] },
-    session_id: СЕССИЯ,
+    session_id: SESSION,
   });
-  записать({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: СЕССИЯ });
+  writeLine({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: SESSION });
 });
-строки.on("close", () => process.exit(0));
+lines.on("close", () => process.exit(0));

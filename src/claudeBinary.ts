@@ -22,23 +22,23 @@ export interface ClaudeLaunch {
 }
 
 /** claude из расширения Claude Code, если он там есть. */
-export function findExtensionClaude(папкаРасширения: string | undefined): string | undefined {
-  if (!папкаРасширения) return undefined;
-  const имя = process.platform === "win32" ? "claude.exe" : "claude";
-  const путь = join(папкаРасширения, "resources", "native-binary", имя);
-  return existsSync(путь) ? путь : undefined;
+export function findExtensionClaude(extensionDir: string | undefined): string | undefined {
+  if (!extensionDir) return undefined;
+  const name = process.platform === "win32" ? "claude.exe" : "claude";
+  const filePath = join(extensionDir, "resources", "native-binary", name);
+  return existsSync(filePath) ? filePath : undefined;
 }
 
 export function resolveClaudeCommand(
-  настройка: string | undefined,
-  папкаРасширения: string | undefined,
+  setting: string | undefined,
+  extensionDir: string | undefined,
 ): ClaudeLaunch {
-  const явная = (настройка ?? "").trim();
-  if (явная && явная !== "claude") {
-    return { command: явная, shell: /\.exe$/i.test(явная) ? false : undefined, source: "setting" };
+  const explicit = (setting ?? "").trim();
+  if (explicit && explicit !== "claude") {
+    return { command: explicit, shell: /\.exe$/i.test(explicit) ? false : undefined, source: "setting" };
   }
-  const изРасширения = findExtensionClaude(папкаРасширения);
-  if (изРасширения) return { command: изРасширения, shell: false, source: "extension" };
+  const fromExtension = findExtensionClaude(extensionDir);
+  if (fromExtension) return { command: fromExtension, shell: false, source: "extension" };
   return { command: "claude", shell: undefined, source: "path" };
 }
 
@@ -47,7 +47,7 @@ export function resolveClaudeCommand(
  * кавычках — иначе пробел или «&» в имени папки разбили бы команду; без
  * оболочки Node экранирует сам, а кавычки стали бы частью пути.
  */
-export function argumentForLaunch(значение: string, shell: boolean | undefined): string {
-  const черезОболочку = shell ?? process.platform === "win32";
-  return черезОболочку && process.platform === "win32" ? `"${значение}"` : значение;
+export function argumentForLaunch(value: string, shell: boolean | undefined): string {
+  const viaShell = shell ?? process.platform === "win32";
+  return viaShell && process.platform === "win32" ? `"${value}"` : value;
 }

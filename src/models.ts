@@ -11,23 +11,23 @@ import { ModelChoice, ModelOption } from "./adapters/types.js";
 export const DEFAULT_CHOICE: ModelChoice = { model: "", effort: "" };
 
 /** Допустимый выбор. Без каталога проверить нечем — сохраняются строки как есть. */
-export function normalizeChoice(каталог: readonly ModelOption[] | undefined, выбор: unknown): ModelChoice {
-  const запись = (выбор ?? {}) as Record<string, unknown>;
-  const модель = typeof запись["model"] === "string" ? запись["model"] : "";
-  const уровень = typeof запись["effort"] === "string" ? запись["effort"] : "";
-  if (!каталог) return { model: модель, effort: уровень };
-  const вариант = каталог.find((о) => о.id === модель);
-  if (!вариант) return DEFAULT_CHOICE;
-  return { model: модель, effort: вариант.efforts.includes(уровень) ? уровень : "" };
+export function normalizeChoice(catalog: readonly ModelOption[] | undefined, choice: unknown): ModelChoice {
+  const record = (choice ?? {}) as Record<string, unknown>;
+  const model = typeof record["model"] === "string" ? record["model"] : "";
+  const level = typeof record["effort"] === "string" ? record["effort"] : "";
+  if (!catalog) return { model: model, effort: level };
+  const makeOption = catalog.find((o) => o.id === model);
+  if (!makeOption) return DEFAULT_CHOICE;
+  return { model: model, effort: makeOption.efforts.includes(level) ? level : "" };
 }
 
-export function sameChoice(а: ModelChoice, б: ModelChoice): boolean {
-  return а.model === б.model && а.effort === б.effort;
+export function sameChoice(a: ModelChoice, b: ModelChoice): boolean {
+  return a.model === b.model && a.effort === b.effort;
 }
 
 /** «Opus · high», «по умолчанию (Sonnet 5)». */
-export function describeChoice(каталог: readonly ModelOption[] | undefined, выбор: ModelChoice): string {
-  const вариант = каталог?.find((о) => о.id === выбор.model);
-  const имя = вариант?.label ?? (выбор.model || "по умолчанию");
-  return выбор.effort ? `${имя} · ${выбор.effort}` : имя;
+export function describeChoice(catalog: readonly ModelOption[] | undefined, choice: ModelChoice): string {
+  const makeOption = catalog?.find((o) => o.id === choice.model);
+  const name = makeOption?.label ?? (choice.model || "по умолчанию");
+  return choice.effort ? `${name} · ${choice.effort}` : name;
 }

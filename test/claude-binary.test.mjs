@@ -16,18 +16,18 @@ import { join } from "node:path";
 
 import { argumentForLaunch, findExtensionClaude, resolveClaudeCommand } from "../out/claudeBinary.js";
 
-const ИМЯ = process.platform === "win32" ? "claude.exe" : "claude";
+const NAME = process.platform === "win32" ? "claude.exe" : "claude";
 
-function расширение() {
-  const папка = mkdtempSync(join(tmpdir(), "claude-code-ext-"));
-  mkdirSync(join(папка, "resources", "native-binary"), { recursive: true });
-  writeFileSync(join(папка, "resources", "native-binary", ИМЯ), "");
-  return папка;
+function extensionDir() {
+  const dir = mkdtempSync(join(tmpdir(), "claude-code-ext-"));
+  mkdirSync(join(dir, "resources", "native-binary"), { recursive: true });
+  writeFileSync(join(dir, "resources", "native-binary", NAME), "");
+  return dir;
 }
 
 test("claude находится в resources/native-binary расширения Claude Code", () => {
-  const папка = расширение();
-  assert.equal(findExtensionClaude(папка), join(папка, "resources", "native-binary", ИМЯ));
+  const dir = extensionDir();
+  assert.equal(findExtensionClaude(dir), join(dir, "resources", "native-binary", NAME));
 });
 
 test("без расширения или без бинарника — не найден", () => {
@@ -36,23 +36,23 @@ test("без расширения или без бинарника — не на
 });
 
 test("по умолчанию берётся claude расширения и запускается без оболочки", () => {
-  const папка = расширение();
-  const запуск = resolveClaudeCommand("claude", папка);
-  assert.equal(запуск.source, "extension");
-  assert.equal(запуск.command, join(папка, "resources", "native-binary", ИМЯ));
-  assert.equal(запуск.shell, false, "путь к .exe через оболочку ломается на пробелах");
+  const dir = extensionDir();
+  const launch = resolveClaudeCommand("claude", dir);
+  assert.equal(launch.source, "extension");
+  assert.equal(launch.command, join(dir, "resources", "native-binary", NAME));
+  assert.equal(launch.shell, false, "путь к .exe через оболочку ломается на пробелах");
 });
 
 test("пустая настройка тоже означает «по умолчанию»", () => {
-  assert.equal(resolveClaudeCommand("  ", расширение()).source, "extension");
-  assert.equal(resolveClaudeCommand(undefined, расширение()).source, "extension");
+  assert.equal(resolveClaudeCommand("  ", extensionDir()).source, "extension");
+  assert.equal(resolveClaudeCommand(undefined, extensionDir()).source, "extension");
 });
 
 test("явная настройка важнее расширения", () => {
-  const запуск = resolveClaudeCommand("C:/tools/claude.cmd", расширение());
-  assert.equal(запуск.source, "setting");
-  assert.equal(запуск.command, "C:/tools/claude.cmd");
-  assert.equal(запуск.shell, undefined, "для .cmd нужна оболочка — решает адаптер");
+  const launch = resolveClaudeCommand("C:/tools/claude.cmd", extensionDir());
+  assert.equal(launch.source, "setting");
+  assert.equal(launch.command, "C:/tools/claude.cmd");
+  assert.equal(launch.shell, undefined, "для .cmd нужна оболочка — решает адаптер");
 });
 
 test("явный путь к .exe запускается без оболочки", () => {
@@ -60,19 +60,19 @@ test("явный путь к .exe запускается без оболочки
 });
 
 test("нет ни настройки, ни расширения — claude из PATH", () => {
-  const запуск = resolveClaudeCommand("claude", undefined);
-  assert.equal(запуск.source, "path");
-  assert.equal(запуск.command, "claude");
-  assert.equal(запуск.shell, undefined);
+  const launch = resolveClaudeCommand("claude", undefined);
+  assert.equal(launch.source, "path");
+  assert.equal(launch.command, "claude");
+  assert.equal(launch.shell, undefined);
 });
 
 // Путь к MCP-конфигу для cmd.exe берётся в кавычки, иначе пробел в имени папки
 // разбивает команду. Без оболочки кавычки попали бы в сам путь, и claude не
 // нашёл бы файл.
 test("аргумент в кавычках только при запуске через cmd.exe", () => {
-  const путь = "C:/Users/Мой профиль/mcp.json";
-  assert.equal(argumentForLaunch(путь, false), путь);
-  const черезОболочку = process.platform === "win32" ? `"${путь}"` : путь;
-  assert.equal(argumentForLaunch(путь, undefined), черезОболочку, "undefined — оболочка по умолчанию");
-  assert.equal(argumentForLaunch(путь, true), черезОболочку);
+  const filePath = "C:/Users/Мой профиль/mcp.json";
+  assert.equal(argumentForLaunch(filePath, false), filePath);
+  const viaShell = process.platform === "win32" ? `"${filePath}"` : filePath;
+  assert.equal(argumentForLaunch(filePath, undefined), viaShell, "undefined — оболочка по умолчанию");
+  assert.equal(argumentForLaunch(filePath, true), viaShell);
 });

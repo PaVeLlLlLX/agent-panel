@@ -14,55 +14,55 @@ import { DatabaseSync } from "node:sqlite";
 
 import { Journal } from "../out/journal.js";
 
-const событие = (доп) => ({ id: "e" + Math.random(), agent: "claude", visibility: "turn", at: 1, ...доп });
+const event = (extra) => ({ id: "e" + Math.random(), agent: "claude", visibility: "turn", at: 1, ...extra });
 
 test("история восстанавливает связь отказа с вызовом и действие субагента", () => {
-  const путь = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
-  const журнал = new Journal(путь);
-  журнал.ensureRoom("r", "C:/x");
-  журнал.append("r", событие({ kind: "approval_decided", callId: "perm-1", toolCallId: "toolu_1", text: "отклонено человеком" }));
-  журнал.append("r", событие({ kind: "tool_call", tool: "Read", callId: "toolu_sub", parentCallId: "toolu_agent", text: "a.txt" }));
-  журнал.append("r", событие({ kind: "tool_result", tool: "Read", callId: "toolu_sub", full: "огромный", text: "показ" }));
-  const история = журнал.history("r");
-  assert.equal(история[0].toolCallId, "toolu_1");
-  assert.equal(история[1].parentCallId, "toolu_agent");
-  assert.equal(история[2].full, undefined, "полный текст в журнал не пишется: там raw");
-  журнал.close();
+  const filePath = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const journal = new Journal(filePath);
+  journal.ensureRoom("r", "C:/x");
+  journal.append("r", event({ kind: "approval_decided", callId: "perm-1", toolCallId: "toolu_1", text: "отклонено человеком" }));
+  journal.append("r", event({ kind: "tool_call", tool: "Read", callId: "toolu_sub", parentCallId: "toolu_agent", text: "a.txt" }));
+  journal.append("r", event({ kind: "tool_result", tool: "Read", callId: "toolu_sub", full: "огромный", text: "показ" }));
+  const history = journal.history("r");
+  assert.equal(history[0].toolCallId, "toolu_1");
+  assert.equal(history[1].parentCallId, "toolu_agent");
+  assert.equal(history[2].full, undefined, "полный текст в журнал не пишется: там raw");
+  journal.close();
 });
 
 test("история помнит ход, начатый агентом без сообщения панели", () => {
   // Без отметки после повторного открытия реплика самостоятельного хода
   // выглядела бы работой по задаче.
-  const путь = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
-  const журнал = new Journal(путь);
-  журнал.ensureRoom("r", "C:/x");
-  журнал.append("r", событие({ kind: "turn_started", unsolicited: true, text: "фоновая задача закончилась" }));
-  журнал.append("r", событие({ kind: "turn_completed", unsolicited: true }));
-  журнал.append("r", событие({ kind: "turn_completed" }));
-  const история = журнал.history("r");
-  assert.equal(история[0].unsolicited, true);
-  assert.equal(история[1].unsolicited, true);
-  assert.equal(история[2].unsolicited, undefined);
-  журнал.close();
+  const filePath = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const journal = new Journal(filePath);
+  journal.ensureRoom("r", "C:/x");
+  journal.append("r", event({ kind: "turn_started", unsolicited: true, text: "фоновая задача закончилась" }));
+  journal.append("r", event({ kind: "turn_completed", unsolicited: true }));
+  journal.append("r", event({ kind: "turn_completed" }));
+  const history = journal.history("r");
+  assert.equal(history[0].unsolicited, true);
+  assert.equal(history[1].unsolicited, true);
+  assert.equal(history[2].unsolicited, undefined);
+  journal.close();
 });
 
 test("история помнит ход, кончившийся ошибкой", () => {
   // Без отметки после повторного открытия пропадало уведомление «ход не удался».
-  const путь = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
-  const журнал = new Journal(путь);
-  журнал.ensureRoom("r", "C:/x");
-  журнал.append("r", событие({ kind: "turn_completed", failed: true, text: "ход завершён с ошибкой: сбой модели" }));
-  журнал.append("r", событие({ kind: "turn_completed", text: "ход завершён" }));
-  const история = журнал.history("r");
-  assert.equal(история[0].failed, true);
-  assert.equal(история[1].failed, undefined);
-  журнал.close();
+  const filePath = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const journal = new Journal(filePath);
+  journal.ensureRoom("r", "C:/x");
+  journal.append("r", event({ kind: "turn_completed", failed: true, text: "ход завершён с ошибкой: сбой модели" }));
+  journal.append("r", event({ kind: "turn_completed", text: "ход завершён" }));
+  const history = journal.history("r");
+  assert.equal(history[0].failed, true);
+  assert.equal(history[1].failed, undefined);
+  journal.close();
 });
 
 test("журнал прежней версии получает новые колонки при открытии", () => {
-  const путь = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
-  const старая = new DatabaseSync(путь);
-  старая.exec(`
+  const filePath = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const oldDb = new DatabaseSync(filePath);
+  oldDb.exec(`
     CREATE TABLE rooms (room TEXT PRIMARY KEY, cwd TEXT NOT NULL, claude_session TEXT, codex_thread TEXT, updated_at INTEGER NOT NULL);
     CREATE TABLE events (seq INTEGER PRIMARY KEY AUTOINCREMENT, room TEXT NOT NULL REFERENCES rooms(room), id TEXT NOT NULL,
       agent TEXT NOT NULL, kind TEXT NOT NULL, visibility TEXT NOT NULL, at INTEGER NOT NULL, text TEXT, tool TEXT,
@@ -70,23 +70,23 @@ test("журнал прежней версии получает новые ко�
     INSERT INTO rooms VALUES ('r', 'C:/x', NULL, NULL, 1);
     INSERT INTO events (room, id, agent, kind, visibility, at, text) VALUES ('r', 'old', 'human', 'message', 'turn', 1, 'прежнее');
   `);
-  старая.close();
-  const журнал = new Journal(путь);
-  журнал.append("r", событие({ kind: "tool_call", callId: "c", parentCallId: "p", text: "x" }));
-  const история = журнал.history("r");
-  assert.equal(история[0].text, "прежнее", "прежние записи на месте");
-  assert.equal(история[1].parentCallId, "p");
-  журнал.close();
+  oldDb.close();
+  const journal = new Journal(filePath);
+  journal.append("r", event({ kind: "tool_call", callId: "c", parentCallId: "p", text: "x" }));
+  const history = journal.history("r");
+  assert.equal(history[0].text, "прежнее", "прежние записи на месте");
+  assert.equal(history[1].parentCallId, "p");
+  journal.close();
 });
 
 test("новая сессия: привязка агента комнаты очищается, другого — остаётся", () => {
-  const путь = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
-  const журнал = new Journal(путь);
-  журнал.ensureRoom("r", "C:/x");
-  журнал.bindSessions("r", "claude-1", "codex-1");
-  журнал.forgetSession("r", "claude");
-  const п = журнал.binding("r");
-  assert.equal(п.claudeSessionId, undefined);
-  assert.equal(п.codexThreadId, "codex-1");
-  журнал.close();
+  const filePath = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const journal = new Journal(filePath);
+  journal.ensureRoom("r", "C:/x");
+  journal.bindSessions("r", "claude-1", "codex-1");
+  journal.forgetSession("r", "claude");
+  const p = journal.binding("r");
+  assert.equal(p.claudeSessionId, undefined);
+  assert.equal(p.codexThreadId, "codex-1");
+  journal.close();
 });

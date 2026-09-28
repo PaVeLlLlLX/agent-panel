@@ -12,13 +12,13 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const корень = join(import.meta.dirname, "..");
+const root = join(import.meta.dirname, "..");
 
 test("в отслеживаемых файлах нет нулевых байтов", () => {
-  const файлы = execFileSync("git", ["-c", "core.quotepath=off", "ls-files", "-z"], { cwd: корень, encoding: "utf8" })
+  const files = execFileSync("git", ["-c", "core.quotepath=off", "ls-files", "-z"], { cwd: root, encoding: "utf8" })
     .split("\0")
     .filter(Boolean);
-  assert.ok(файлы.length > 0, "git ls-files ничего не вернул");
-  const сНулём = файлы.filter((файл) => readFileSync(join(корень, файл)).includes(0));
-  assert.deepEqual(сНулём, [], "git покажет такие файлы двоичными, и diff для рецензии пропадёт");
+  assert.ok(files.length > 0, "git ls-files ничего не вернул");
+  const withNul = files.filter((file) => readFileSync(join(root, file)).includes(0));
+  assert.deepEqual(withNul, [], "git покажет такие файлы двоичными, и diff для рецензии пропадёт");
 });

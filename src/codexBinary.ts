@@ -23,30 +23,30 @@ export interface CodexLaunch {
 }
 
 /** codex внутри расширения ChatGPT: `bin/<платформа>/codex(.exe)`. */
-export function findExtensionCodex(папкаРасширения: string | undefined): string | undefined {
-  if (!папкаРасширения) return undefined;
-  const bin = join(папкаРасширения, "bin");
-  let платформы: string[];
+export function findExtensionCodex(extensionDir: string | undefined): string | undefined {
+  if (!extensionDir) return undefined;
+  const bin = join(extensionDir, "bin");
+  let platforms: string[];
   try {
-    платформы = readdirSync(bin).sort();
+    platforms = readdirSync(bin).sort();
   } catch {
     return undefined;
   }
-  const имя = process.platform === "win32" ? "codex.exe" : "codex";
-  for (const платформа of платформы) {
-    const путь = join(bin, платформа, имя);
-    if (existsSync(путь)) return путь;
+  const name = process.platform === "win32" ? "codex.exe" : "codex";
+  for (const platform of platforms) {
+    const filePath = join(bin, platform, name);
+    if (existsSync(filePath)) return filePath;
   }
   return undefined;
 }
 
 /** Настройка "codex" — значение по умолчанию, а не выбор человека. */
-export function resolveCodexCommand(настройка: string | undefined, папкаРасширения: string | undefined): CodexLaunch {
-  const явная = (настройка ?? "").trim();
-  if (явная && явная !== "codex") {
-    return { command: явная, shell: /\.exe$/i.test(явная) ? false : undefined, source: "setting" };
+export function resolveCodexCommand(setting: string | undefined, extensionDir: string | undefined): CodexLaunch {
+  const explicit = (setting ?? "").trim();
+  if (explicit && explicit !== "codex") {
+    return { command: explicit, shell: /\.exe$/i.test(explicit) ? false : undefined, source: "setting" };
   }
-  const изРасширения = findExtensionCodex(папкаРасширения);
-  if (изРасширения) return { command: изРасширения, shell: false, source: "extension" };
+  const fromExtension = findExtensionCodex(extensionDir);
+  if (fromExtension) return { command: fromExtension, shell: false, source: "extension" };
   return { command: "codex", shell: undefined, source: "path" };
 }

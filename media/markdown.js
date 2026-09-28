@@ -17,45 +17,45 @@
  * закрывающим не цифра; перед открывающим не буква и не цифра.
  */
 (function () {
-  const ДОЛЛАР = 0x24;
-  const ОБРАТНАЯ_ЧЕРТА = 0x5c;
-  const пробел = (код) => код === 0x20 || код === 0x09 || код === 0x0a || код === 0x0d;
-  const цифра = (код) => код >= 0x30 && код <= 0x39;
-  const букваИлиЦифра = (символ) => /[\p{L}\p{N}]/u.test(символ ?? "");
+  const DOLLAR = 0x24;
+  const BACKSLASH = 0x5c;
+  const isSpace = (code) => code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d;
+  const isDigit = (code) => code >= 0x30 && code <= 0x39;
+  const isAlnum = (symbol) => /[\p{L}\p{N}]/u.test(symbol ?? "");
 
   /** Экранирован ли символ в позиции: нечётное число обратных черт перед ним. */
-  function экранирован(текст, позиция) {
-    let черт = 0;
-    for (let i = позиция - 1; i >= 0 && текст.charCodeAt(i) === ОБРАТНАЯ_ЧЕРТА; i -= 1) черт += 1;
-    return черт % 2 === 1;
+  function isEscaped(text, position) {
+    let backslashes = 0;
+    for (let i = position - 1; i >= 0 && text.charCodeAt(i) === BACKSLASH; i -= 1) backslashes += 1;
+    return backslashes % 2 === 1;
   }
 
-  function строчнаяФормула(state, silent) {
-    const текст = state.src;
-    const начало = state.pos;
-    if (текст.charCodeAt(начало) !== ДОЛЛАР) return false;
+  function inlineFormula(state, silent) {
+    const text = state.src;
+    const start = state.pos;
+    if (text.charCodeAt(start) !== DOLLAR) return false;
 
     // $$…$$ посреди строки — выносная формула внутри абзаца.
-    if (текст.charCodeAt(начало + 1) === ДОЛЛАР) {
-      const конец = текст.indexOf("$$", начало + 2);
-      if (конец < 0 || !текст.slice(начало + 2, конец).trim()) return false;
+    if (text.charCodeAt(start + 1) === DOLLAR) {
+      const end = text.indexOf("$$", start + 2);
+      if (end < 0 || !text.slice(start + 2, end).trim()) return false;
       if (!silent) {
-        const токен = state.push("math_display", "math", 0);
-        токен.content = текст.slice(начало + 2, конец);
+        const token = state.push("math_display", "math", 0);
+        token.content = text.slice(start + 2, end);
       }
-      state.pos = конец + 2;
+      state.pos = end + 2;
       return true;
     }
 
-    if (начало > 0 && букваИлиЦифра(текст[начало - 1])) return false;
-    if (начало + 1 >= state.posMax || пробел(текст.charCodeAt(начало + 1))) return false;
+    if (start > 0 && isAlnum(text[start - 1])) return false;
+    if (start + 1 >= state.posMax || isSpace(text.charCodeAt(start + 1))) return false;
 
-    for (let i = начало + 1; i < state.posMax; i += 1) {
-      if (текст.charCodeAt(i) !== ДОЛЛАР || экранирован(текст, i)) continue;
-      if (пробел(текст.charCodeAt(i - 1)) || цифра(текст.charCodeAt(i + 1))) continue;
+    for (let i = start + 1; i < state.posMax; i += 1) {
+      if (text.charCodeAt(i) !== DOLLAR || isEscaped(text, i)) continue;
+      if (isSpace(text.charCodeAt(i - 1)) || isDigit(text.charCodeAt(i + 1))) continue;
       if (!silent) {
-        const токен = state.push("math_inline", "math", 0);
-        токен.content = текст.slice(начало + 1, i);
+        const token = state.push("math_inline", "math", 0);
+        token.content = text.slice(start + 1, i);
       }
       state.pos = i + 1;
       return true;
@@ -63,54 +63,54 @@
     return false;
   }
 
-  function выноснаяФормула(state, startLine, endLine, silent) {
-    const строка = (номер) =>
-      state.src.slice(state.bMarks[номер] + state.tShift[номер], state.eMarks[номер]);
+  function displayFormula(state, startLine, endLine, silent) {
+    const line = (index) =>
+      state.src.slice(state.bMarks[index] + state.tShift[index], state.eMarks[index]);
     if (state.sCount[startLine] - state.blkIndent >= 4) return false;
-    const первая = строка(startLine);
-    if (!первая.startsWith("$$")) return false;
+    const firstLine = line(startLine);
+    if (!firstLine.startsWith("$$")) return false;
 
-    let содержимое;
-    let последняя = startLine;
-    const хвост = первая.slice(2);
-    if (хвост.trimEnd().endsWith("$$") && хвост.trim().length > 2) {
-      содержимое = хвост.trimEnd().slice(0, -2);
-    } else if (хвост.trim() === "" || !хвост.includes("$$")) {
-      const части = хвост.trim() ? [хвост] : [];
-      let найдено = false;
-      for (let номер = startLine + 1; номер < endLine; номер += 1) {
-        const с = строка(номер);
-        if (с.trimEnd().endsWith("$$")) {
-          части.push(с.trimEnd().slice(0, -2));
-          последняя = номер;
-          найдено = true;
+    let content;
+    let last = startLine;
+    const tail = firstLine.slice(2);
+    if (tail.trimEnd().endsWith("$$") && tail.trim().length > 2) {
+      content = tail.trimEnd().slice(0, -2);
+    } else if (tail.trim() === "" || !tail.includes("$$")) {
+      const parts = tail.trim() ? [tail] : [];
+      let found = false;
+      for (let index = startLine + 1; index < endLine; index += 1) {
+        const s = line(index);
+        if (s.trimEnd().endsWith("$$")) {
+          parts.push(s.trimEnd().slice(0, -2));
+          last = index;
+          found = true;
           break;
         }
-        части.push(с);
+        parts.push(s);
       }
-      if (!найдено) return false;
-      содержимое = части.join("\n");
+      if (!found) return false;
+      content = parts.join("\n");
     } else {
       return false;
     }
-    if (!содержимое.trim()) return false;
+    if (!content.trim()) return false;
     if (silent) return true;
 
-    const токен = state.push("math_display", "math", 0);
-    токен.block = true;
-    токен.content = содержимое;
-    токен.map = [startLine, последняя + 1];
-    state.line = последняя + 1;
+    const token = state.push("math_display", "math", 0);
+    token.block = true;
+    token.content = content;
+    token.map = [startLine, last + 1];
+    state.line = last + 1;
     return true;
   }
 
   function createRenderer(markdownit, katex) {
     const md = markdownit({ html: false, linkify: true, typographer: false });
 
-    const формула = (содержимое, выносная) => {
+    const formula = (content, display) => {
       try {
-        return katex.renderToString(содержимое, {
-          displayMode: выносная,
+        return katex.renderToString(content, {
+          displayMode: display,
           throwOnError: false,
           trust: false,
           strict: "ignore",
@@ -118,21 +118,21 @@
         });
       } catch {
         // throwOnError ловит только ошибки разбора; прочее — показать исходник.
-        return `<code>${md.utils.escapeHtml(содержимое)}</code>`;
+        return `<code>${md.utils.escapeHtml(content)}</code>`;
       }
     };
 
-    md.inline.ruler.before("escape", "math_inline", строчнаяФормула);
-    md.block.ruler.before("fence", "math_display", выноснаяФормула, {
+    md.inline.ruler.before("escape", "math_inline", inlineFormula);
+    md.block.ruler.before("fence", "math_display", displayFormula, {
       alt: ["paragraph", "reference", "blockquote", "list"],
     });
-    md.renderer.rules.math_inline = (токены, i) => формула(токены[i].content, false);
-    md.renderer.rules.math_display = (токены, i) =>
-      токены[i].block
-        ? `<div class="формула">${формула(токены[i].content, true)}</div>\n`
-        : формула(токены[i].content, true);
+    md.renderer.rules.math_inline = (tokens, i) => formula(tokens[i].content, false);
+    md.renderer.rules.math_display = (tokens, i) =>
+      tokens[i].block
+        ? `<div class="формула">${formula(tokens[i].content, true)}</div>\n`
+        : formula(tokens[i].content, true);
 
-    return (текст) => md.render(текст ?? "");
+    return (text) => md.render(text ?? "");
   }
 
   const api = { createRenderer };

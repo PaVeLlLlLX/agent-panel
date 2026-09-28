@@ -16,18 +16,18 @@ import { join } from "node:path";
 
 import { findExtensionCodex, resolveCodexCommand } from "../out/codexBinary.js";
 
-const ИМЯ = process.platform === "win32" ? "codex.exe" : "codex";
+const NAME = process.platform === "win32" ? "codex.exe" : "codex";
 
-function расширение() {
-  const папка = mkdtempSync(join(tmpdir(), "chatgpt-ext-"));
-  mkdirSync(join(папка, "bin", "windows-x86_64"), { recursive: true });
-  writeFileSync(join(папка, "bin", "windows-x86_64", ИМЯ), "");
-  return папка;
+function extensionDir() {
+  const dir = mkdtempSync(join(tmpdir(), "chatgpt-ext-"));
+  mkdirSync(join(dir, "bin", "windows-x86_64"), { recursive: true });
+  writeFileSync(join(dir, "bin", "windows-x86_64", NAME), "");
+  return dir;
 }
 
 test("codex находится в папке bin расширения ChatGPT", () => {
-  const папка = расширение();
-  assert.equal(findExtensionCodex(папка), join(папка, "bin", "windows-x86_64", ИМЯ));
+  const dir = extensionDir();
+  assert.equal(findExtensionCodex(dir), join(dir, "bin", "windows-x86_64", NAME));
 });
 
 test("без расширения или без бинарника — не найден", () => {
@@ -36,18 +36,18 @@ test("без расширения или без бинарника — не на
 });
 
 test("по умолчанию берётся codex расширения и запускается без оболочки", () => {
-  const папка = расширение();
-  const запуск = resolveCodexCommand("codex", папка);
-  assert.equal(запуск.source, "extension");
-  assert.equal(запуск.command, join(папка, "bin", "windows-x86_64", ИМЯ));
-  assert.equal(запуск.shell, false, "путь к .exe через оболочку ломается на пробелах");
+  const dir = extensionDir();
+  const launch = resolveCodexCommand("codex", dir);
+  assert.equal(launch.source, "extension");
+  assert.equal(launch.command, join(dir, "bin", "windows-x86_64", NAME));
+  assert.equal(launch.shell, false, "путь к .exe через оболочку ломается на пробелах");
 });
 
 test("явная настройка важнее расширения", () => {
-  const запуск = resolveCodexCommand("C:/tools/my-codex.cmd", расширение());
-  assert.equal(запуск.source, "setting");
-  assert.equal(запуск.command, "C:/tools/my-codex.cmd");
-  assert.equal(запуск.shell, undefined, "для .cmd нужна оболочка — решает адаптер");
+  const launch = resolveCodexCommand("C:/tools/my-codex.cmd", extensionDir());
+  assert.equal(launch.source, "setting");
+  assert.equal(launch.command, "C:/tools/my-codex.cmd");
+  assert.equal(launch.shell, undefined, "для .cmd нужна оболочка — решает адаптер");
 });
 
 test("явный путь к .exe запускается без оболочки", () => {
@@ -55,8 +55,8 @@ test("явный путь к .exe запускается без оболочки
 });
 
 test("нет ни настройки, ни расширения — codex из PATH", () => {
-  const запуск = resolveCodexCommand("codex", undefined);
-  assert.equal(запуск.source, "path");
-  assert.equal(запуск.command, "codex");
-  assert.equal(запуск.shell, undefined);
+  const launch = resolveCodexCommand("codex", undefined);
+  assert.equal(launch.source, "path");
+  assert.equal(launch.command, "codex");
+  assert.equal(launch.shell, undefined);
 });

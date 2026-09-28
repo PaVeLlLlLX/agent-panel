@@ -27,94 +27,94 @@ const { Journal } = require("../out/journal.js");
 const { resolveCodexCommand } = require("../out/codexBinary.js");
 const { runMemorySearch } = require("../out/memory.js");
 
-const СУБАГЕНТ = process.argv.includes("--subagent");
-const ДВА = process.argv.includes("--two-subagents");
-const ФОН = process.argv.includes("--background-bash");
-const родители = new Set();
-let ходовClaude = 0;
-let самостоятельныхКонцов = 0;
-const iПамяти = process.argv.indexOf("--memory");
-const командаПамяти = iПамяти > 0 ? process.argv[iПамяти + 1] : "";
+const SUBAGENT = process.argv.includes("--subagent");
+const TWO = process.argv.includes("--two-subagents");
+const BACKGROUND = process.argv.includes("--background-bash");
+const parents = new Set();
+let claudeTurns = 0;
+let autonomousEnds = 0;
+const memoryIndex = process.argv.indexOf("--memory");
+const memoryCommand = memoryIndex > 0 ? process.argv[memoryIndex + 1] : "";
 
-const папка = mkdtempSync(join(tmpdir(), "agent-panel-e2e-"));
-writeFileSync(join(папка, "README.md"), "Проба agent-panel.\n");
-execFileSync("git", ["init", "-q"], { cwd: папка });
-execFileSync("git", ["-c", "user.email=probe@local", "-c", "user.name=probe", "commit", "-qam", "init", "--allow-empty"], { cwd: папка });
-execFileSync("git", ["add", "."], { cwd: папка });
+const dir = mkdtempSync(join(tmpdir(), "agent-panel-e2e-"));
+writeFileSync(join(dir, "README.md"), "Проба agent-panel.\n");
+execFileSync("git", ["init", "-q"], { cwd: dir });
+execFileSync("git", ["-c", "user.email=probe@local", "-c", "user.name=probe", "commit", "-qam", "init", "--allow-empty"], { cwd: dir });
+execFileSync("git", ["add", "."], { cwd: dir });
 
-const корень = join(homedir(), ".vscode", "extensions");
-const chatgpt = readdirSync(корень).filter((и) => и.startsWith("openai.chatgpt-")).sort().pop();
-const запуск = resolveCodexCommand(undefined, chatgpt ? join(корень, chatgpt) : undefined);
+const root = join(homedir(), ".vscode", "extensions");
+const chatgpt = readdirSync(root).filter((it) => it.startsWith("openai.chatgpt-")).sort().pop();
+const launch = resolveCodexCommand(undefined, chatgpt ? join(root, chatgpt) : undefined);
 
 const t0 = Date.now();
-const время = () => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
-const журнал = new Journal(join(папка, "journal.sqlite"));
-журнал.ensureRoom("e2e", папка);
-let координатор;
-const принять = (е) => координатор.handle(е);
+const time = () => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
+const journal = new Journal(join(dir, "journal.sqlite"));
+journal.ensureRoom("e2e", dir);
+let coordinator;
+const accept = (e) => coordinator.handle(e);
 const claude = new ClaudeAdapter(
-  { command: "claude", cwd: папка, model: "haiku", permissionMode: "bypassPermissions", settingSources: "project,local" },
-  принять,
+  { command: "claude", cwd: dir, model: "haiku", permissionMode: "bypassPermissions", settingSources: "project,local" },
+  accept,
 );
 const codex = new CodexAdapter(
-  { command: запуск.command, shell: запуск.shell, cwd: папка, model: "gpt-6-luna", effort: "low" },
-  принять,
+  { command: launch.command, shell: launch.shell, cwd: dir, model: "gpt-6-luna", effort: "low" },
+  accept,
 );
-let последнееСостояние;
-координатор = new Coordinator(claude, codex, журнал, {
+let lastState;
+coordinator = new Coordinator(claude, codex, journal, {
   room: "e2e",
-  cwd: папка,
+  cwd: dir,
   maxAutoRounds: 2,
-  ...(командаПамяти
-    ? { memory: (текст) => runMemorySearch(командаПамяти, "C:/Users/21435/source/Trading", текст) }
+  ...(memoryCommand
+    ? { memory: (text) => runMemorySearch(memoryCommand, "C:/Users/21435/source/Trading", text) }
     : {}),
-  onEvent: (е) => {
-    if (е.parentCallId) родители.add(е.parentCallId);
-    if (е.agent === "claude" && е.kind === "turn_completed") ходовClaude++;
-    if (е.kind === "turn_completed" && е.unsolicited) самостоятельныхКонцов++;
-    if (е.kind === "turn_started" && е.unsolicited) console.log(время(), е.agent, "САМ НАЧАЛ ХОД", е.text ?? "");
-    if (["message", "turn_completed", "error"].includes(е.kind) || е.kind === "tool_call" || (е.kind === "diagnostic" && /субагент/.test(е.text ?? ""))) {
-      const хвост = е.kind === "turn_completed" && е.usage ? ` usage=${JSON.stringify(е.usage)}` : "";
-      const чей = е.parentCallId ? "(субагент) " : "";
-      console.log(время(), е.agent, е.kind, чей + (е.tool ? `[${е.tool}] ` : "") + (е.text ?? "").slice(0, 90).replace(/\s+/g, " ") + хвост);
+  onEvent: (e) => {
+    if (e.parentCallId) parents.add(e.parentCallId);
+    if (e.agent === "claude" && e.kind === "turn_completed") claudeTurns++;
+    if (e.kind === "turn_completed" && e.unsolicited) autonomousEnds++;
+    if (e.kind === "turn_started" && e.unsolicited) console.log(time(), e.agent, "САМ НАЧАЛ ХОД", e.text ?? "");
+    if (["message", "turn_completed", "error"].includes(e.kind) || e.kind === "tool_call" || (e.kind === "diagnostic" && /субагент/.test(e.text ?? ""))) {
+      const tail = e.kind === "turn_completed" && e.usage ? ` usage=${JSON.stringify(e.usage)}` : "";
+      const whose = e.parentCallId ? "(субагент) " : "";
+      console.log(time(), e.agent, e.kind, whose + (e.tool ? `[${e.tool}] ` : "") + (e.text ?? "").slice(0, 90).replace(/\s+/g, " ") + tail);
     }
   },
-  onState: (с) => {
-    if (с.stage !== последнееСостояние?.stage) console.log(время(), "ЭТАП", с.stage, с.verdict ?? "");
-    последнееСостояние = с;
+  onState: (s) => {
+    if (s.stage !== lastState?.stage) console.log(time(), "ЭТАП", s.stage, s.verdict ?? "");
+    lastState = s;
   },
 });
 
-await координатор.fromHuman(
-  ФОН
+await coordinator.fromHuman(
+  BACKGROUND
     ? "Запусти инструментом Bash с параметром run_in_background: true команду: sleep 15; echo поздно > late.txt\nНе жди её и ничего не проверяй. Сразу ответь одной фразой: команда запущена в фоне, файл late.txt появится через 15 секунд."
-    : ДВА
+    : TWO
     ? "Одним сообщением запусти двух субагентов параллельно (два вызова инструмента Agent, subagent_type general-purpose). Первый создаёт файл one.txt с одной строкой «один». Второй сначала выполняет команду sleep 25, затем создаёт файл two.txt с одной строкой «два». Сам файлы не трогай. Когда закончат оба, покажи оба файла командой cat и одной фразой скажи, что сделано."
-    : СУБАГЕНТ
+    : SUBAGENT
     ? "Поручи ровно одному субагенту (инструмент Agent, subagent_type general-purpose) создать файл hello.txt с одной строкой «привет» и показать его командой cat. Сам файлы не трогай. Когда субагент закончит, одной фразой скажи, что сделано. Для справки: почему в проекте отозвали эффект FOMC?"
     : "Создай файл hello.txt с одной строкой: привет. Покажи его содержимое командой cat. Больше ничего не делай.",
   "review",
 );
-const конец = Date.now() + 6 * 60_000;
-while (Date.now() < конец && !["accepted", "held", "stopped"].includes(последнееСостояние?.stage)) {
+const end = Date.now() + 6 * 60_000;
+while (Date.now() < end && !["accepted", "held", "stopped"].includes(lastState?.stage)) {
   await new Promise((r) => setTimeout(r, 500));
 }
 // Фоновая команда кончается позже цикла: ждём самостоятельный ход Claude.
-const срокФона = Date.now() + 90_000;
-while (ФОН && самостоятельныхКонцов === 0 && Date.now() < срокФона) {
+const backgroundDeadline = Date.now() + 90_000;
+while (BACKGROUND && autonomousEnds === 0 && Date.now() < backgroundDeadline) {
   await new Promise((r) => setTimeout(r, 500));
 }
-console.log(время(), "ИТОГ", JSON.stringify({
-  stage: последнееСостояние?.stage,
-  verdict: последнееСостояние?.verdict,
-  round: последнееСостояние?.round,
-  held: последнееСостояние?.held?.reason,
-  trail: последнееСостояние?.trail,
-  usage: последнееСостояние?.usage,
-  ...(ДВА || СУБАГЕНТ || ФОН
-    ? { родителейСубагентов: родители.size, ходовClaude, самостоятельныхКонцов, файлы: readdirSync(папка).filter((и) => и.endsWith(".txt")) }
+console.log(time(), "ИТОГ", JSON.stringify({
+  stage: lastState?.stage,
+  verdict: lastState?.verdict,
+  round: lastState?.round,
+  held: lastState?.held?.reason,
+  trail: lastState?.trail,
+  usage: lastState?.usage,
+  ...(TWO || SUBAGENT || BACKGROUND
+    ? { subagentParents: parents.size, claudeTurns, autonomousEnds, files: readdirSync(dir).filter((it) => it.endsWith(".txt")) }
     : {}),
 }, null, 1));
-await координатор.stopAll();
-журнал.close();
+await coordinator.stopAll();
+journal.close();
 process.exit(0);

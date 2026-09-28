@@ -22,8 +22,8 @@ import { createInterface } from "node:readline";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const НС = String.fromCharCode(10);
-const МЕТКА = "ПРОКСИ-УВЕДОМЛЕНИЕ";
+const NL = String.fromCharCode(10);
+const MARKER = "ПРОКСИ-УВЕДОМЛЕНИЕ";
 
 if (process.argv[2] === "--proxy") {
   // Посредник: stdin → CLI как есть; stdout CLI → наружу, после
@@ -33,90 +33,90 @@ if (process.argv[2] === "--proxy") {
   cli.stderr.pipe(process.stderr);
   // Строки после уведомления ждут до одной общей отметки времени — 2 с разом,
   // а не по 2 с на строку.
-  let держатьДо = 0;
-  let хвост = Promise.resolve();
-  createInterface({ input: cli.stdout }).on("line", (строка) => {
-    const до = держатьДо;
-    хвост = хвост
-      .then(() => new Promise((r) => setTimeout(r, Math.max(0, до - Date.now()))))
-      .then(() => process.stdout.write(строка + НС));
-    if (строка.includes('"subtype":"task_notification"') && !держатьДо) {
-      process.stderr.write(МЕТКА + НС);
-      держатьДо = Date.now() + 2000;
+  let holdUntil = 0;
+  let tail = Promise.resolve();
+  createInterface({ input: cli.stdout }).on("line", (line) => {
+    const until = holdUntil;
+    tail = tail
+      .then(() => new Promise((r) => setTimeout(r, Math.max(0, until - Date.now()))))
+      .then(() => process.stdout.write(line + NL));
+    if (line.includes('"subtype":"task_notification"') && !holdUntil) {
+      process.stderr.write(MARKER + NL);
+      holdUntil = Date.now() + 2000;
     }
   });
-  cli.on("exit", (код) => хвост.then(() => process.exit(код ?? 0)));
+  cli.on("exit", (code) => tail.then(() => process.exit(code ?? 0)));
 } else {
   const require = createRequire(import.meta.url);
   const { ClaudeAdapter } = require("../out/adapters/claude.js");
-  const папка = mkdtempSync(join(tmpdir(), "agent-panel-race-"));
-  writeFileSync(join(папка, "README.md"), "Временная папка пробы гонки agent-panel.\n");
+  const dir = mkdtempSync(join(tmpdir(), "agent-panel-race-"));
+  writeFileSync(join(dir, "README.md"), "Временная папка пробы гонки agent-panel.\n");
   const t0 = Date.now();
-  const время = () => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
-  const события = [];
-  let адаптер;
-  let послано = false;
-  const концы = [];
-  адаптер = new ClaudeAdapter(
+  const time = () => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
+  const events = [];
+  let adapter;
+  let sent = false;
+  const ends = [];
+  adapter = new ClaudeAdapter(
     {
       command: "node",
       commandArgs: [fileURLToPath(import.meta.url), "--proxy"],
-      cwd: папка,
+      cwd: dir,
       model: "haiku",
       permissionMode: "bypassPermissions",
       settingSources: "project,local",
     },
-    (е) => {
-      события.push(е);
-      if (["turn_started", "turn_completed", "message"].includes(е.kind)) {
-        console.log(время(), е.kind, е.unsolicited ? "[unsolicited]" : "", (е.text ?? "").slice(0, 90).replace(/\s+/g, " "), `busy=${адаптер.busy}`);
+    (e) => {
+      events.push(e);
+      if (["turn_started", "turn_completed", "message"].includes(e.kind)) {
+        console.log(time(), e.kind, e.unsolicited ? "[unsolicited]" : "", (e.text ?? "").slice(0, 90).replace(/\s+/g, " "), `busy=${adapter.busy}`);
       }
-      if (е.kind === "turn_completed") концы.push(е);
-      if (е.kind === "diagnostic" && (е.text ?? "").includes(МЕТКА) && !послано) {
-        послано = true;
-        console.log(время(), "метка посредника — шлём сообщение, init CLI ещё в пути");
-        void адаптер.send({ text: "Ответь одним словом: второе.", from: "human" });
+      if (e.kind === "turn_completed") ends.push(e);
+      if (e.kind === "diagnostic" && (e.text ?? "").includes(MARKER) && !sent) {
+        sent = true;
+        console.log(time(), "метка посредника — шлём сообщение, init CLI ещё в пути");
+        void adapter.send({ text: "Ответь одним словом: второе.", from: "human" });
       }
     },
   );
-  const ждать = (условие, предел) =>
+  const wait = (condition, limit) =>
     new Promise((resolve, reject) => {
-      const конец = Date.now() + предел;
-      const т = setInterval(() => {
-        if (условие()) {
-          clearInterval(т);
+      const end = Date.now() + limit;
+      const t = setInterval(() => {
+        if (condition()) {
+          clearInterval(t);
           resolve();
-        } else if (Date.now() > конец) {
-          clearInterval(т);
+        } else if (Date.now() > end) {
+          clearInterval(t);
           reject(new Error("не дождались"));
         }
       }, 200);
     });
   try {
-    await адаптер.send({
+    await adapter.send({
       text: "Запусти инструментом Bash с параметром run_in_background: true команду: sleep 8; echo поздно > late.txt\nНе жди её. Сразу ответь одним словом: запущено.",
       from: "human",
     });
-    await ждать(() => концы.length >= 1, 120_000);
-    await ждать(() => концы.length >= 3, 120_000);
-    const [, чужой, свой] = концы;
-    const ответ = события.filter((е) => е.kind === "message" && е.agent === "claude").map((е) => е.text).join(" | ");
+    await wait(() => ends.length >= 1, 120_000);
+    await wait(() => ends.length >= 3, 120_000);
+    const [, foreign, own] = ends;
+    const reply = events.filter((e) => e.kind === "message" && e.agent === "claude").map((e) => e.text).join(" | ");
     console.log(
       JSON.stringify(
         {
-          послано,
-          второйКонецСамостоятельный: чужой?.unsolicited === true,
-          третийКонецСамостоятельный: свой?.unsolicited === true,
-          реплики: ответ,
+          sent,
+          secondEndAutonomous: foreign?.unsolicited === true,
+          thirdEndAutonomous: own?.unsolicited === true,
+          replies: reply,
         },
         null,
         1,
       ),
     );
-  } catch (беда) {
-    console.log("ОШИБКА", String(беда), "концов:", концы.length);
+  } catch (err) {
+    console.log("ОШИБКА", String(err), "концов:", ends.length);
   } finally {
-    await адаптер.stop();
+    await adapter.stop();
     process.exit(0);
   }
 }

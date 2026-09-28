@@ -122,21 +122,21 @@ test("пустой и отсутствующий текст — вердикта
 // Найдено рецензентом в живом прогоне 16.09: простое переключение по любой
 // строке с тремя кавычками даёт ложное «принято» на примере формата.
 
-const О3 = "```";
-const О4 = "````";
-const Т3 = "~~~";
+const FENCE_BACKTICK = "```";
+const FENCE_BACKTICK4 = "````";
+const FENCE_TILDE = "~~~";
 
 test("блок, открытый четырьмя кавычками, тремя не закрывается", () => {
-  assert.equal(parseVerdict(`Пример:\n${О4}text\n${О3}\nВЕРДИКТ: ПРИНЯТО`), "missing");
+  assert.equal(parseVerdict(`Пример:\n${FENCE_BACKTICK4}text\n${FENCE_BACKTICK}\nВЕРДИКТ: ПРИНЯТО`), "missing");
 });
 
 test("ограда другого вида чужой блок не закрывает", () => {
-  assert.equal(parseVerdict(`Пример:\n${Т3}\n${О3}\nВЕРДИКТ: ПРИНЯТО`), "missing");
-  assert.equal(parseVerdict(`Пример:\n${О3}\n${Т3}\nВЕРДИКТ: ПРИНЯТО`), "missing");
+  assert.equal(parseVerdict(`Пример:\n${FENCE_TILDE}\n${FENCE_BACKTICK}\nВЕРДИКТ: ПРИНЯТО`), "missing");
+  assert.equal(parseVerdict(`Пример:\n${FENCE_BACKTICK}\n${FENCE_TILDE}\nВЕРДИКТ: ПРИНЯТО`), "missing");
 });
 
 test("после закрывающей ограды не бывает текста", () => {
-  assert.equal(parseVerdict(`Пример:\n${О3}\n${О3}text\nВЕРДИКТ: ПРИНЯТО`), "missing");
+  assert.equal(parseVerdict(`Пример:\n${FENCE_BACKTICK}\n${FENCE_BACKTICK}text\nВЕРДИКТ: ПРИНЯТО`), "missing");
 });
 
 test("вердикт с отступом в четыре пробела или табуляцию — это код", () => {
@@ -150,9 +150,9 @@ test("вердикт в обратных кавычках — пример, а �
 });
 
 test("закрывающая ограда длиннее открывающей закрывает блок", () => {
-  assert.equal(parseVerdict(`Пример:\n${О3}\nтекст\n${О4}\nВЕРДИКТ: ПРИНЯТО`), "accepted");
+  assert.equal(parseVerdict(`Пример:\n${FENCE_BACKTICK}\nтекст\n${FENCE_BACKTICK4}\nВЕРДИКТ: ПРИНЯТО`), "accepted");
 });
 
 test("правильно закрытый блок вердикту дальше не мешает", () => {
-  assert.equal(parseVerdict(`Пример:\n${Т3}\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ\n${Т3}\nВЕРДИКТ: ПРИНЯТО`), "accepted");
+  assert.equal(parseVerdict(`Пример:\n${FENCE_TILDE}\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ\n${FENCE_TILDE}\nВЕРДИКТ: ПРИНЯТО`), "accepted");
 });

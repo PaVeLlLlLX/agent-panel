@@ -223,8 +223,8 @@ export interface TurnUsage {
 
 export const NO_USAGE: TurnUsage = { input: 0, cached: 0, output: 0 };
 
-export function addUsage(а: TurnUsage, б: TurnUsage): TurnUsage {
-  return { input: а.input + б.input, cached: а.cached + б.cached, output: а.output + б.output };
+export function addUsage(a: TurnUsage, b: TurnUsage): TurnUsage {
+  return { input: a.input + b.input, cached: a.cached + b.cached, output: a.output + b.output };
 }
 
 /**
@@ -244,8 +244,8 @@ export const MAX_TEXT = 64_000;
 
 export function clamp(text: string, max = MAX_TEXT): string {
   if (text.length <= max) return text;
-  const отрезано = text.length - max;
-  return `${text.slice(0, max)}\n… обрезано ${отрезано} символов`;
+  const cutCount = text.length - max;
+  return `${text.slice(0, max)}\n… обрезано ${cutCount} символов`;
 }
 
 /** Текст для показа и, если он обрезан, полный — для рецензента. */
@@ -258,10 +258,10 @@ export function clampKeepingFull(text: string): { text: string; full?: string } 
  * они не нужны, а один длинный вывод команды — это мегабайты в каждом
  * сообщении webview.
  */
-export function forDisplay(событие: PanelEvent): PanelEvent {
-  if (событие.raw === undefined && событие.full === undefined) return событие;
-  const { raw: _raw, full: _full, ...лёгкое } = событие;
-  return лёгкое;
+export function forDisplay(event: PanelEvent): PanelEvent {
+  if (event.raw === undefined && event.full === undefined) return event;
+  const { raw: _raw, full: _full, ...light } = event;
+  return light;
 }
 
 /** Цветовые коды терминала: в панели они видны как мусор вида `[2m…[0m`. */
@@ -270,8 +270,8 @@ export function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
 }
 
-let счётчик = 0;
+let counter = 0;
 export function newEventId(): string {
-  счётчик += 1;
-  return `e${Date.now().toString(36)}-${счётчик.toString(36)}`;
+  counter += 1;
+  return `e${Date.now().toString(36)}-${counter.toString(36)}`;
 }

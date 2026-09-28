@@ -26,7 +26,7 @@ import { promisify } from "node:util";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
-const запустить = promisify(execFile);
+const execFileAsync = promisify(execFile);
 
 export interface Snapshot {
   /** Короткий отпечаток для показа и для пометки событий. */
@@ -40,7 +40,7 @@ export interface Snapshot {
   readonly source: "git" | "filesystem";
 }
 
-const ПРОПУСК = new Set([
+const SKIP = new Set([
   ".git",
   "node_modules",
   "out",
@@ -51,41 +51,41 @@ const ПРОПУСК = new Set([
 
 export async function takeSnapshot(cwd: string): Promise<Snapshot> {
   try {
-    const { stdout: коммит } = await запустить("git", ["rev-parse", "HEAD"], {
+    const { stdout: commit } = await execFileAsync("git", ["rev-parse", "HEAD"], {
       cwd,
     });
     // Учитываются и отслеживаемые изменения, и неотслеживаемые файлы:
     // правка в новом файле — такое же изменение версии, как и в старом.
-    const { stdout: diff } = await запустить(
+    const { stdout: diff } = await execFileAsync(
       "git",
       ["diff", "HEAD", "--", "."],
       { cwd, maxBuffer: 64 * 1024 * 1024 },
     );
-    const { stdout: новые } = await запустить(
+    const { stdout: untracked } = await execFileAsync(
       "git",
       ["ls-files", "--others", "--exclude-standard", "-z"],
       { cwd, maxBuffer: 16 * 1024 * 1024 },
     );
-    const списокНовых = новые.split("\0").filter((и) => и.length > 0);
-    const грязно = diff.trim().length > 0 || списокНовых.length > 0;
-    const хеш = createHash("sha256")
-      .update(коммит.trim())
+    const newFiles = untracked.split("\0").filter((it) => it.length > 0);
+    const dirty = diff.trim().length > 0 || newFiles.length > 0;
+    const hash = createHash("sha256")
+      .update(commit.trim())
       .update(diff);
     // Содержимое, а не только имена: см. описание модуля.
-    for (const имя of списокНовых.sort()) {
-      хеш.update(имя);
-      хеш.update(await хешСодержимого(join(cwd, имя)));
+    for (const name of newFiles.sort()) {
+      hash.update(name);
+      hash.update(await contentHash(join(cwd, name)));
     }
-    const отпечаток = хеш.digest("hex").slice(0, 12);
+    const fingerprint = hash.digest("hex").slice(0, 12);
     return {
-      id: отпечаток,
-      commit: коммит.trim(),
-      dirty: грязно,
+      id: fingerprint,
+      commit: commit.trim(),
+      dirty: dirty,
       at: Date.now(),
       source: "git",
     };
   } catch {
-    return снимокФС(cwd);
+    return fsSnapshot(cwd);
   }
 }
 
@@ -96,20 +96,20 @@ export async function takeSnapshot(cwd: string): Promise<Snapshot> {
  * иначе два разных нечитаемых файла выглядели бы одинаково, и отпечаток
  * перестал бы различать состояния.
  */
-async function хешСодержимого(путь: string): Promise<string> {
+async function contentHash(filePath: string): Promise<string> {
   try {
-    const данные = await readFile(путь);
-    return createHash("sha256").update(данные).digest("hex");
-  } catch (беда) {
-    return `недоступен:${(беда as Error).message}`;
+    const data = await readFile(filePath);
+    return createHash("sha256").update(data).digest("hex");
+  } catch (err) {
+    return `недоступен:${(err as Error).message}`;
   }
 }
 
-async function снимокФС(cwd: string): Promise<Snapshot> {
-  const хеш = createHash("sha256");
-  await обойти(cwd, cwd, хеш, 0);
+async function fsSnapshot(cwd: string): Promise<Snapshot> {
+  const hash = createHash("sha256");
+  await walk(cwd, cwd, hash, 0);
   return {
-    id: хеш.digest("hex").slice(0, 12),
+    id: hash.digest("hex").slice(0, 12),
     commit: undefined,
     dirty: true,
     at: Date.now(),
@@ -117,31 +117,31 @@ async function снимокФС(cwd: string): Promise<Snapshot> {
   };
 }
 
-async function обойти(
-  корень: string,
-  каталог: string,
-  хеш: ReturnType<typeof createHash>,
-  глубина: number,
+async function walk(
+  root: string,
+  catalog: string,
+  hash: ReturnType<typeof createHash>,
+  isDeep: number,
 ): Promise<void> {
-  if (глубина > 6) return;
-  let записи: string[];
+  if (isDeep > 6) return;
+  let entries: string[];
   try {
-    записи = (await readdir(каталог)).sort();
+    entries = (await readdir(catalog)).sort();
   } catch {
     return;
   }
-  for (const имя of записи) {
-    if (ПРОПУСК.has(имя)) continue;
-    const путь = join(каталог, имя);
+  for (const name of entries) {
+    if (SKIP.has(name)) continue;
+    const filePath = join(catalog, name);
     try {
-      const св = await stat(путь);
-      if (св.isDirectory()) {
-        await обойти(корень, путь, хеш, глубина + 1);
+      const stats = await stat(filePath);
+      if (stats.isDirectory()) {
+        await walk(root, filePath, hash, isDeep + 1);
       } else {
-        хеш.update(путь.slice(корень.length));
+        hash.update(filePath.slice(root.length));
         // Содержимое, а не размер со временем: правка той же длины не
         // меняет ни размер, ни (на грубых файловых системах) mtime.
-        хеш.update(await хешСодержимого(путь));
+        hash.update(await contentHash(filePath));
       }
     } catch {
       // Недоступный файл пропускается, но это не делает снимок «чистым»:
@@ -152,9 +152,9 @@ async function обойти(
 
 /** Человекочитаемое описание для шапки реплики. */
 export function describeSnapshot(s: Snapshot): string {
-  const основа =
+  const base =
     s.source === "git"
       ? `${s.commit?.slice(0, 8) ?? "?"}${s.dirty ? "+правки" : ""}`
       : "без git";
-  return `${основа} (${s.id})`;
+  return `${base} (${s.id})`;
 }
