@@ -17,6 +17,25 @@ import { pathToFileURL } from "node:url";
 const root = join(import.meta.dirname, "..");
 
 /**
+ * Код для браузера хранится строкой, но это код: scripts/ascii-identifiers.mjs
+ * проверяет и переименовывает имена в нём. Поэтому он размечен: js`…` — скрипт
+ * проверки, html`…` — страница, скрипты которой в <script>. Разметка текст не
+ * меняет; open() принимает только размеченную проверку.
+ */
+class BrowserScript {
+  constructor(code) {
+    this.code = code;
+  }
+}
+const joinTemplate = (strings, values) =>
+  strings.reduce((text, part, i) => text + part + (i < values.length ? String(values[i]) : ""), "");
+const js = (strings, ...values) => new BrowserScript(joinTemplate(strings, values));
+const html = (strings, ...values) => joinTemplate(strings, values);
+
+/** Скрипт страницы упал: браузер работает, сломана проверка или интерфейс. */
+class PageScriptError extends Error {}
+
+/**
  * chrome-headless-shell, поставленный `npx @puppeteer/browsers install
  * chrome-headless-shell@stable --path %LOCALAPPDATA%/agent-panel-browser`:
  * безголовый Edge 153 на этой машине вывода не отдаёт.
@@ -46,17 +65,18 @@ const WIDTH = 600;
 const media = (name) => pathToFileURL(join(root, "media", name)).href;
 
 /**
- * Открыть разметку панели, выполнить скрипт проверки и вернуть то, что он
- * положил в window.итог. С panel.js — вместе со скриптами интерфейса и
- * заглушкой API VS Code, которая копит отправленное в window.отправленное.
+ * Открыть разметку панели, выполнить скрипт проверки (js`…`) и вернуть то, что
+ * он положил в window.result. С panel.js — вместе со скриптами интерфейса и
+ * заглушкой API VS Code, которая копит отправленное в window.sentMessages.
  */
 function open(check, { withUi = false, width = WIDTH, theme = "vscode-dark" } = {}) {
   const source = readFileSync(join(root, "src", "extension.ts"), "utf8");
   const body = source.match(/<body>([\s\S]*?)<script nonce/)?.[1];
   assert.ok(body, "разметка панели не найдена в extension.ts");
+  assert.ok(check instanceof BrowserScript, "проверку для браузера размечают js`…`: иначе имена в ней не проверяются");
 
   const ui = withUi
-    ? `<script>
+    ? html`<script>
   window.sentMessages = [];
   window.acquireVsCodeApi = () => ({
     postMessage: (m) => window.sentMessages.push(m),
@@ -71,7 +91,7 @@ function open(check, { withUi = false, width = WIDTH, theme = "vscode-dark" } = 
 <script src="${media("panel.js")}"></script>`
     : "";
 
-  const page = `<!DOCTYPE html><html><head><meta charset="utf-8">
+  const page = html`<!DOCTYPE html><html><head><meta charset="utf-8">
 <script>
   // Ошибки страницы — в атрибут корня: иначе упавший скрипт виден только как «не выполнился».
   window.errors = [];
@@ -86,9 +106,9 @@ ${ui}
   window.result = {};
   // Синхронная доставка: window.postMessage асинхронен и не успел бы до снимка DOM.
   const postToPage = (data) => window.dispatchEvent(new MessageEvent("message", { data }));
-  // Не «$»: panel.js объявляет её глобально, повторное объявление роняет весь скрипт.
+  // Не «byId»: panel.js объявляет её глобально, повторное объявление роняет весь скрипт.
   const getById = (id) => document.getElementById(id);
-  ${check}
+  ${check.code}
   document.body.dataset.result = encodeURIComponent(JSON.stringify(window.result));
 </script></body></html>`;
 
@@ -112,10 +132,8 @@ ${ui}
     );
     const errors = dom.match(/data-errors="([^"]*)"/)?.[1];
     const encoded = dom.match(/data-result="([^"]*)"/)?.[1];
-    assert.ok(
-      encoded && !errors,
-      `скрипт проверки не выполнился: ${errors ? decodeURIComponent(errors) : "ошибок не поймано"}`,
-    );
+    if (errors) throw new PageScriptError(`скрипт страницы упал: ${decodeURIComponent(errors)}`);
+    assert.ok(encoded, "браузер не отдал результат страницы, ошибок не поймано");
     return JSON.parse(decodeURIComponent(encoded));
   } finally {
     // Дочерние процессы браузера отпускают профиль не сразу; мусор во
@@ -131,20 +149,23 @@ ${ui}
 /**
  * Браузер есть — ещё не значит, что он отдаёт вывод: Edge 153 на этой машине
  * молчит даже на --version, хотя код возврата нулевой. Одна пробная страница
- * отличает «нечем проверять» от настоящей поломки интерфейса.
+ * отличает «нечем проверять» от настоящей поломки. Упавший скрипт пробной
+ * страницы — поломка, а не отсутствие браузера: тесты тогда падают, а не
+ * пропускаются.
  */
 const NO_BROWSER = (() => {
   if (!browser) return "нет Edge/Chrome";
   try {
-    open("result.probe = 1;");
+    open(js`result.probe = 1;`);
     return false;
   } catch (err) {
+    if (err instanceof PageScriptError) return false;
     return `браузер не отдаёт вывод: ${(err.message ?? "").slice(0, 80)}`;
   }
 })();
 
 for (const width of [WIDTH, 360]) test(`длинная задача, причина и лог не расширяют панель шириной ${width}`, { skip: NO_BROWSER }, () => {
-  const { scroll, client, button, conversation, overflowed } = open(`
+  const { scroll, client, button, conversation, overflowed } = open(js`
     const logText = "[2026-09-15, 11:41:05 UTC] {taskinstance.py:1776} ERROR - Task failed with exception ".repeat(30);
     const event = (agent, kind, extra) => ({ id: kind + Math.random(), agent, kind, visibility: "turn", at: Date.now(), ...extra });
     postToPage({ type: "state", state: { stage: "held", round: 1, maxRounds: 3, approvals: 0, queued: 2, auto: true,
@@ -181,7 +202,7 @@ for (const width of [WIDTH, 360]) test(`длинная задача, причи�
 
 test("реплика агента — Markdown с формулой, реплика человека — текст, ссылка — через расширение", { skip: NO_BROWSER }, () => {
   const r = open(
-    `
+    js`
     const replyEvent = (agent, text) => ({ id: agent + text.length, agent, kind: "message", visibility: "turn", at: Date.now(), text });
     postToPage({ type: "event", event: replyEvent("claude", "**жирно** и $x^2$\\n\\n[док](https://example.com/a)") });
     postToPage({ type: "event", event: replyEvent("human", "**не разметка** $x$") });
@@ -203,7 +224,7 @@ test("реплика агента — Markdown с формулой, реплик
 
 test("модели: список по кнопке, модель — списком, уровень — узлом нити", { skip: NO_BROWSER }, () => {
   const r = open(
-    `
+    js`
     const listCalls = () => window.sentMessages.filter((m) => m.type === "listModels").length;
     result.beforeButton = listCalls();
     getById("модели-кнопка").click();
@@ -294,7 +315,7 @@ test("модели: список по кнопке, модель — списк�
 
 test("карточка разрешения: кнопки, ответ уходит расширению, решение закрывает карточку", { skip: NO_BROWSER }, () => {
   const r = open(
-    `
+    js`
     const request = (callId, extra = {}) => ({
       id: callId, agent: "claude", kind: "approval_requested", visibility: "turn", at: Date.now(),
       tool: "Bash", callId, text: "mkdir probe-dir", sessionRules: ["Bash(mkdir probe-dir *)"], ...extra,
@@ -340,7 +361,7 @@ test("карточка разрешения: кнопки, ответ уходи
 
 test("вердикт рецензента: значок и слова, исходная строка видна, текст выше — разметкой", { skip: NO_BROWSER }, () => {
   const r = open(
-    `
+    js`
     const newline = String.fromCharCode(10);
     const replyEvent = (agent, text) => ({ id: agent + text.length, agent, kind: "message", visibility: "turn", at: Date.now(), text });
     postToPage({ type: "event", event: replyEvent("codex", ["**Два** замечания.", "", "ВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ"].join(newline)) });
@@ -365,7 +386,7 @@ test("вердикт рецензента: значок и слова, исхо�
 
 test("действия хода: бусина на вызов, форма по виду, счётчики и отказ", { skip: NO_BROWSER }, () => {
   const r = open(
-    `
+    js`
     const s = (kind, extra) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...extra });
     postToPage({ type: "event", event: s("tool_call", { tool: "Read", callId: "r1", text: "docs/a.md" }) });
     postToPage({ type: "event", event: s("tool_result", { tool: "Read", callId: "r1", text: "ok" }) });
@@ -394,7 +415,7 @@ test("действия хода: бусина на вызов, форма по �
 
 test("эстафета и дорожка цикла: кто работает, счёт проверок, след по клику", { skip: NO_BROWSER }, () => {
   const r = open(
-    `
+    js`
     const state = (extra) => ({ stage: "idle", round: 0, maxRounds: 3, approvals: 0, queued: 0, auto: true,
       claudeBusy: false, codexBusy: false, trail: [], ...extra });
     postToPage({ type: "state", state: state({ stage: "reviewing", round: 2, verdict: "remarks", task: "Спецификация",
@@ -436,7 +457,7 @@ test("эстафета и дорожка цикла: кто работает, с
 
 test("режим отправки: переключатель, меню по названию, выбор уходит с сообщением", { skip: NO_BROWSER }, () => {
   const r = open(
-    `
+    js`
     result.buttonCount = getById("режимы").querySelectorAll("[role=radio]").length;
     result.title = getById("маршрут-название").textContent;
     getById("режимы").querySelector("[data-route=both]").click();
@@ -463,7 +484,7 @@ test("режим отправки: переключатель, меню по н�
 
 test("светлая тема: у агентов свои цвета, различимые на белом", { skip: NO_BROWSER }, () => {
   const r = open(
-    `
+    js`
     const style = getComputedStyle(document.body);
     result.claude = style.getPropertyValue("--claude").trim();
     result.codex = style.getPropertyValue("--codex").trim();
@@ -476,7 +497,7 @@ test("светлая тема: у агентов свои цвета, разли
 
 test("отказ человека в карточке окрашивает бусину вызова по tool_use_id", { skip: NO_BROWSER }, () => {
   const r = open(
-    `
+    js`
     const s = (kind, extra) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...extra });
     postToPage({ type: "event", event: s("tool_call", { tool: "Bash", callId: "toolu_1", text: "git push" }) });
     postToPage({ type: "event", event: s("approval_requested", { tool: "Bash", callId: "perm-1", toolCallId: "toolu_1", text: "git push" }) });
@@ -495,7 +516,7 @@ test("отказ человека в карточке окрашивает бу�
 
 test("режим: после выбора фокус остаётся на переключателе или возвращается на название", { skip: NO_BROWSER }, () => {
   const r = open(
-    `
+    js`
     getById("режимы").querySelector("[data-route=both]").focus();
     getById("режимы").querySelector("[data-route=both]").click();
     result.afterToggle = document.activeElement?.dataset?.route;
@@ -520,7 +541,7 @@ test("уровень рассуждения можно вернуть к умо�
   // Рецензия Codex 28.09: у Claude умолчание неизвестно, и после выбора узла
   // вернуть «по умолчанию» было нечем — прежний список это позволял.
   const r = open(
-    `
+    js`
     getById("модели-кнопка").click();
     postToPage({ type: "models", agent: "claude", choice: { model: "", effort: "" }, options: [
       { id: "", label: "по умолчанию", description: "", efforts: ["low", "high", "max"] },
@@ -545,7 +566,7 @@ test("уровень рассуждения можно вернуть к умо�
 
 test("действия субагента отмечены в чётках и в списке", { skip: NO_BROWSER }, () => {
   const r = open(
-    `
+    js`
     const s = (kind, extra) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...extra });
     postToPage({ type: "event", event: s("tool_call", { tool: "Agent", callId: "toolu_agent", text: "{}" }) });
     postToPage({ type: "event", event: s("tool_call", { tool: "Read", callId: "toolu_sub", parentCallId: "toolu_agent", text: "a.txt" }) });
@@ -563,7 +584,7 @@ test("реплика самостоятельного хода Claude помеч
   // Снимок сцены 28.09 и рецензия Codex: реплика хода, который Claude начал
   // сам после фоновой команды, выглядела как работа по задаче.
   const r = open(
-    `
+    js`
     const s = (kind, extra) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...extra });
     postToPage({ type: "event", event: s("turn_started", { unsolicited: true, text: "фоновая задача закончилась: pytest" }) });
     postToPage({ type: "event", event: s("text_delta", { text: "Тесты" }) });
@@ -581,7 +602,7 @@ test("реплика субагента — отдельный приглушё�
   // Живая трасса 28.09: текст фонового субагента приходит в поток и без
   // --forward-subagent-text, с parent_tool_use_id.
   const r = open(
-    `
+    js`
     const s = (kind, extra) => ({ id: kind + Math.random(), agent: "claude", kind, visibility: "turn", at: Date.now(), ...extra });
     postToPage({ type: "event", event: s("text_delta", { text: "Claude пишет" }) });
     postToPage({ type: "event", event: s("message", { text: "Прочитал файл.", parentCallId: "toolu_agent" }) });
@@ -597,7 +618,7 @@ test("реплика субагента — отдельный приглушё�
 
 test("расход задачи и недельный лимит Codex видны в дорожке цикла", { skip: NO_BROWSER }, () => {
   const r = open(
-    `
+    js`
     postToPage({ type: "state", state: { stage: "working", round: 0, maxRounds: 3, approvals: 0, queued: 0, auto: true,
       trail: [{ who: "task" }, { who: "claude" }],
       usage: { task: { claude: { input: 1250000, cached: 1100000, output: 12000 }, codex: { input: 17522, cached: 7936, output: 5 } },
@@ -615,7 +636,7 @@ test("расход задачи и недельный лимит Codex видн�
 
 test("недельная доля Claude и окно сессии видны рядом с лимитом Codex", { skip: NO_BROWSER }, () => {
   const r = open(
-    `
+    js`
     postToPage({ type: "state", state: { stage: "idle", round: 0, maxRounds: 3, approvals: 0, queued: 0, auto: true,
       trail: [],
       usage: { task: {},
@@ -634,7 +655,7 @@ test("недельная доля Claude и окно сессии видны р�
 
 test("устаревшая недельная доля Claude показана со временем сведения", { skip: NO_BROWSER }, () => {
   const r = open(
-    `
+    js`
     const at = new Date(2026, 8, 20, 5, 14).getTime();
     postToPage({ type: "state", state: { stage: "idle", round: 0, maxRounds: 3, approvals: 0, queued: 0, auto: true,
       trail: [], usage: { task: {}, limits: { claudeWeek: { percent: 4, at, stale: true } } } } });
@@ -648,7 +669,7 @@ test("устаревшая недельная доля Claude показана �
 
 test("ссылка «новая сессия» в карточке модели просит расширение начать сессию заново", { skip: NO_BROWSER }, () => {
   const r = open(
-    `
+    js`
     getById("модели-кнопка").click();
     getById("новая-сессия-claude").click();
     getById("новая-сессия-codex").click();

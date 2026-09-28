@@ -19,9 +19,9 @@ const { summarizeTools, stickToBottom, toolCategory } = globalThis.PanelFormat;
 const { effortLevels, defaultEffort, threadLayout, relayView, trackSteps, beadFor, actionCounters, verdictLine } =
   globalThis.PanelThread;
 
-const $ = (id) => document.getElementById(id);
-const conversation = $("беседа");
-const inputBox = $("ввод");
+const byId = (id) => document.getElementById(id);
+const conversation = byId("беседа");
+const inputBox = byId("ввод");
 
 const NAMES = { claude: "Claude", codex: "Codex", human: "Вы", system: "Панель" };
 const ROUTES = [
@@ -98,7 +98,7 @@ function remember(extra) {
  * кнопка «К последнему».
  */
 let pinned = true;
-const toLastButton = $("к-последнему");
+const toLastButton = byId("к-последнему");
 conversation.addEventListener("scroll", () => {
   pinned = stickToBottom(conversation.scrollHeight, conversation.scrollTop, conversation.clientHeight);
   if (pinned) toLastButton.hidden = true;
@@ -470,12 +470,12 @@ function showEvent(e, history = false) {
       return;
     }
     case "diagnostic": {
-      const lines = $("диагностика-строки");
+      const lines = byId("диагностика-строки");
       const time = new Date(e.at).toLocaleTimeString("ru-RU", { hour12: false });
       lines.textContent += `${time} ${NAMES[e.agent] ?? e.agent}: ${e.text ?? ""}` + String.fromCharCode(10);
       const all = lines.textContent.split(String.fromCharCode(10));
       if (all.length > DIAGNOSTIC_LIMIT) lines.textContent = all.slice(-DIAGNOSTIC_LIMIT).join(String.fromCharCode(10));
-      const counts = $("диагностика-счёт");
+      const counts = byId("диагностика-счёт");
       counts.textContent = String(Number(counts.textContent) + 1);
       return;
     }
@@ -492,25 +492,25 @@ let lastState;
 function showState(s) {
   lastState = s;
   const kind = relayView(s);
-  const threadEl = $("нить-статус");
+  const threadEl = byId("нить-статус");
   threadEl.dataset.active = kind.active;
   threadEl.dataset.flow = kind.flow;
-  const stage = $("этап");
+  const stage = byId("этап");
   stage.textContent = kind.label;
   stage.dataset.active = kind.active;
   stage.classList.toggle("перелив", kind.active === "claude" || kind.active === "codex");
-  $("этап-пояснение").textContent = kind.sub;
+  byId("этап-пояснение").textContent = kind.sub;
 
-  const round = $("раунд");
+  const round = byId("раунд");
   round.replaceChildren(...kind.rounds.map((passed) => makeEl("span", passed ? "пройдена" : "")));
   round.setAttribute("aria-label", `проверок ${s.round} из ${s.maxRounds}`);
   round.dataset.caption = `проверок ${s.round} из ${s.maxRounds}`;
 
-  const queue = $("очередь");
+  const queue = byId("очередь");
   queue.hidden = !s.queued;
   queue.textContent = `в очереди ${s.queued}`;
 
-  const task = $("задача");
+  const task = byId("задача");
   task.hidden = !s.task;
   task.textContent = s.task ?? "";
   // Строка обрезается многоточием, полный текст — при наведении.
@@ -518,15 +518,15 @@ function showState(s) {
 
   showTrack();
 
-  $("удержано").hidden = !s.held;
-  $("удержано-причина").textContent = s.held?.reason ?? "";
-  $("отпустить").textContent = !s.held
+  byId("удержано").hidden = !s.held;
+  byId("удержано-причина").textContent = s.held?.reason ?? "";
+  byId("отпустить").textContent = !s.held
     ? "Отправить"
     : s.held.action === "retry"
       ? `Повторить ${NAMES[s.held.to]}`
       : `Отправить ${NAMES[s.held.to]}`;
 
-  $("авто").checked = s.auto;
+  byId("авто").checked = s.auto;
 }
 
 /** 1 262 000 → «1,26 млн», 17 527 → «17,5 тыс.». */
@@ -556,7 +556,7 @@ setInterval(() => {
 
 /** Строка расхода: токены задачи по агентам и последние сведения о лимитах. */
 function showUsage(isOpen) {
-  const line = $("расход");
+  const line = byId("расход");
   const usage = lastState?.usage;
   const parts = [];
   for (const agent of ["claude", "codex"]) {
@@ -593,10 +593,10 @@ function showUsage(isOpen) {
 }
 
 function showTrack() {
-  const track = $("дорожка");
+  const track = byId("дорожка");
   const isOpen = saved.track === true;
   track.hidden = !isOpen;
-  $("эстафета").setAttribute("aria-expanded", String(isOpen));
+  byId("эстафета").setAttribute("aria-expanded", String(isOpen));
   showUsage(isOpen);
   if (!isOpen) return;
   const s = lastState ?? { stage: "idle", maxRounds: 0 };
@@ -621,7 +621,7 @@ function showTrack() {
   );
 }
 
-$("эстафета").addEventListener("click", () => {
+byId("эстафета").addEventListener("click", () => {
   remember({ track: !(saved.track === true) });
   showTrack();
 });
@@ -632,9 +632,9 @@ let route = ROUTES.some((m) => m.id === saved.route) ? saved.route : "review";
 
 function showRoute() {
   const current = ROUTES.find((m) => m.id === route);
-  $("маршрут-название").textContent = current.name;
-  $("маршрут").title = `${current.hint}. Нажмите — выбрать режим`;
-  $("режимы").replaceChildren(
+  byId("маршрут-название").textContent = current.name;
+  byId("маршрут").title = `${current.hint}. Нажмите — выбрать режим`;
+  byId("режимы").replaceChildren(
     ...ROUTES.map((m) => {
       const k = makeEl("button");
       k.setAttribute("role", "radio");
@@ -646,12 +646,12 @@ function showRoute() {
       k.addEventListener("click", () => {
         selectRoute(m.id);
         // Кнопки пересоздаются: фокус переходит на новую отмеченную.
-        $("режимы").querySelector('[aria-checked="true"]')?.focus();
+        byId("режимы").querySelector('[aria-checked="true"]')?.focus();
       });
       return k;
     }),
   );
-  $("маршрут-меню").replaceChildren(
+  byId("маршрут-меню").replaceChildren(
     ...ROUTES.map((m) => {
       const k = makeEl("button");
       k.setAttribute("role", "menuitemradio");
@@ -678,20 +678,20 @@ function selectRoute(id) {
 
 /** Закрыть меню режима; с возвратом — фокус на кнопку названия, откуда меню открыли. */
 function closeMenu(restoreFocus = false) {
-  const wasOpen = !$("маршрут-меню").hidden;
-  $("маршрут-меню").hidden = true;
-  $("маршрут").setAttribute("aria-expanded", "false");
-  if (restoreFocus && wasOpen) $("маршрут").focus();
+  const wasOpen = !byId("маршрут-меню").hidden;
+  byId("маршрут-меню").hidden = true;
+  byId("маршрут").setAttribute("aria-expanded", "false");
+  if (restoreFocus && wasOpen) byId("маршрут").focus();
 }
 
-$("маршрут").addEventListener("click", (event) => {
+byId("маршрут").addEventListener("click", (event) => {
   event.stopPropagation();
-  const menu = $("маршрут-меню");
+  const menu = byId("маршрут-меню");
   menu.hidden = !menu.hidden;
-  $("маршрут").setAttribute("aria-expanded", String(!menu.hidden));
+  byId("маршрут").setAttribute("aria-expanded", String(!menu.hidden));
 });
 document.addEventListener("click", (event) => {
-  if (!$("маршрут-меню").hidden && !event.target.closest?.("#маршрут-меню")) closeMenu();
+  if (!byId("маршрут-меню").hidden && !event.target.closest?.("#маршрут-меню")) closeMenu();
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeMenu(true);
@@ -718,7 +718,7 @@ function receiveMode(mode) {
 }
 
 function showMode() {
-  const button = $("без-вопросов");
+  const button = byId("без-вопросов");
   button.setAttribute("aria-pressed", String(claudeMode === "bypassPermissions"));
   // Режим из настройки, которого нет в переключателе (plan, acceptEdits…), показывается как есть.
   button.querySelector(".подпись").textContent = MODE_LABELS[claudeMode] ?? claudeMode;
@@ -743,13 +743,13 @@ function modelCaption(agent) {
 }
 
 function showModels() {
-  $("модели-кнопка").title =
+  byId("модели-кнопка").title =
     `Модель и уровень рассуждения каждого агента; меняются со следующего хода. ` +
     `Сейчас — Claude: ${modelCaption("claude")}; Codex: ${modelCaption("codex")}; ` +
     `разрешения Claude: ${(MODE_LABELS[claudeMode] ?? claudeMode).toLowerCase()}`;
   const errors = ["claude", "codex"].filter((a) => MODELS[a].error).map((a) => `${NAMES[a]}: ${MODELS[a].error}`);
   const waiting = listsRequested && ["claude", "codex"].some((a) => !MODELS[a].options && !MODELS[a].error);
-  $("модели-состояние").textContent = errors.length
+  byId("модели-состояние").textContent = errors.length
     ? `Список не получен — ${errors.join("; ")}. Откройте ещё раз, чтобы повторить.`
     : waiting
       ? "Загружаю список моделей…"
@@ -757,7 +757,7 @@ function showModels() {
 
   for (const agent of ["claude", "codex"]) {
     const { options, choice } = MODELS[agent];
-    const model = $(`модель-${agent}`);
+    const model = byId(`модель-${agent}`);
     if (!options) {
       model.disabled = true;
       drawThread(agent, undefined);
@@ -780,15 +780,15 @@ function chunk(className, style) {
 const px = (n) => `${n}px`;
 
 function drawThread(agent, model) {
-  const strip = $(`нить-${agent}`);
-  const caption = $(`нить-уровень-${agent}`);
+  const strip = byId(`нить-${agent}`);
+  const caption = byId(`нить-уровень-${agent}`);
   const levels = effortLevels(agent, model?.efforts ?? []);
   const isDefault = defaultEffort(model);
   const choice = MODELS[agent].choice.effort;
   const r = threadLayout(agent, levels, choice, isDefault, strip.clientWidth || 328);
   // Вернуть «по умолчанию» можно, пока выбран явный уровень: у Claude умолчание
   // неизвестно, и никакой узел его не заменяет (рецензия Codex 28.09).
-  $(`нить-сброс-${agent}`).hidden = !r || !choice;
+  byId(`нить-сброс-${agent}`).hidden = !r || !choice;
   if (!r) {
     caption.textContent = MODELS[agent].options ? "Без уровней" : "—";
     caption.style.color = "var(--тихий)";
@@ -883,7 +883,7 @@ function drawThread(agent, model) {
 function selectLevel(agent, model, id) {
   const effort = model?.defaultEffort && id === model.defaultEffort ? "" : id;
   select(agent, { model: MODELS[agent].choice.model, effort });
-  $(`нить-${agent}`).querySelector(`[data-level="${id}"]`)?.focus();
+  byId(`нить-${agent}`).querySelector(`[data-level="${id}"]`)?.focus();
 }
 
 function select(agent, choice) {
@@ -903,7 +903,7 @@ function receiveModels(d) {
 }
 
 for (const agent of ["claude", "codex"]) {
-  $(`модель-${agent}`).addEventListener("change", (event) => {
+  byId(`модель-${agent}`).addEventListener("change", (event) => {
     const m = MODELS[agent];
     const model = event.target.value;
     const levels = m.options?.find((o) => o.id === model)?.efforts ?? [];
@@ -911,9 +911,9 @@ for (const agent of ["claude", "codex"]) {
     select(agent, { model: model, effort: levels.includes(m.choice.effort) ? m.choice.effort : "" });
   });
   // Стрелки двигают выбор по нити, как в любой группе переключателей.
-  $(`нить-${agent}`).addEventListener("keydown", (event) => {
+  byId(`нить-${agent}`).addEventListener("keydown", (event) => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-    const nodes = [...$(`нить-${agent}`).querySelectorAll(".нить-узел")];
+    const nodes = [...byId(`нить-${agent}`).querySelectorAll(".нить-узел")];
     const currentIndex = nodes.findIndex((u) => u.getAttribute("aria-checked") === "true");
     const step = event.key === "ArrowRight" ? 1 : -1;
     const next = nodes[Math.min(nodes.length - 1, Math.max(0, (currentIndex < 0 ? 0 : currentIndex) + step))];
@@ -925,23 +925,23 @@ for (const agent of ["claude", "codex"]) {
 
 for (const agent of ["claude", "codex"]) {
   // Подтверждение спрашивает расширение: новая сессия — необратимое забывание.
-  $(`новая-сессия-${agent}`).addEventListener("click", () => vscode.postMessage({ type: "newSession", agent: agent }));
-  $(`нить-сброс-${agent}`).addEventListener("click", () => {
+  byId(`новая-сессия-${agent}`).addEventListener("click", () => vscode.postMessage({ type: "newSession", agent: agent }));
+  byId(`нить-сброс-${agent}`).addEventListener("click", () => {
     select(agent, { model: MODELS[agent].choice.model, effort: "" });
   });
 }
 
-$("без-вопросов").addEventListener("click", () => {
+byId("без-вопросов").addEventListener("click", () => {
   claudeMode = claudeMode === "bypassPermissions" ? "default" : "bypassPermissions";
   showMode();
   showModels();
   vscode.postMessage({ type: "setPermissionMode", mode: claudeMode });
 });
 
-$("модели-кнопка").addEventListener("click", () => {
-  const panel = $("модели-панель");
+byId("модели-кнопка").addEventListener("click", () => {
+  const panel = byId("модели-панель");
   panel.hidden = !panel.hidden;
-  $("модели-кнопка").setAttribute("aria-expanded", String(!panel.hidden));
+  byId("модели-кнопка").setAttribute("aria-expanded", String(!panel.hidden));
   if (!panel.hidden && !listsRequested) {
     listsRequested = true;
     vscode.postMessage({ type: "listModels" });
@@ -950,7 +950,7 @@ $("модели-кнопка").addEventListener("click", () => {
 });
 // Ширина нити зависит от ширины панели.
 window.addEventListener("resize", () => {
-  if (!$("модели-панель").hidden) showModels();
+  if (!byId("модели-панель").hidden) showModels();
 });
 showMode();
 showModels();
@@ -989,21 +989,21 @@ conversation.addEventListener("click", (event) => {
   event.preventDefault();
   vscode.postMessage({ type: "openLink", href: link.getAttribute("href") });
 });
-$("отправить").addEventListener("click", send);
+byId("отправить").addEventListener("click", send);
 inputBox.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
     e.preventDefault();
     send();
   }
 });
-$("отпустить").addEventListener("click", () => vscode.postMessage({ type: "release" }));
-$("стоп").addEventListener("click", () => vscode.postMessage({ type: "stopAll" }));
-$("прервать").addEventListener("click", () => vscode.postMessage({ type: "interrupt" }));
-$("авто").addEventListener("change", (e) => vscode.postMessage({ type: "setAuto", on: e.target.checked }));
-$("диагностика-кнопка").addEventListener("click", () => {
-  const panel = $("диагностика");
+byId("отпустить").addEventListener("click", () => vscode.postMessage({ type: "release" }));
+byId("стоп").addEventListener("click", () => vscode.postMessage({ type: "stopAll" }));
+byId("прервать").addEventListener("click", () => vscode.postMessage({ type: "interrupt" }));
+byId("авто").addEventListener("change", (e) => vscode.postMessage({ type: "setAuto", on: e.target.checked }));
+byId("диагностика-кнопка").addEventListener("click", () => {
+  const panel = byId("диагностика");
   panel.hidden = !panel.hidden;
-  $("диагностика-кнопка").setAttribute("aria-expanded", String(!panel.hidden));
+  byId("диагностика-кнопка").setAttribute("aria-expanded", String(!panel.hidden));
 });
 
 // История и состояние приходят только после этого сигнала.
