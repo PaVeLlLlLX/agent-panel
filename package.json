@@ -39,7 +39,7 @@
         "agentPanel.claudeCommand": {
           "type": "string",
           "default": "claude",
-          "description": "Исполняемый файл Claude Code."
+          "description": "Исполняемый файл Claude Code. Значение claude означает: взять claude из расширения Claude Code для VS Code (та же версия, что в вашем чате, обновляется вместе с расширением), а если его нет — из PATH. Явный путь важнее."
         },
         "agentPanel.codexCommand": {
           "type": "string",

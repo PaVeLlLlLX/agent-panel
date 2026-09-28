@@ -189,6 +189,14 @@ CLI 0.153.0 её не знал, и ход падал с «model is not supported
 Codex with a ChatGPT account», а `codex` 0.155.0-alpha.16 из расширения ту же
 ветку продолжил. Явный путь в `agentPanel.codexCommand` важнее.
 
+**Какой claude запускается.** Так же: если установлено расширение Claude Code
+для VS Code, панель берёт его `resources/native-binary/claude.exe` — ту же
+версию, что у вашего чата; расширение обновляется само, и панель подхватывает
+новую версию при следующем открытии комнаты. 28.09 claude 2.1.220 из npm не
+принял сессию на `claude-opus-5-5` («API Error: 400 … does not support this
+model; version 2.1.280»), а 2.1.280 из расширения — принял. Явный путь в
+`agentPanel.claudeCommand` важнее; без расширения — `claude` из PATH.
+
 В «Модели» стоит выбрать модель вашей ветки: модель, переданная панелью в
 ход, остаётся у ветки и в приложении.
 
@@ -493,7 +501,7 @@ F5. Откроется второе окно «Extension Development Host» с �
 |---|---|
 | в палитре нет «Agent Panel» | расширение не установлено или окно не перезагружено |
 | «нужна открытая папка» | в окне нет папки; откройте любую |
-| «Claude не запустился» | `claude` не в PATH у VS Code; полный путь в `agentPanel.claudeCommand` |
+| «Claude не запустился» | нет расширения Claude Code, а `claude` не в PATH у VS Code; полный путь в `agentPanel.claudeCommand` |
 | «Codex не запустился» | то же для `agentPanel.codexCommand` |
 | «ждёт вашего решения» с отказами без запроса | режим разрешений не спрашивает (`dontAsk`); верните `default` |
 
@@ -504,7 +512,7 @@ F5. Откроется второе окно «Extension Development Host» с �
 
 | Ключ | По умолчанию | Смысл |
 |---|---|---|
-| `agentPanel.claudeCommand` | `claude` | исполняемый файл Claude Code |
+| `agentPanel.claudeCommand` | `claude` | исполняемый файл Claude Code; `claude` — взять из расширения Claude Code, без него — из PATH |
 | `agentPanel.codexCommand` | `codex` | исполняемый файл Codex |
 | `agentPanel.maxAutoRounds` | `3` | предел проверок на задачу; 0 — каждую передачу подтверждаете вы |
 | `agentPanel.claudeSettingSources` | `project,local` | какие настройки загружает Claude панели; пустая строка — все, включая ваши хуки |

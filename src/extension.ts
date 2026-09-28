@@ -21,6 +21,7 @@ import { Coordinator, RoomState, Route } from "./coordinator.js";
 import { Journal } from "./journal.js";
 import { describeChoice, normalizeChoice, sameChoice } from "./models.js";
 import { resolveCodexCommand } from "./codexBinary.js";
+import { argumentForLaunch, resolveClaudeCommand } from "./claudeBinary.js";
 import { runMemorySearch } from "./memory.js";
 import { fetchClaudeUsage } from "./claudeUsage.js";
 
@@ -33,7 +34,7 @@ type ВыбираемыйАгент = "claude" | "codex";
 const АГЕНТЫ: readonly ВыбираемыйАгент[] = ["claude", "codex"];
 const ИМЕНА_АГЕНТОВ: Record<ВыбираемыйАгент, string> = { claude: "Claude", codex: "Codex" };
 
-/** Режимы разрешений, которые принимает Claude Code 2.1.220, плюс default — не передавать флаг. */
+/** Режимы разрешений, которые принимает Claude Code (2.1.220 и 2.1.280), плюс default — не передавать флаг. */
 const РЕЖИМЫ = new Set(["default", "acceptEdits", "auto", "manual", "dontAsk", "plan", "bypassPermissions"]);
 const ПОДПИСИ_РЕЖИМОВ: Record<string, string> = { bypassPermissions: "без вопросов", default: "спрашивать" };
 
@@ -96,13 +97,20 @@ class Комната {
     // нет пользовательских настроек, а значит и ваших MCP-серверов (qmd, om).
     const командаПамяти = настройки.get<string>("memorySearchCommand", "").trim();
     const mcpКонфиг = настройки.get<string>("claudeMcpConfig", "").trim();
-    // На Windows Claude запускается через cmd.exe: путь всегда в кавычках — иначе
-    // пробел или «&» в имени папки разбил бы команду (рецензия Codex 28.09).
-    const mcpАргумент = process.platform === "win32" ? `"${mcpКонфиг}"` : mcpКонфиг;
+    // Тот же claude, что в чате владельца: claude из npm может не знать модель
+    // его сессии (28.09: 2.1.220 не принял claude-opus-5-5).
+    const запускClaude = resolveClaudeCommand(
+      настройки.get<string>("claudeCommand", "claude"),
+      vscode.extensions.getExtension("anthropic.claude-code")?.extensionPath,
+    );
+    // Через cmd.exe путь — в кавычках, иначе пробел или «&» в имени папки разбил
+    // бы команду (рецензия Codex 28.09); без оболочки кавычки стали бы частью пути.
+    const mcpАргумент = argumentForLaunch(mcpКонфиг, запускClaude.shell);
 
     const claude = new ClaudeAdapter(
       {
-        command: настройки.get<string>("claudeCommand", "claude"),
+        command: запускClaude.command,
+        ...(запускClaude.shell !== undefined ? { shell: запускClaude.shell } : {}),
         cwd,
         model: this.#выборы.claude.model,
         effort: this.#выборы.claude.effort,
@@ -147,7 +155,13 @@ class Комната {
         ? { memory: (текст: string, каталог: string) => runMemorySearch(командаПамяти, каталог, текст) }
         : {}),
       ...(настройки.get<boolean>("claudeWeeklyUsage", true)
-        ? { claudeUsage: () => fetchClaudeUsage({ command: настройки.get<string>("claudeCommand", "claude") }) }
+        ? {
+            claudeUsage: () =>
+              fetchClaudeUsage({
+                command: запускClaude.command,
+                ...(запускClaude.shell !== undefined ? { shell: запускClaude.shell } : {}),
+              }),
+          }
         : {}),
       onEvent: (событие) => this.#отправитьВПанель({ type: "event", событие: forDisplay(событие) }),
       onState: (состояние) => this.#отправитьВПанель({ type: "state", состояние }),

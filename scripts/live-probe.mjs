@@ -12,9 +12,12 @@
  * Сессии заводятся в отдельной временной папке; комнаты владельца и его
  * ветки не трогаются.
  *
- * Запуск: npm run build && node scripts/live-probe.mjs [--codex-turn]
+ * claude и codex берутся так же, как в панели: из расширений VS Code, иначе из PATH.
+ *
+ * Запуск: npm run build && node scripts/live-probe.mjs [--codex-turn] [--claude-model <id>]
+ * (по умолчанию ход Claude — на самой дешёвой модели каталога)
  */
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -23,17 +26,31 @@ const require = createRequire(import.meta.url);
 const { ClaudeAdapter } = require("../out/adapters/claude.js");
 const { CodexAdapter } = require("../out/adapters/codex.js");
 const { resolveCodexCommand } = require("../out/codexBinary.js");
+const { resolveClaudeCommand } = require("../out/claudeBinary.js");
 const { readdirSync } = require("node:fs");
 
 const папка = mkdtempSync(join(tmpdir(), "agent-panel-probe-"));
 writeFileSync(join(папка, "README.md"), "Временная папка живой пробы agent-panel.\n");
 const итог = { папка, claude: {}, codex: {} };
 
-function расширениеChatGPT() {
+/**
+ * Папка расширения с наибольшей версией: VS Code оставляет старые до перезапуска.
+ * Панель берёт путь у самого VS Code (активную версию), поэтому проба
+ * подтверждает работу бинарника, а не выбор папки панелью.
+ */
+function расширение(префикс) {
   const корень = join(homedir(), ".vscode", "extensions");
-  const имена = readdirSync(корень).filter((и) => и.startsWith("openai.chatgpt-")).sort();
+  if (!existsSync(корень)) return undefined;
+  const имена = readdirSync(корень)
+    .filter((и) => и.startsWith(префикс))
+    .sort((а, б) => а.localeCompare(б, undefined, { numeric: true }));
   return имена.length ? join(корень, имена[имена.length - 1]) : undefined;
 }
+const расширениеChatGPT = () => расширение("openai.chatgpt-");
+const аргумент = (имя) => {
+  const и = process.argv.indexOf(имя);
+  return и >= 0 ? process.argv[и + 1] : undefined;
+};
 
 /** Ход до turn_completed; события копятся для сводки. */
 function ход(адаптер, события, текст, предел = 180_000) {
@@ -62,10 +79,20 @@ const ответ = (события) =>
 // --- Claude --------------------------------------------------------------------
 {
   const события = [];
-  const опции = { command: "claude", cwd: папка, settingSources: "project,local", permissionMode: "default" };
+  const запуск = resolveClaudeCommand(undefined, расширение("anthropic.claude-code-"));
+  итог.claude.запуск = запуск;
+  const опции = {
+    command: запуск.command,
+    ...(запуск.shell !== undefined ? { shell: запуск.shell } : {}),
+    cwd: папка,
+    settingSources: "project,local",
+    permissionMode: "default",
+  };
   const каталог = await new ClaudeAdapter(опции, приёмник(события)).listModels();
   итог.claude.каталог = каталог.map((м) => ({ id: м.id, label: м.label, efforts: м.efforts }));
-  const дешёвая = каталог.find((м) => /haiku/i.test(`${м.id} ${м.label}`))?.id ?? "haiku";
+  const дешёвая =
+    аргумент("--claude-model") ?? каталог.find((м) => /haiku/i.test(`${м.id} ${м.label}`))?.id ?? "haiku";
+  итог.claude.модель = дешёвая;
 
   let сессия;
   const первый = new ClaudeAdapter({ ...опции, model: дешёвая, onSessionId: (id) => (сессия = id) }, приёмник(события));
