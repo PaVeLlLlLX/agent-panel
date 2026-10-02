@@ -45,6 +45,12 @@
       start: "#46525C", tip: "#C8F4F6",
       flare: "linear-gradient(90deg, #6F808C 0%, #4CB9C3 60%, #C8F4F6 100%)",
     },
+    gemini: {
+      low: "#7E7896", medium: "#8C80BC", high: "#A78BFA", xhigh: "#B49BFB", max: "#C4B0FC",
+      ultra: "#DCCFFE", ultracode: "#DCCFFE",
+      start: "#4E4862", tip: "#E9E2FF",
+      flare: "linear-gradient(90deg, #7E7896 0%, #A78BFA 60%, #E9E2FF 100%)",
+    },
   };
 
   /**
@@ -68,6 +74,11 @@
       xhigh: "Ещё глубже и дольше",
       max: "Больше времени на одну задачу: вся глубина в одном непрерывном рассуждении",
       ultra: "Максимум плюс автоматическая раздача частей задачи субагентам параллельно",
+    },
+    gemini: {
+      low: "Короткое рассуждение: быстрее и дешевле по квоте",
+      medium: "Обычная глубина рассуждения",
+      high: "Рассуждает глубже; уровень по умолчанию в панели",
     },
   };
 
@@ -228,46 +239,182 @@
     missing: "вердикт не вынесен",
   };
 
-  /** «Эстафета»: кто работает, куда бегут частицы, подпись и счёт проверок. */
-  function relayView(s) {
-    const sub = VERDICTS[s.verdict] ?? "";
-    const rounds = Array.from({ length: Math.max(0, s.maxRounds ?? 0) }, (_, i) => i < (s.round ?? 0));
-    const kind = (active, label, flow) => ({ active, label, flow, sub, rounds });
-    // Открытый запрос разрешения важнее этапа цикла: без ответа никто не двинется.
-    if (s.approvals > 0) return kind("human", "Ждёт разрешения", "none");
-    switch (s.stage) {
-      case "held": return kind("human", "Ждёт вашего решения", "none");
-      case "working": return kind("claude", "Claude работает", "to-claude");
-      case "reviewing": return kind("codex", "Codex проверяет", "to-codex");
-      default:
-        // Прямой вопрос после цикла: агент отвечает, а этап ещё «принято».
-        if (s.claudeBusy) return kind("claude", "Claude отвечает", "to-claude");
-        if (s.codexBusy) return kind("codex", "Codex отвечает", "to-codex");
-        if (s.stage === "accepted") return kind("accepted", "Работа принята", "none");
-        return kind("idle", s.stage === "stopped" ? "Остановлено" : "Ожидание", "none");
-    }
+  const MARK_OF = { accepted: "✓", remarks: "!", human: "?", missing: "–" };
+
+  /** Сторона пары словами: «принято», «не проверял», «проверяет». */
+  function sideWords(side) {
+    if (side?.state === "done") return VERDICTS[side.verdict] ?? "";
+    if (side?.state === "unchecked") return "не проверял";
+    return "проверяет";
   }
 
   /**
-   * «Дорожка цикла»: пройденные шаги, текущий и пустые шаги оставшихся
-   * проверок. trail — след координатора: { who: task|claude|codex|you, mark? }.
+   * «Эстафета»: кто работает, куда бегут частицы, подпись и счёт проверок.
+   * С Gemini нить от Claude раздваивается на Codex и Gemini
+   * (docs/design/gemini/relay-status.html, вариант A).
    */
-  function trackSteps(trail, { stage, maxRounds }) {
+  function relayView(s) {
+    const verdictSub = VERDICTS[s.verdict] ?? "";
+    const rounds = Array.from({ length: Math.max(0, s.maxRounds ?? 0) }, (_, i) => i < (s.round ?? 0));
+    const pair = (s.reviewers ?? ["codex"]).includes("gemini");
+    const sides = s.pair?.sides ?? {};
+    const lit = { claude: false, codex: false, gemini: false };
+    const marks = { codex: "", gemini: "" };
+    for (const who of ["codex", "gemini"]) {
+      const side = sides[who];
+      if (side?.state === "done") marks[who] = MARK_OF[side.verdict] ?? "";
+      else if (side?.state === "unchecked") marks[who] = "×";
+    }
+    const view = (active, label, flow, sub = verdictSub) => ({ active, label, flow, sub, rounds, pair, lit, marks });
+    // Открытый запрос разрешения важнее этапа цикла: без ответа никто не двинется.
+    if (s.approvals > 0) return view("human", "Ждёт разрешения", "none");
+    switch (s.stage) {
+      case "held":
+        return view("human", "Ждёт вашего решения", "none");
+      case "working":
+        lit.claude = true;
+        return view("claude", "Claude работает", "to-claude");
+      case "reviewing": {
+        if (!pair) {
+          lit.codex = true;
+          return view("codex", "Codex проверяет", "to-codex");
+        }
+        const codexWaiting = (sides.codex?.state ?? "waiting") === "waiting";
+        const geminiWaiting = (sides.gemini?.state ?? "waiting") === "waiting";
+        if (codexWaiting && geminiWaiting) {
+          lit.codex = true;
+          lit.gemini = true;
+          return view("reviewers", "Codex и Gemini проверяют", "to-reviewers", "");
+        }
+        if (geminiWaiting) {
+          lit.gemini = true;
+          return view("gemini", "Gemini проверяет", "to-gemini", `Codex: ${sideWords(sides.codex)}`);
+        }
+        lit.codex = true;
+        return view("codex", "Codex проверяет", "to-codex", `Gemini: ${sideWords(sides.gemini)}`);
+      }
+      default:
+        // Прямой вопрос после цикла: агент отвечает, а этап ещё «принято».
+        if (s.claudeBusy) {
+          lit.claude = true;
+          return view("claude", "Claude отвечает", "to-claude");
+        }
+        if (s.codexBusy) {
+          lit.codex = true;
+          return view("codex", "Codex отвечает", "to-codex");
+        }
+        if (s.geminiBusy) {
+          lit.gemini = true;
+          return view("gemini", "Gemini отвечает", "to-gemini");
+        }
+        if (s.stage === "accepted") {
+          lit.claude = true;
+          lit.codex = true;
+          lit.gemini = pair;
+          const sub = pair && s.pair
+            ? sides.gemini?.state === "unchecked" ? "Codex: принято · Gemini не проверял" : "Codex и Gemini: принято"
+            : verdictSub;
+          return view("accepted", "Работа принята", "none", sub);
+        }
+        return view("idle", s.stage === "stopped" ? "Остановлено" : "Ожидание", "none");
+    }
+  }
+
+  /** Сторона ромба: рецензент одной проверки. */
+  function sideOf(sh) {
+    return { who: sh.who, mark: sh.mark ?? "", state: "done", ...(sh.unchecked ? { unchecked: sh.unchecked } : {}) };
+  }
+
+  /**
+   * «Дорожка цикла»: столбцы пройденных шагов, текущий и пустые столбцы
+   * оставшихся проверок. Шаги Codex и Gemini одной проверки — один столбец
+   * «pair» (ромб). trail — след координатора: { who, round?, mark?, unchecked? }.
+   */
+  function trackSteps(trail, { stage, maxRounds, reviewers }) {
     if (!trail || trail.length === 0) return [];
+    const pair = (reviewers ?? ["codex"]).includes("gemini");
     const inProgress = stage === "working" || stage === "reviewing" || stage === "held";
-    const steps = trail.map((sh) => ({ who: sh.who, mark: sh.mark ?? "", state: "done" }));
-    if (inProgress) steps[steps.length - 1].state = "current";
+    const columns = [];
+    for (let i = 0; i < trail.length; i += 1) {
+      const sh = trail[i];
+      const next = trail[i + 1];
+      if (sh.who === "codex" && next?.who === "gemini" && next.round === sh.round) {
+        columns.push({ who: "pair", state: "done", round: sh.round, top: sideOf(sh), bottom: sideOf(next) });
+        i += 1;
+      } else {
+        columns.push(sideOf(sh));
+      }
+    }
+    if (inProgress) {
+      const last = columns[columns.length - 1];
+      last.state = "current";
+      if (last.who === "pair") {
+        for (const side of [last.top, last.bottom]) if (!side.mark && !side.unchecked) side.state = "current";
+      }
+    }
     if (stage === "working" || stage === "reviewing") {
-      let remaining = Math.max(0, (maxRounds ?? 0) - trail.filter((sh) => sh.who === "codex").length);
-      const empty = [];
+      let remaining = Math.max(0, (maxRounds ?? 0) - columns.filter((c) => c.who === "codex" || c.who === "pair").length);
+      const ghost = () =>
+        pair
+          ? { who: "pair", state: "ghost", top: { who: "codex", mark: "", state: "ghost" }, bottom: { who: "gemini", mark: "", state: "ghost" } }
+          : { who: "codex", mark: "", state: "ghost" };
       if (trail[trail.length - 1].who === "claude" && remaining > 0) {
-        empty.push("codex");
+        columns.push(ghost());
         remaining -= 1;
       }
-      for (; remaining > 0; remaining -= 1) empty.push("claude", "codex");
-      for (const who of empty) steps.push({ who, mark: "", state: "ghost" });
+      for (; remaining > 0; remaining -= 1) columns.push({ who: "claude", mark: "", state: "ghost" }, ghost());
     }
-    return steps;
+    return columns;
+  }
+
+  function nodeOf(side) {
+    const r = side.state === "current" ? 7 : side.who === "task" ? 4 : 5;
+    return { who: side.who, state: side.state, mark: side.mark ?? "", unchecked: side.unchecked ?? "", r };
+  }
+
+  /**
+   * Раскладка дорожки в SVG (docs/design/gemini/trail-branches.html, вариант A):
+   * столбец на шаг; у пары — Codex сверху и Gemini снизу, кривые из прежнего
+   * шага и в следующий. Без пар — одна линия, высота как прежде.
+   */
+  function trackGeometry(columns, { step = 40, pad = 10 } = {}) {
+    const hasPair = columns.some((c) => c.who === "pair");
+    const mainY = hasPair ? 34 : 14;
+    const nodes = [];
+    const anchors = [];
+    columns.forEach((c, i) => {
+      const x = pad + i * step;
+      if (c.who === "pair") {
+        nodes.push({ ...nodeOf(c.top), x, y: mainY - 20 }, { ...nodeOf(c.bottom), x, y: mainY + 20 });
+        anchors.push([{ x, y: mainY - 20, ghost: c.top.state === "ghost" }, { x, y: mainY + 20, ghost: c.bottom.state === "ghost" }]);
+      } else {
+        nodes.push({ ...nodeOf(c), x, y: mainY });
+        anchors.push([{ x, y: mainY, ghost: c.state === "ghost" }]);
+      }
+    });
+    const links = [];
+    for (let i = 1; i < anchors.length; i += 1) {
+      const from = anchors[i - 1];
+      const to = anchors[i];
+      const ends =
+        from.length === to.length ? from.map((a, k) => [a, to[k]]) : from.length === 1 ? to.map((b) => [from[0], b]) : from.map((a) => [a, to[0]]);
+      for (const [a, b] of ends) {
+        const mid = (a.x + b.x) / 2;
+        const d = a.y === b.y ? `M${a.x} ${a.y} H${b.x}` : `M${a.x} ${a.y} C${mid} ${a.y} ${mid} ${b.y} ${b.x} ${b.y}`;
+        links.push({ d, ghost: b.ghost });
+      }
+    }
+    return { width: pad * 2 + Math.max(0, columns.length - 1) * step, height: hasPair ? 68 : 28, nodes, links };
+  }
+
+  /**
+   * Режим из сохранённого состояния webview. «Спросить обоих» (both) прежней
+   * версии стал «Спросить всех» (all); режим, которого среди доступных нет, —
+   * «Задача с рецензией».
+   */
+  function savedRoute(value, available) {
+    const id = value === "both" ? "all" : value;
+    return available.includes(id) ? id : "review";
   }
 
   /** Бусина действия: форма по виду (команда, чтение, правка, прочее), состояние отдельно. */
@@ -342,7 +489,7 @@
     };
   }
 
-  const api = { effortLevels, defaultEffort, threadLayout, relayView, trackSteps, beadFor, actionCounters, verdictLine };
+  const api = { effortLevels, defaultEffort, threadLayout, relayView, trackSteps, trackGeometry, savedRoute, beadFor, actionCounters, verdictLine };
   globalThis.PanelThread = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();

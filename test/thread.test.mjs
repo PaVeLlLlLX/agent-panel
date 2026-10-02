@@ -20,6 +20,8 @@ const {
   threadLayout,
   relayView,
   trackSteps,
+  trackGeometry,
+  savedRoute,
   beadFor,
   actionCounters,
   verdictLine,
@@ -244,6 +246,96 @@ test("эстафета: прямой ответ после принятой за
   assert.equal(r.active, "claude");
   assert.equal(r.label, "Claude отвечает");
   assert.equal(relayView(state({ stage: "accepted", verdict: "accepted" })).active, "accepted");
+});
+
+test("у Gemini своя гамма — фиолетовая, отличная от Claude и Codex", () => {
+  const gemini = effortLevels("gemini", ["low", "high"]);
+  assert.equal(gemini[1].color, "#A78BFA");
+  assert.notEqual(gemini[1].color, effortLevels("codex", ["low", "high"])[1].color);
+  assert.ok(gemini.every((u) => u.tip.length > 0));
+});
+
+const pairState = (sides, extra = {}) =>
+  state({ stage: "reviewing", round: 1, reviewers: ["codex", "gemini"], pair: { round: 1, sides }, ...extra });
+
+test("эстафета пары: оба проверяют — частицы по обеим веткам", () => {
+  const r = relayView(pairState({ codex: { state: "waiting" }, gemini: { state: "waiting" } }));
+  assert.equal(r.active, "reviewers");
+  assert.equal(r.flow, "to-reviewers");
+  assert.equal(r.label, "Codex и Gemini проверяют");
+  assert.equal(r.pair, true);
+  assert.deepEqual(r.lit, { claude: false, codex: true, gemini: true });
+});
+
+test("эстафета пары: Codex закончил — горит Gemini, отметка Codex, подпись его вердиктом", () => {
+  const r = relayView(pairState({ codex: { state: "done", verdict: "accepted" }, gemini: { state: "waiting" } }));
+  assert.equal(r.active, "gemini");
+  assert.equal(r.flow, "to-gemini");
+  assert.equal(r.label, "Gemini проверяет");
+  assert.equal(r.sub, "Codex: принято");
+  assert.deepEqual(r.marks, { codex: "✓", gemini: "" });
+});
+
+test("эстафета пары: принято обоими и принято без Gemini", () => {
+  const both = relayView(pairState({ codex: { state: "done", verdict: "accepted" }, gemini: { state: "done", verdict: "accepted" } }, { stage: "accepted" }));
+  assert.equal(both.sub, "Codex и Gemini: принято");
+  assert.deepEqual(both.lit, { claude: true, codex: true, gemini: true });
+  const alone = relayView(pairState({ codex: { state: "done", verdict: "accepted" }, gemini: { state: "unchecked", reason: "квота" } }, { stage: "accepted" }));
+  assert.equal(alone.sub, "Codex: принято · Gemini не проверял");
+});
+
+test("эстафета без Gemini — как прежде, вилки нет", () => {
+  const r = relayView(state({ stage: "reviewing", round: 1 }));
+  assert.equal(r.pair, false);
+  assert.equal(r.label, "Codex проверяет");
+  assert.equal(relayView(state({ geminiBusy: true })).label, "Gemini отвечает");
+});
+
+test("дорожка пары: Codex и Gemini одной проверки — ромб; пустые проверки — пустые ромбы", () => {
+  const columns = trackSteps(
+    [{ who: "task" }, { who: "claude" }, { who: "codex", round: 1, mark: "!" }, { who: "gemini", round: 1, mark: "!" }, { who: "claude" },
+      { who: "codex", round: 2, mark: "✓" }, { who: "gemini", round: 2 }],
+    { stage: "reviewing", maxRounds: 3, reviewers: ["codex", "gemini"] },
+  );
+  assert.deepEqual(columns.map((c) => c.who), ["task", "claude", "pair", "claude", "pair", "claude", "pair"]);
+  assert.equal(columns[4].state, "current");
+  assert.equal(columns[4].top.state, "done", "Codex уже ответил");
+  assert.equal(columns[4].bottom.state, "current", "Gemini ещё проверяет");
+  assert.equal(columns[6].state, "ghost");
+  assert.equal(columns[6].bottom.who, "gemini");
+});
+
+test("дорожка пары: «не проверял» сохраняет причину", () => {
+  const columns = trackSteps(
+    [{ who: "task" }, { who: "claude" }, { who: "codex", round: 1, mark: "✓" }, { who: "gemini", round: 1, unchecked: "квота" }],
+    { stage: "accepted", maxRounds: 3, reviewers: ["codex", "gemini"] },
+  );
+  assert.equal(columns[2].bottom.unchecked, "квота");
+});
+
+test("геометрия дорожки: ромб — две кривые из Claude и две в следующий шаг; без пар — одна линия", () => {
+  const columns = trackSteps(
+    [{ who: "task" }, { who: "claude" }, { who: "codex", round: 1, mark: "!" }, { who: "gemini", round: 1, mark: "!" }, { who: "claude" }],
+    { stage: "working", maxRounds: 1, reviewers: ["codex", "gemini"] },
+  );
+  const g = trackGeometry(columns);
+  const codexNode = g.nodes.find((u) => u.who === "codex");
+  const geminiNode = g.nodes.find((u) => u.who === "gemini");
+  assert.equal(codexNode.x, geminiNode.x, "рецензенты одной проверки — в одном столбце");
+  assert.ok(codexNode.y < geminiNode.y, "Codex сверху, Gemini снизу");
+  assert.equal(g.links.filter((l) => l.d.includes("C")).length, 4);
+  assert.ok(g.height > 28);
+  const flat = trackGeometry(trackSteps([{ who: "task" }, { who: "claude" }, { who: "codex", round: 1 }], { stage: "reviewing", maxRounds: 1 }));
+  assert.ok(flat.nodes.every((u) => u.y === flat.nodes[0].y));
+  assert.equal(flat.height, 28);
+});
+
+test("режим из сохранённого состояния: both прежней версии — all; неизвестный — review", () => {
+  const ids = ["review", "all", "claude", "codex", "gemini"];
+  assert.equal(savedRoute("both", ids), "all");
+  assert.equal(savedRoute("gemini", ids), "gemini");
+  assert.equal(savedRoute("gemini", ["review", "all", "claude", "codex"]), "review");
+  assert.equal(savedRoute(undefined, ids), "review");
 });
 
 test("вердикт: ограды кода помнят вид и длину, как src/verdict.ts", () => {
