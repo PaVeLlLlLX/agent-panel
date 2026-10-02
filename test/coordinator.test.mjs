@@ -1441,6 +1441,10 @@ test("проверка пары: один материал и версия у о
   // явно идёт в тексте хода, а не только в agent.md.
   assert.match(gemini.received[0].text, /пробел.*ВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ/s);
   assert.match(gemini.received[0].text, /предписанный самим поручением человека.*ВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА/s);
+  // Бюджет веба — та же фраза, что в agent.md (живой прогон 03.10: ~40 обращений к вебу за проверку).
+  assert.match(gemini.received[0].text, /не больше двух попыток на один сайт, всего не больше ~15 обращений к вебу за проверку/);
+  assert.match(gemini.received[0].text, /пиши «не проверено: <адрес> — <причина>»/);
+  assert.match(gemini.received[0].text, /Непроверенный факт, на котором держится вывод, — это «пробел: …»/);
   assert.doesNotMatch(codex.received[0].text, /методологию эксперимента/, "Codex проверяет как прежде");
   assert.equal(gemini.received[0].heading, "[материал проверки от панели]");
   assert.equal(codex.received[0].snapshot, gemini.received[0].snapshot);
