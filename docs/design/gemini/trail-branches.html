@@ -1,0 +1,152 @@
+<style>
+  .ap { --bg:#1f1f1f; --surface:#2b2b2b; --fg:#cccccc; --quiet:#8b8b8b; --line:rgba(255,255,255,.16); --ghost:rgba(255,255,255,.22);
+        --claude:#DE9C60; --codex:#4CB9C3; --gemini:#A78BFA; --human:#e8e8e8; --warn:#E6B450; --ok:#7CC98A;
+        background:var(--bg); color:var(--fg); padding:16px; border-radius:10px; font:13px/1.4 "Segoe UI",system-ui,sans-serif; }
+  .ap .track { background:var(--surface); border-radius:14px; padding:10px 12px; display:inline-block; }
+  .ap .usage { color:var(--quiet); font-size:11.5px; margin-top:8px; font-variant-numeric:tabular-nums; }
+  .ap .scen { color:var(--quiet); font-size:12px; margin:0 0 10px; }
+  .ap svg text { font:600 9px "Segoe UI",system-ui,sans-serif; }
+  .ap .lbl { font:600 10px "Segoe UI",system-ui,sans-serif; }
+  @keyframes glow { 0%,100%{opacity:.35} 50%{opacity:.9} }
+  .ap .pulse { animation: glow 1.6s ease-in-out infinite; }
+  .legend { display:flex; gap:18px; flex-wrap:wrap; color:var(--quiet); font-size:12px; margin-top:6px; }
+  .legend span { display:inline-flex; align-items:center; gap:6px; }
+</style>
+
+<h2>Дорожка цикла: как показать две ветки</h2>
+<p class="subtitle">Один и тот же момент во всех вариантах: 1-я проверка — у обоих замечания; Claude исправил; 2-я проверка — Codex уже принял, Gemini ещё проверяет; 3-я — впереди, если понадобится. Цвет Gemini здесь фиолетовый — условно, о цвете отдельный вопрос.</p>
+
+<div class="options">
+
+  <div class="option" data-choice="diamond" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Ромб: вилка и слияние</h3>
+      <p>После каждого хода Claude нить расходится на Codex (сверху) и Gemini (снизу) и сходится в следующем ходе Claude. Отметки вердиктов — у каждого рецензента.</p>
+      <div class="ap"><div class="track">
+        <svg width="340" height="84" viewBox="0 0 340 84">
+          <g fill="none" stroke="var(--line)" stroke-width="2">
+            <path d="M22 42 H52"/>
+            <path d="M60 42 C80 42 88 20 108 20"/><path d="M60 42 C80 42 88 64 108 64"/>
+            <path d="M116 20 C136 20 144 42 160 42"/><path d="M116 64 C136 64 144 42 160 42"/>
+            <path d="M168 42 C188 42 196 20 216 20"/><path d="M168 42 C188 42 196 64 216 64"/>
+          </g>
+          <g fill="none" stroke="var(--ghost)" stroke-width="1.5" stroke-dasharray="3 3">
+            <path d="M224 20 C244 20 252 42 268 42"/><path d="M224 64 C244 64 252 42 268 42"/>
+            <path d="M276 42 C296 42 304 20 322 20"/><path d="M276 42 C296 42 304 64 322 64"/>
+          </g>
+          <circle cx="16" cy="42" r="4" fill="var(--quiet)"/>
+          <circle cx="56" cy="42" r="5" fill="var(--claude)"/>
+          <circle cx="112" cy="20" r="5" fill="var(--codex)"/>
+          <circle cx="112" cy="64" r="5" fill="var(--gemini)"/>
+          <circle cx="164" cy="42" r="5" fill="var(--claude)"/>
+          <circle cx="220" cy="20" r="5" fill="var(--codex)"/>
+          <circle cx="220" cy="64" r="10" fill="var(--gemini)" class="pulse"/>
+          <circle cx="220" cy="64" r="7" fill="var(--gemini)"/>
+          <circle cx="272" cy="42" r="5" fill="none" stroke="var(--ghost)" stroke-width="1.5"/>
+          <circle cx="326" cy="20" r="5" fill="none" stroke="var(--ghost)" stroke-width="1.5"/>
+          <circle cx="326" cy="64" r="5" fill="none" stroke="var(--ghost)" stroke-width="1.5"/>
+          <g><rect x="116" y="5" width="12" height="12" rx="6" fill="var(--surface)"/><text x="122" y="14" text-anchor="middle" fill="var(--warn)">!</text></g>
+          <g><rect x="116" y="49" width="12" height="12" rx="6" fill="var(--surface)"/><text x="122" y="58" text-anchor="middle" fill="var(--warn)">!</text></g>
+          <g><rect x="224" y="5" width="12" height="12" rx="6" fill="var(--surface)"/><text x="230" y="14" text-anchor="middle" fill="var(--ok)">✓</text></g>
+        </svg>
+      </div>
+      <div class="usage">Расход задачи — Claude 412 тыс. · Codex 188 тыс. · Gemini 96 тыс. Лимиты — Gemini: неделя 3%, окно 5 ч 11%</div></div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="lanes" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Дорожки по агентам</h3>
+      <p>Три подписанных ряда: Codex сверху, Claude посередине, Gemini снизу. По каждому ряду видна история одного агента — например, все вердикты Gemini подряд.</p>
+      <div class="ap"><div class="track">
+        <svg width="360" height="84" viewBox="0 0 360 84">
+          <text x="0" y="23" class="lbl" fill="var(--codex)">Codex</text>
+          <text x="0" y="45" class="lbl" fill="var(--claude)">Claude</text>
+          <text x="0" y="67" class="lbl" fill="var(--gemini)">Gemini</text>
+          <g stroke="rgba(255,255,255,.05)" stroke-width="10" stroke-linecap="round">
+            <path d="M58 20 H346"/><path d="M58 42 H346"/><path d="M58 64 H346"/>
+          </g>
+          <g fill="none" stroke="var(--line)" stroke-width="2">
+            <path d="M66 42 H92"/>
+            <path d="M100 42 L128 20"/><path d="M100 42 L128 64"/>
+            <path d="M136 20 L164 42"/><path d="M136 64 L164 42"/>
+            <path d="M172 42 L200 20"/><path d="M172 42 L200 64"/>
+          </g>
+          <g fill="none" stroke="var(--ghost)" stroke-width="1.5" stroke-dasharray="3 3">
+            <path d="M208 20 L236 42"/><path d="M208 64 L236 42"/>
+            <path d="M244 42 L272 20"/><path d="M244 42 L272 64"/>
+          </g>
+          <circle cx="62" cy="42" r="4" fill="var(--quiet)"/>
+          <circle cx="96" cy="42" r="5" fill="var(--claude)"/>
+          <circle cx="132" cy="20" r="5" fill="var(--codex)"/>
+          <circle cx="132" cy="64" r="5" fill="var(--gemini)"/>
+          <circle cx="168" cy="42" r="5" fill="var(--claude)"/>
+          <circle cx="204" cy="20" r="5" fill="var(--codex)"/>
+          <circle cx="204" cy="64" r="10" fill="var(--gemini)" class="pulse"/>
+          <circle cx="204" cy="64" r="7" fill="var(--gemini)"/>
+          <circle cx="240" cy="42" r="5" fill="none" stroke="var(--ghost)" stroke-width="1.5"/>
+          <circle cx="276" cy="20" r="5" fill="none" stroke="var(--ghost)" stroke-width="1.5"/>
+          <circle cx="276" cy="64" r="5" fill="none" stroke="var(--ghost)" stroke-width="1.5"/>
+          <g><rect x="136" y="5" width="12" height="12" rx="6" fill="var(--surface)"/><text x="142" y="14" text-anchor="middle" fill="var(--warn)">!</text></g>
+          <g><rect x="136" y="49" width="12" height="12" rx="6" fill="var(--surface)"/><text x="142" y="58" text-anchor="middle" fill="var(--warn)">!</text></g>
+          <g><rect x="208" y="5" width="12" height="12" rx="6" fill="var(--surface)"/><text x="214" y="14" text-anchor="middle" fill="var(--ok)">✓</text></g>
+        </svg>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="junction" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Ромб с узлом сведения</h3>
+      <p>Как A, но ветки сходятся в маленький узел «сведение» с общим итогом проверки (! — вернуть Claude, ✓ — принято, ? — ждём вас). Видно и мнение каждого, и правило «строже побеждает».</p>
+      <div class="ap"><div class="track">
+        <svg width="380" height="84" viewBox="0 0 380 84">
+          <g fill="none" stroke="var(--line)" stroke-width="2">
+            <path d="M22 42 H52"/>
+            <path d="M60 42 C78 42 86 20 104 20"/><path d="M60 42 C78 42 86 64 104 64"/>
+            <path d="M112 20 C128 20 134 42 146 42"/><path d="M112 64 C128 64 134 42 146 42"/>
+            <path d="M152 42 H176"/>
+            <path d="M184 42 C202 42 210 20 228 20"/><path d="M184 42 C202 42 210 64 228 64"/>
+          </g>
+          <g fill="none" stroke="var(--ghost)" stroke-width="1.5" stroke-dasharray="3 3">
+            <path d="M236 20 C252 20 258 42 270 42"/><path d="M236 64 C252 64 258 42 270 42"/>
+            <path d="M276 42 H300"/>
+            <path d="M308 42 C326 42 334 20 352 20"/><path d="M308 42 C326 42 334 64 352 64"/>
+          </g>
+          <circle cx="16" cy="42" r="4" fill="var(--quiet)"/>
+          <circle cx="56" cy="42" r="5" fill="var(--claude)"/>
+          <circle cx="108" cy="20" r="5" fill="var(--codex)"/>
+          <circle cx="108" cy="64" r="5" fill="var(--gemini)"/>
+          <circle cx="149" cy="42" r="6.5" fill="var(--surface)" stroke="var(--warn)" stroke-width="1.5"/>
+          <text x="149" y="45.5" text-anchor="middle" fill="var(--warn)">!</text>
+          <circle cx="180" cy="42" r="5" fill="var(--claude)"/>
+          <circle cx="232" cy="20" r="5" fill="var(--codex)"/>
+          <circle cx="232" cy="64" r="10" fill="var(--gemini)" class="pulse"/>
+          <circle cx="232" cy="64" r="7" fill="var(--gemini)"/>
+          <circle cx="273" cy="42" r="4.5" fill="none" stroke="var(--ghost)" stroke-width="1.5"/>
+          <circle cx="304" cy="42" r="5" fill="none" stroke="var(--ghost)" stroke-width="1.5"/>
+          <circle cx="356" cy="20" r="5" fill="none" stroke="var(--ghost)" stroke-width="1.5"/>
+          <circle cx="356" cy="64" r="5" fill="none" stroke="var(--ghost)" stroke-width="1.5"/>
+          <g><rect x="112" y="5" width="12" height="12" rx="6" fill="var(--surface)"/><text x="118" y="14" text-anchor="middle" fill="var(--warn)">!</text></g>
+          <g><rect x="112" y="49" width="12" height="12" rx="6" fill="var(--surface)"/><text x="118" y="58" text-anchor="middle" fill="var(--warn)">!</text></g>
+          <g><rect x="236" y="5" width="12" height="12" rx="6" fill="var(--surface)"/><text x="242" y="14" text-anchor="middle" fill="var(--ok)">✓</text></g>
+        </svg>
+      </div></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="section">
+  <h3>Как в любом варианте выглядят особые случаи</h3>
+  <div class="ap">
+    <div class="legend">
+      <span><svg width="16" height="16"><circle cx="8" cy="8" r="5" fill="none" stroke="var(--gemini)" stroke-width="1.5" stroke-dasharray="2 2"/></svg> Gemini не проверял (сбой, квота, не успел) — пунктирное кольцо, причина при наведении</span>
+      <span><svg width="16" height="16"><circle cx="8" cy="8" r="5" fill="var(--human)"/></svg> ждём вас</span>
+      <span><svg width="16" height="16"><circle cx="8" cy="8" r="5" fill="none" stroke="var(--ghost)" stroke-width="1.5"/></svg> проверка впереди, если понадобится</span>
+    </div>
+  </div>
+</div>

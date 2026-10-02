@@ -1,0 +1,81 @@
+<style>
+  .option.selected { outline: 3px solid #4f8cff; outline-offset: 2px; }
+  .mv { --bg:#1f1f1f; --surface:#2b2b2b; --pill:#353535; --fg:#cccccc; --strong:#e6e6e6; --quiet:#8b8b8b; --faint:#6b6b6b; --line:rgba(255,255,255,.12); --base:rgba(255,255,255,.16); --edge:rgba(255,255,255,.30);
+        --claude:#DE9C60; --codex:#4CB9C3; --gemini:#A78BFA;
+        background:var(--bg); color:var(--fg); padding:14px; border-radius:10px; font:13px/1.35 "Segoe UI",system-ui,sans-serif; display:flex; gap:24px; flex-wrap:wrap; align-items:flex-end; }
+  .col { width:360px; display:flex; flex-direction:column; gap:8px; }
+  .h { color:var(--quiet); font-size:11px; }
+  .mcard { background:var(--surface); border:1px solid var(--line); border-radius:18px; box-shadow:0 12px 32px rgba(0,0,0,.35); }
+  .rows { padding:6px 12px; }
+  .row { display:grid; grid-template-columns:62px 1fr 128px; align-items:center; gap:8px; height:34px; }
+  .row + .row { border-top:1px solid var(--line); }
+  .name { font-weight:600; font-size:12.5px; }
+  .pillsel { background:var(--pill); border-radius:999px; height:24px; padding:0 10px; display:flex; align-items:center; justify-content:space-between; font-size:12px; color:var(--fg); min-width:0; white-space:nowrap; overflow:hidden; }
+  .pillsel::after { content:"▾"; color:var(--quiet); margin-left:6px; }
+  .foot { display:flex; justify-content:space-between; padding:2px 14px 8px; font-size:11px; color:var(--faint); }
+  .stack { display:flex; flex-direction:column; gap:6px; }
+  .c2 { padding:8px 12px 6px; }
+  .c2 .top { display:flex; align-items:center; gap:8px; }
+  .c2 .lvl { flex:1; font-weight:600; font-size:13.5px; }
+  .c2 .ag { font-size:11px; color:var(--quiet); }
+  .c2 .more { color:var(--quiet); font-size:14px; padding:0 2px; }
+  .c2 .pillsel { max-width:52%; }
+  .tip { font-size:11px; color:var(--quiet); margin-top:4px; }
+</style>
+
+<h2>Карточки моделей: компактно для трёх агентов</h2>
+<p class="subtitle">Ширина всплывающего окна — 360 px, как сейчас. Для сравнения: сейчас карточка одного агента — около 128 px в высоту, две — около 264 px; третья такой же высоты дала бы около 400 px. Подписей «сколько уровней» нет — видно по узлам; название уровня — при наведении на узел.</p>
+
+<div class="options">
+  <div class="option" data-choice="rows" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Одна карточка, строка на агента</h3>
+      <p>Имя, модель и короткая нить уровня в одной строке. Все три — около 125 px, меньше, чем сейчас занимает один агент. «По умолчанию» и «новая сессия» — ссылками внизу карточки для всех.</p>
+      <div class="mv"><div class="col"><span class="h">≈ 125 px</span>
+        <div class="mcard">
+          <div class="rows">
+            <div class="row"><span class="name" style="color:var(--claude)">Claude</span><span class="pillsel">Opus 5.5</span><svg width="128" height="24" data-thread="claude" data-n="5" data-sel="3"></svg></div>
+            <div class="row"><span class="name" style="color:var(--codex)">Codex</span><span class="pillsel">GPT-6-Sol</span><svg width="128" height="24" data-thread="codex" data-n="5" data-sel="2"></svg></div>
+            <div class="row"><span class="name" style="color:var(--gemini)">Gemini</span><span class="pillsel">Gemini 3.1 Pro</span><svg width="128" height="24" data-thread="gemini" data-n="2" data-sel="1"></svg></div>
+          </div>
+          <div class="foot"><span>вернуть по умолчанию</span><span>новая сессия…</span></div>
+        </div></div></div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="slim" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Три тонкие карточки</h3>
+      <p>Карточки остаются раздельными, как сейчас, но ниже: нить тоньше, ссылки спрятаны в «⋯». Все три — около 210 px, примерно как две нынешние. Сохраняется крупная подпись уровня.</p>
+      <div class="mv"><div class="col"><span class="h">≈ 210 px</span>
+        <div class="stack">
+          <div class="mcard c2"><div class="top"><span class="lvl" style="color:var(--claude)">Высокий</span><span class="pillsel">Opus 5.5</span><span class="ag">Claude</span><span class="more">⋯</span></div><svg width="334" height="26" data-thread="claude" data-n="5" data-sel="3" data-wide="1"></svg></div>
+          <div class="mcard c2"><div class="top"><span class="lvl" style="color:var(--codex)">Средний</span><span class="pillsel">GPT-6-Sol</span><span class="ag">Codex</span><span class="more">⋯</span></div><svg width="334" height="26" data-thread="codex" data-n="5" data-sel="2" data-wide="1"></svg></div>
+          <div class="mcard c2"><div class="top"><span class="lvl" style="color:var(--gemini)">Высокий</span><span class="pillsel">Gemini 3.1 Pro</span><span class="ag">Gemini</span><span class="more">⋯</span></div><svg width="334" height="26" data-thread="gemini" data-n="2" data-sel="1" data-wide="1"></svg></div>
+        </div></div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const COLOR = { claude: "#DE9C60", codex: "#4CB9C3", gemini: "#A78BFA" };
+  for (const svg of document.querySelectorAll("svg[data-thread]")) {
+    const c = COLOR[svg.dataset.thread], n = +svg.dataset.n, sel = +svg.dataset.sel;
+    const w = +svg.getAttribute("width"), h = +svg.getAttribute("height"), y = h / 2;
+    const x0 = 8, x1 = w - 8, step = n > 1 ? (x1 - x0) / (n - 1) : 0;
+    const xs = Array.from({ length: n }, (_, i) => x0 + i * step);
+    let s = `<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="rgba(255,255,255,.16)" stroke-width="2"/>`;
+    s += `<line x1="${x0}" y1="${y}" x2="${xs[sel]}" y2="${y}" stroke="${c}" stroke-width="${2 + sel * 0.6}" stroke-linecap="round"/>`;
+    for (let k = 0; k < 4; k++) s += `<circle r="1.4" fill="#fff" style="filter:drop-shadow(0 0 3px ${c})"><animateMotion dur="${2.2 - sel * 0.3}s" begin="-${k * 0.5}s" repeatCount="indefinite" path="M${x0} ${y} L${xs[sel]} ${y}"/></circle>`;
+    xs.forEach((x, i) => {
+      if (i === sel) s += `<circle cx="${x}" cy="${y}" r="6" fill="${c}" style="filter:drop-shadow(0 0 5px ${c})"/>`;
+      else if (i < sel) s += `<circle cx="${x}" cy="${y}" r="3.5" fill="${c}"/>`;
+      else s += `<circle cx="${x}" cy="${y}" r="3.5" fill="#2b2b2b" stroke="rgba(255,255,255,.30)" stroke-width="1.5"/>`;
+    });
+    svg.innerHTML = s;
+  }
+})();
+</script>

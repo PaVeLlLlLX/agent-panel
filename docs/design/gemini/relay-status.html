@@ -1,0 +1,115 @@
+<style>
+  .option.selected { outline: 3px solid #4f8cff; outline-offset: 2px; }
+  .ap { background:#1f1f1f; color:#cccccc; padding:10px 12px; border-radius:10px; font:13px/1.3 "Segoe UI",system-ui,sans-serif; display:grid; gap:10px; }
+  .row { display:flex; align-items:center; gap:12px; }
+  .txt { display:flex; flex-direction:column; min-width:0; }
+  .txt b { color:#e6e6e6; font-weight:600; }
+  .txt b.ok { color:#7CC98A; }
+  .txt small { color:#8b8b8b; font-size:11.5px; }
+  .dots { display:inline-flex; gap:4px; margin-left:4px; }
+  .dots i { width:6px; height:6px; border-radius:50%; background:rgba(255,255,255,.22); display:block; }
+  .dots i.d { background:#8b8b8b; }
+  .cap { color:#8b8b8b; font-size:11px; width:150px; flex-shrink:0; }
+</style>
+
+<h2>«Эстафета» в шапке с тремя участниками</h2>
+<p class="subtitle">Сейчас: огонёк Claude слева, Codex справа, частицы бегут к тому, кто работает. Ниже — три способа добавить Gemini, каждый в четырёх состояниях. Подписи справа одинаковые во всех вариантах.</p>
+
+<div class="options">
+  <div class="option" data-choice="fork" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Вилка — как дорожка A</h3>
+      <p>Нить от Claude раздваивается на Codex (сверху) и Gemini (снизу). Шапка выше на ~12 px. Частицы бегут по той ветке, где идёт работа.</p>
+      <div class="ap" data-variant="fork"></div>
+    </div>
+  </div>
+  <div class="option" data-choice="stack" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Пара в капсуле</h3>
+      <p>Прямая нить, как сейчас; справа вместо одного огонька — капсула с двумя: Codex сверху, Gemini снизу. Шапка выше на ~12 px. Не видно, к кому из двоих бегут частицы.</p>
+      <div class="ap" data-variant="stack"></div>
+    </div>
+  </div>
+  <div class="option" data-choice="split" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Раздвоенный огонёк</h3>
+      <p>Размер прежний (92×14): правый огонёк поделён пополам — верх Codex, низ Gemini; закончивший тускнеет. Компактно, но половинки мелкие.</p>
+      <div class="ap" data-variant="split"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const C = { claude: "#DE9C60", codex: "#4CB9C3", gemini: "#A78BFA", ok: "#7CC98A", line: "rgba(255,255,255,.16)", bg: "#1f1f1f", surface: "#2b2b2b" };
+  const STATES = [
+    { id: "claude", cap: "Claude исправляет", title: "Claude работает", sub: "Есть замечания", dots: 1 },
+    { id: "both", cap: "проверяют оба", title: "Codex и Gemini проверяют", sub: "", dots: 2 },
+    { id: "gemini", cap: "Codex уже принял", title: "Gemini проверяет", sub: "Codex: принято", dots: 2 },
+    { id: "accepted", cap: "оба приняли", title: "Работа принята", sub: "Codex и Gemini: принято", dots: 2, ok: true },
+  ];
+  const glow = (c) => `style="filter:drop-shadow(0 0 4px ${c})"`;
+  const particles = (path, color, reverse) =>
+    [0, 0.32, 0.64, 0.96, 1.28].map((d) =>
+      `<circle r="1.5" fill="#fff" style="filter:drop-shadow(0 0 3px ${color})"><animateMotion dur="1.6s" begin="-${d}s" repeatCount="indefinite" path="${path}" ${reverse ? 'keyPoints="1;0" keyTimes="0;1" calcMode="linear"' : ""}/></circle>`).join("");
+  const light = (x, y, r, color, on) => `<circle cx="${x}" cy="${y}" r="${r}" fill="${color}" opacity="${on ? 1 : 0.4}" ${on ? glow(color) : ""}/>`;
+  const badge = (x, y) => `<circle cx="${x}" cy="${y}" r="5" fill="${C.bg}"/><text x="${x}" y="${y + 3}" text-anchor="middle" font-size="8" font-weight="700" fill="${C.ok}">✓</text>`;
+
+  function fork(s) {
+    const toCodex = "M14 14 L54 14 C66 14 70 6 82 6", toGemini = "M14 14 L54 14 C66 14 70 22 82 22";
+    let lines, parts = "";
+    if (s === "accepted") {
+      lines = `<defs><linearGradient id="gc"><stop offset="0" stop-color="${C.claude}"/><stop offset="1" stop-color="${C.codex}"/></linearGradient><linearGradient id="gg"><stop offset="0" stop-color="${C.claude}"/><stop offset="1" stop-color="${C.gemini}"/></linearGradient></defs>
+        <path d="${toCodex}" fill="none" stroke="url(#gc)" stroke-width="2"/><path d="${toGemini}" fill="none" stroke="url(#gg)" stroke-width="2"/>`;
+    } else {
+      lines = `<path d="${toCodex}" fill="none" stroke="${C.line}" stroke-width="2"/><path d="${toGemini}" fill="none" stroke="${C.line}" stroke-width="2"/>`;
+    }
+    if (s === "claude") parts = particles(toCodex, C.claude, true) ;
+    if (s === "both") parts = particles(toCodex, C.codex) + particles(toGemini, C.gemini);
+    if (s === "gemini") parts = particles(toGemini, C.gemini);
+    const on = (who) => s === "accepted" || (s === "claude" && who === "claude") || (s === "both" && who !== "claude") || (s === "gemini" && who === "gemini");
+    return `<svg width="96" height="28" viewBox="0 0 96 28">${lines}${parts}
+      ${light(8, 14, 7, C.claude, on("claude"))}${light(88, 6, 5.5, C.codex, on("codex"))}${light(88, 22, 5.5, C.gemini, on("gemini"))}
+      ${s === "gemini" ? badge(80, 3) : ""}${s === "accepted" ? `<circle cx="40" cy="14" r="7" fill="${C.bg}"/><text x="40" y="18" text-anchor="middle" font-size="10" font-weight="700" fill="${C.ok}">✓</text>` : ""}</svg>`;
+  }
+
+  function stack(s) {
+    const path = "M14 14 L78 14";
+    const lineColor = s === "accepted" ? `url(#gs)` : C.line;
+    const glowColor = s === "both" ? "#B9A6E8" : s === "gemini" ? C.gemini : s === "claude" ? C.claude : C.codex;
+    const parts = s === "claude" ? particles(path, C.claude, true) : s === "accepted" ? "" : particles(path, glowColor);
+    const on = (who) => s === "accepted" || (s === "claude" && who === "claude") || (s === "both" && who !== "claude") || (s === "gemini" && who === "gemini");
+    return `<svg width="98" height="28" viewBox="0 0 98 28"><defs><linearGradient id="gs" gradientUnits="userSpaceOnUse" x1="8" y1="0" x2="80" y2="0"><stop offset="0" stop-color="${C.claude}"/><stop offset="1" stop-color="${C.gemini}"/></linearGradient></defs>
+      <path d="${path}" fill="none" stroke="${lineColor}" stroke-width="2"/>${parts}
+      <rect x="78" y="1" width="18" height="26" rx="9" fill="${C.surface}" stroke="${C.line}"/>
+      ${light(8, 14, 7, C.claude, on("claude"))}${light(87, 8, 5, C.codex, on("codex"))}${light(87, 20, 5, C.gemini, on("gemini"))}
+      ${s === "gemini" ? badge(74, 5) : ""}${s === "accepted" ? `<circle cx="42" cy="14" r="7" fill="${C.bg}"/><text x="42" y="18" text-anchor="middle" font-size="10" font-weight="700" fill="${C.ok}">✓</text>` : ""}</svg>`;
+  }
+
+  function split(s) {
+    const path = "M14 8 L78 8";
+    const parts = s === "claude" ? particles(path, C.claude, true) : s === "accepted" ? "" : particles(path, s === "gemini" ? C.gemini : "#B9A6E8");
+    const codexOn = s === "accepted" || s === "both", geminiOn = s === "accepted" || s === "both" || s === "gemini";
+    return `<svg width="94" height="16" viewBox="0 0 94 16"><defs><linearGradient id="gp" gradientUnits="userSpaceOnUse" x1="8" y1="0" x2="84" y2="0"><stop offset="0" stop-color="${C.claude}"/><stop offset="1" stop-color="${C.gemini}"/></linearGradient></defs>
+      <path d="M7 8 L85 8" fill="none" stroke="${s === "accepted" ? "url(#gp)" : C.line}" stroke-width="2"/>
+      ${parts}
+      ${light(8, 8, 7, C.claude, s === "claude" || s === "accepted")}
+      <path d="M78 8 A7 7 0 0 1 92 8 Z" fill="${C.codex}" opacity="${codexOn ? 1 : 0.4}" ${codexOn ? glow(C.codex) : ""}/>
+      <path d="M78 8 A7 7 0 0 0 92 8 Z" fill="${C.gemini}" opacity="${geminiOn ? 1 : 0.4}" ${geminiOn ? glow(C.gemini) : ""}/>
+      ${s === "accepted" ? `<circle cx="46" cy="8" r="7" fill="${C.bg}"/><text x="46" y="12" text-anchor="middle" font-size="10" font-weight="700" fill="${C.ok}">✓</text>` : ""}</svg>`;
+  }
+
+  const DRAW = { fork, stack, split };
+  for (const box of document.querySelectorAll(".ap[data-variant]")) {
+    const draw = DRAW[box.dataset.variant];
+    box.innerHTML = STATES.map((st) => {
+      const svg = box.dataset.variant === "split" && st.id === "accepted" ? draw(st.id) : draw(st.id);
+      const dots = [0, 1, 2].map((i) => `<i class="${i < st.dots ? "d" : ""}"></i>`).join("");
+      return `<div class="row"><span class="cap">${st.cap}</span>${svg}<span class="txt"><b class="${st.ok ? "ok" : ""}">${st.title}</b>${st.sub ? `<small>${st.sub}</small>` : ""}</span><span class="dots">${dots}</span></div>`;
+    }).join("");
+  }
+})();
+</script>
