@@ -675,16 +675,18 @@ byId("эстафета").addEventListener("click", () => {
 // --- Режим отправки: переключатель и меню -----------------------------------------------
 
 let route = savedRoute(saved.route, ROUTES.map((m) => m.id));
+/** Сохранённое намерение (route) переживает перезапуск как есть; показывается и уходит — только доступный режим. */
+const shownRoute = () => (availableRoutes().some((m) => m.id === route) ? route : "review");
 
 function showRoute() {
-  const current = availableRoutes().find((m) => m.id === route) ?? ROUTES[0];
+  const current = availableRoutes().find((m) => m.id === shownRoute()) ?? ROUTES[0];
   byId("маршрут-название").textContent = current.name;
   byId("маршрут").title = `${routeHint(current)}. Нажмите — выбрать режим`;
   byId("режимы").replaceChildren(
     ...availableRoutes().map((m) => {
       const k = makeEl("button");
       k.setAttribute("role", "radio");
-      k.setAttribute("aria-checked", String(m.id === route));
+      k.setAttribute("aria-checked", String(m.id === shownRoute()));
       k.setAttribute("aria-label", m.name);
       k.dataset.route = m.id;
       k.title = `${m.name}: ${routeHint(m)}`;
@@ -701,7 +703,7 @@ function showRoute() {
     ...availableRoutes().map((m) => {
       const k = makeEl("button");
       k.setAttribute("role", "menuitemradio");
-      k.setAttribute("aria-checked", String(m.id === route));
+      k.setAttribute("aria-checked", String(m.id === shownRoute()));
       k.dataset.route = m.id;
       k.title = routeHint(m);
       const checkmark = icon(ICONS.check);
@@ -1031,7 +1033,7 @@ function send() {
   if (!text) return;
   // Своё сообщение человек хочет видеть: беседа снова следует за концом.
   scrollToBottom(true);
-  vscode.postMessage({ type: "send", text: text, route: route });
+  vscode.postMessage({ type: "send", text: text, route: shownRoute() });
   inputBox.value = "";
   fitInput();
 }

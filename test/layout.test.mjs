@@ -810,3 +810,22 @@ test("плашка правил: причина и кнопка «Добавит
   assert.equal(r.plateAfter, false);
   assert.equal(r.button, "Отправить на проверку");
 });
+
+test("сохранённый режим «gemini» без agy — показывается и уходит «Задача с рецензией»", { skip: NO_BROWSER }, () => {
+  const r = open(
+    js`
+    route = "gemini";
+    showRoute();
+    result.checked = [...getById("режимы").querySelectorAll("[role=radio][aria-checked=true]")]
+      .map((k) => k.dataset.route);
+    result.name = getById("маршрут-название").textContent;
+    getById("ввод").value = "вопрос";
+    getById("отправить").click();
+    result.sent = window.sentMessages.filter((m) => m.type === "send");
+  `,
+    { withUi: true },
+  );
+  assert.deepEqual(r.checked, ["review"]);
+  assert.equal(r.name, "Задача с рецензией");
+  assert.deepEqual(r.sent, [{ type: "send", text: "вопрос", route: "review" }]);
+});
