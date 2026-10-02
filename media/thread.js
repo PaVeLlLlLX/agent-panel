@@ -155,7 +155,7 @@
           ? { left: center(mode - 1), width: center(mode) - center(mode - 1), lit: selected >= mode }
           : null,
       litWidth: Math.min(center(selected), solidEnd) - 10,
-      litTop: isDeep ? 20.5 : 21,
+      litTop: isDeep ? 13.5 : 14,
       litHeight: isDeep ? 3 : 2,
       litFill: level.fork ? palette.flare : `linear-gradient(90deg, ${palette.start} 0%, ${level.color} 100%)`,
       flowWidth: center(selected) - 10,

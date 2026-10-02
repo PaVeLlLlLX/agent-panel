@@ -767,7 +767,10 @@ byId("добавить-правила").addEventListener("click", () => vscode.p
 const MODELS = {
   claude: { options: undefined, choice: { model: "", effort: "" }, error: "" },
   codex: { options: undefined, choice: { model: "", effort: "" }, error: "" },
+  gemini: { options: undefined, choice: { model: "", effort: "" }, error: "" },
 };
+const MODEL_AGENTS = ["claude", "codex", "gemini"];
+const shownAgents = () => MODEL_AGENTS.filter((a) => a !== "gemini" || geminiPresent);
 let listsRequested = false;
 const MODE_LABELS = { bypassPermissions: "Без вопросов", default: "Спрашивать" };
 let claudeMode = "bypassPermissions";
@@ -806,18 +809,18 @@ function modelCaption(agent) {
 
 function showModels() {
   byId("модели-кнопка").title =
-    `Модель и уровень рассуждения каждого агента; меняются со следующего хода. ` +
-    `Сейчас — Claude: ${modelCaption("claude")}; Codex: ${modelCaption("codex")}; ` +
-    `разрешения Claude: ${(MODE_LABELS[claudeMode] ?? claudeMode).toLowerCase()}`;
-  const errors = ["claude", "codex"].filter((a) => MODELS[a].error).map((a) => `${NAMES[a]}: ${MODELS[a].error}`);
-  const waiting = listsRequested && ["claude", "codex"].some((a) => !MODELS[a].options && !MODELS[a].error);
+    `Модель и уровень рассуждения каждого агента; меняются со следующего хода. Сейчас — ` +
+    shownAgents().map((a) => `${NAMES[a]}: ${modelCaption(a)}`).join("; ") +
+    `; разрешения Claude: ${(MODE_LABELS[claudeMode] ?? claudeMode).toLowerCase()}`;
+  const errors = shownAgents().filter((a) => MODELS[a].error).map((a) => `${NAMES[a]}: ${MODELS[a].error}`);
+  const waiting = listsRequested && shownAgents().some((a) => !MODELS[a].options && !MODELS[a].error);
   byId("модели-состояние").textContent = errors.length
     ? `Список не получен — ${errors.join("; ")}. Откройте ещё раз, чтобы повторить.`
     : waiting
       ? "Загружаю список моделей…"
       : "";
-
-  for (const agent of ["claude", "codex"]) {
+  byId("строка-gemini").hidden = !geminiPresent;
+  for (const agent of shownAgents()) {
     const { options, choice } = MODELS[agent];
     const model = byId(`модель-${agent}`);
     if (!options) {
@@ -843,24 +846,22 @@ const px = (n) => `${n}px`;
 
 function drawThread(agent, model) {
   const strip = byId(`нить-${agent}`);
-  const caption = byId(`нить-уровень-${agent}`);
+  const row = byId(`строка-${agent}`);
   const levels = effortLevels(agent, model?.efforts ?? []);
   const isDefault = defaultEffort(model);
   const choice = MODELS[agent].choice.effort;
-  const r = threadLayout(agent, levels, choice, isDefault, strip.clientWidth || 328);
+  const r = threadLayout(agent, levels, choice, isDefault, strip.clientWidth || 128);
   // Вернуть «по умолчанию» можно, пока выбран явный уровень: у Claude умолчание
   // неизвестно, и никакой узел его не заменяет (рецензия Codex 28.09).
   byId(`нить-сброс-${agent}`).hidden = !r || !choice;
+  const name = modelCaption(agent).replace(/ · .*$/, "");
   if (!r) {
-    caption.textContent = MODELS[agent].options ? "Без уровней" : "—";
-    caption.style.color = "var(--тихий)";
-    caption.title = MODELS[agent].options ? "У этой модели уровень рассуждения не выбирается" : "";
-    strip.replaceChildren();
+    row.title = `${NAMES[agent]}: ${name}`;
+    strip.replaceChildren(...(MODELS[agent].options ? [makeEl("span", "нить-пусто-текст", "без уровней")] : []));
     return;
   }
-  caption.textContent = r.label;
-  caption.style.color = r.color ? `color-mix(in srgb, ${r.color} var(--нить-доля-подписи), var(--сильный))` : "var(--тихий)";
-  caption.title = choice ? "" : isDefault ? "Уровень модели по умолчанию" : "Уровень выбирает агент: своего умолчания CLI не сообщает";
+  // Название уровня — подсказкой строки и узла: пояснений в карточке нет (владелец, 02.10).
+  row.title = `${NAMES[agent]}: ${choice || isDefault ? `${name} · ${r.label}` : name}`;
 
   const parts = [chunk("нить-основа", { left: "10px", width: px(r.baseWidth) })];
   if (r.modeSegment) {
@@ -868,7 +869,7 @@ function drawThread(agent, model) {
     parts.push(
       chunk("нить-режим", {
         left: px(r.modeSegment.left),
-        top: "21px",
+        top: "14px",
         height: "2px",
         width: px(r.modeSegment.width),
         background: `repeating-linear-gradient(90deg, ${color} 0 4px, transparent 4px 8px)`,
@@ -964,7 +965,7 @@ function receiveModels(d) {
   showModels();
 }
 
-for (const agent of ["claude", "codex"]) {
+for (const agent of MODEL_AGENTS) {
   byId(`модель-${agent}`).addEventListener("change", (event) => {
     const m = MODELS[agent];
     const model = event.target.value;
@@ -985,13 +986,13 @@ for (const agent of ["claude", "codex"]) {
   });
 }
 
-for (const agent of ["claude", "codex"]) {
-  // Подтверждение спрашивает расширение: новая сессия — необратимое забывание.
-  byId(`новая-сессия-${agent}`).addEventListener("click", () => vscode.postMessage({ type: "newSession", agent: agent }));
+for (const agent of MODEL_AGENTS) {
   byId(`нить-сброс-${agent}`).addEventListener("click", () => {
     select(agent, { model: MODELS[agent].choice.model, effort: "" });
   });
 }
+// Для какого агента — спросит расширение; подтверждение — там же: новая сессия — необратимое забывание.
+byId("новая-сессия").addEventListener("click", () => vscode.postMessage({ type: "newSession" }));
 
 byId("без-вопросов").addEventListener("click", () => {
   claudeMode = claudeMode === "bypassPermissions" ? "default" : "bypassPermissions";

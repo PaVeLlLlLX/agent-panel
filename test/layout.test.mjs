@@ -246,19 +246,19 @@ test("модели: список по кнопке, модель — списк�
     const model = getById("модель-claude");
     result.models = [...model.options].map((o) => o.textContent);
     result.claudeWithoutSelection = nodes("claude").every((u) => u.getAttribute("aria-checked") === "false");
-    result.claudeCaption = getById("нить-уровень-claude").textContent;
+    result.claudeCaption = getById("строка-claude").title;
     model.value = "opus";
     model.dispatchEvent(new Event("change"));
     result.levels = nodes("claude").map((u) => u.getAttribute("aria-label"));
     result.tooltip = nodes("claude")[2].title;
     nodes("claude")[2].click();
     result.selected = nodes("claude").map((u) => u.getAttribute("aria-checked"));
-    result.captionAfter = getById("нить-уровень-claude").textContent;
+    result.captionAfter = getById("строка-claude").title;
     result.ringsAtMax = getById("нить-claude").querySelectorAll(".нить-кольцо").length;
     model.value = "haiku";
     model.dispatchEvent(new Event("change"));
     result.haikuNodes = nodes("claude").length;
-    result.haikuCaption = getById("нить-уровень-claude").textContent;
+    result.haikuCaption = getById("нить-claude").textContent;
 
     result.codexDefaults = nodes("codex").map((u) => u.getAttribute("aria-checked"));
     result.dash = !!getById("нить-codex").querySelector(".нить-по-умолчанию");
@@ -286,14 +286,14 @@ test("модели: список по кнопке, модель — списк�
   assert.equal(r.listRequests, 1, "повторное открытие не должно заново поднимать агентов");
   assert.deepEqual(r.models, ["по умолчанию (Sonnet 5)", "Opus", "Haiku"]);
   assert.equal(r.claudeWithoutSelection, true, "умолчание Claude неизвестно — узел наугад не выбирается");
-  assert.equal(r.claudeCaption, "По умолчанию");
+  assert.equal(r.claudeCaption, "Claude: по умолчанию");
   assert.deepEqual(r.levels, ["Низкое", "Высокое", "Максимум"]);
   assert.match(r.tooltip, /Без ограничений на расход/, "определение уровня — в подсказке узла");
   assert.deepEqual(r.selected, ["false", "false", "true"]);
-  assert.equal(r.captionAfter, "Максимум");
+  assert.equal(r.captionAfter, "Claude: Opus · Максимум");
   assert.equal(r.ringsAtMax, 2, "«Максимум» — двойное кольцо");
   assert.equal(r.haikuNodes, 0, "у модели без уровней выбирать нечего");
-  assert.equal(r.haikuCaption, "Без уровней");
+  assert.equal(r.haikuCaption, "без уровней");
   assert.deepEqual(r.codexDefaults, ["true", "false", "false"], "умолчание из каталога выбрано");
   assert.equal(r.dash, true);
   assert.equal(r.forkCount, 3, "«Ультра» — нить ветвится");
@@ -732,17 +732,46 @@ test("устаревшая недельная доля Claude показана �
   assert.match(r.usage, /Claude: неделя 4% \(на 20\.09 05:14\)/);
 });
 
-test("ссылка «новая сессия» в карточке модели просит расширение начать сессию заново", { skip: NO_BROWSER }, () => {
+test("ссылка «новая сессия…» просит расширение спросить, для какого агента", { skip: NO_BROWSER }, () => {
   const r = open(
     js`
     getById("модели-кнопка").click();
-    getById("новая-сессия-claude").click();
-    getById("новая-сессия-codex").click();
+    getById("новая-сессия").click();
     result.requests = window.sentMessages.filter((m) => m.type === "newSession");
   `,
     { withUi: true },
   );
-  assert.deepEqual(r.requests, [{ type: "newSession", agent: "claude" }, { type: "newSession", agent: "codex" }]);
+  assert.deepEqual(r.requests, [{ type: "newSession" }]);
+});
+
+test("«Модели» с Gemini: три строки в одной карточке, ниже нынешней карточки одного агента", { skip: NO_BROWSER }, () => {
+  const r = open(
+    js`
+    postToPage({ type: "gemini", present: true, rules: { ok: true } });
+    getById("модели-кнопка").click();
+    postToPage({ type: "models", agent: "gemini", choice: { model: "gemini-3.1-pro", effort: "" }, options: [
+      { id: "", label: "по умолчанию (модель из настроек agy)", description: "", efforts: [] },
+      { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro", description: "", efforts: ["low", "high"], defaultEffort: "high" },
+    ] });
+    result.rows = [...document.querySelectorAll(".модели-строка")].filter((s) => !s.hidden).map((s) => s.dataset.agent);
+    result.height = Math.round(document.querySelector(".модели-карточка").getBoundingClientRect().height);
+    const nodes = [...getById("нить-gemini").querySelectorAll(".нить-узел")];
+    result.levels = nodes.map((u) => u.getAttribute("aria-label"));
+    result.selected = nodes.map((u) => u.getAttribute("aria-checked"));
+    nodes[0].click();
+    result.choice = window.sentMessages.filter((m) => m.type === "setModel").at(-1);
+    result.stripes = document.querySelectorAll("#модели-кнопка .полоски span").length;
+    result.text = document.querySelector(".модели-карточка").textContent;
+  `,
+    { withUi: true },
+  );
+  assert.deepEqual(r.rows, ["claude", "codex", "gemini"]);
+  assert.ok(r.height <= 145, `карточка выше 145 px: ${r.height}`);
+  assert.deepEqual(r.levels, ["Низкое", "Высокое"]);
+  assert.deepEqual(r.selected, ["false", "true"], "умолчание семейства — «Высокое»");
+  assert.deepEqual(r.choice, { type: "setModel", agent: "gemini", model: "gemini-3.1-pro", effort: "low" });
+  assert.equal(r.stripes, 3);
+  assert.doesNotMatch(r.text, /у Pro|у Flash|уровня/, "пояснений о числе уровней нет");
 });
 
 test("с Gemini пять режимов, без него — четыре; «Задача с рецензией» называет обоих рецензентов", { skip: NO_BROWSER }, () => {

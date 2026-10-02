@@ -417,25 +417,28 @@ function markup(webview: vscode.Webview, context: vscode.ExtensionContext): stri
   </section>
   <div id="модели-панель" class="модели" hidden>
     <span id="модели-состояние"></span>
-    <div class="нить-карточка" data-agent="claude">
-      <div class="нить-заголовок">
-        <span id="нить-уровень-claude" class="нить-уровень">По умолчанию</span>
-        <span class="нить-агент">Claude</span>
+    <div class="модели-карточка">
+      <div id="строка-claude" class="модели-строка" data-agent="claude">
+        <span class="модели-имя">Claude</span>
         <select id="модель-claude" class="нить-модель" disabled aria-label="Модель Claude"></select>
+        <div id="нить-claude" class="нить-полоса" role="radiogroup" aria-label="Уровень рассуждения Claude"></div>
+        <button id="нить-сброс-claude" class="ссылка-кнопка нить-сброс" hidden aria-label="Вернуть уровень Claude по умолчанию" title="Вернуть уровень по умолчанию: решает агент">↺</button>
       </div>
-      <div id="нить-claude" class="нить-полоса" role="radiogroup" aria-label="Уровень рассуждения Claude"></div>
-      <button id="нить-сброс-claude" class="ссылка-кнопка нить-сброс" hidden title="Вернуть уровень по умолчанию: решает агент">↺ вернуть по умолчанию</button>
-      <button id="новая-сессия-claude" class="ссылка-кнопка новая-сессия" title="Начать новую сессию Claude: прежний разговор останется в истории, но агент его помнить не будет. Нужна, когда длинная сессия дорого обходится каждому ходу">новая сессия</button>
-    </div>
-    <div class="нить-карточка" data-agent="codex">
-      <div class="нить-заголовок">
-        <span id="нить-уровень-codex" class="нить-уровень">По умолчанию</span>
-        <span class="нить-агент">Codex</span>
+      <div id="строка-codex" class="модели-строка" data-agent="codex">
+        <span class="модели-имя">Codex</span>
         <select id="модель-codex" class="нить-модель" disabled aria-label="Модель Codex"></select>
+        <div id="нить-codex" class="нить-полоса" role="radiogroup" aria-label="Уровень рассуждения Codex"></div>
+        <button id="нить-сброс-codex" class="ссылка-кнопка нить-сброс" hidden aria-label="Вернуть уровень Codex по умолчанию" title="Вернуть уровень по умолчанию модели">↺</button>
       </div>
-      <div id="нить-codex" class="нить-полоса" role="radiogroup" aria-label="Уровень рассуждения Codex"></div>
-      <button id="нить-сброс-codex" class="ссылка-кнопка нить-сброс" hidden title="Вернуть уровень по умолчанию модели">↺ вернуть по умолчанию</button>
-      <button id="новая-сессия-codex" class="ссылка-кнопка новая-сессия" title="Начать новую сессию Codex: прежний разговор останется в истории, но агент его помнить не будет. Нужна, когда длинная сессия дорого обходится каждому ходу">новая сессия</button>
+      <div id="строка-gemini" class="модели-строка" data-agent="gemini" hidden>
+        <span class="модели-имя">Gemini</span>
+        <select id="модель-gemini" class="нить-модель" disabled aria-label="Модель Gemini"></select>
+        <div id="нить-gemini" class="нить-полоса" role="radiogroup" aria-label="Уровень рассуждения Gemini"></div>
+        <button id="нить-сброс-gemini" class="ссылка-кнопка нить-сброс" hidden aria-label="Вернуть уровень Gemini по умолчанию" title="Вернуть уровень по умолчанию семейства">↺</button>
+      </div>
+      <div class="модели-низ">
+        <button id="новая-сессия" class="ссылка-кнопка новая-сессия" title="Начать новую сессию агента: прежний разговор останется в истории, но агент его помнить не будет. Нужна, когда длинная сессия дорого обходится каждому ходу">новая сессия…</button>
+      </div>
     </div>
   </div>
   <div class="поле">
@@ -446,7 +449,7 @@ function markup(webview: vscode.Webview, context: vscode.ExtensionContext): stri
       <div id="маршрут-меню" class="меню" role="menu" hidden></div>
       <button id="без-вопросов" class="пилюля прозрачная" aria-pressed="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 13 3.6v4.1c0 3-2.1 5.3-5 6.4-2.9-1.1-5-3.4-5-6.4V3.6z"/></svg><span class="подпись">Без вопросов</span></button>
       <span class="распорка"></span>
-      <button id="модели-кнопка" class="пилюля" aria-expanded="false" aria-controls="модели-панель"><span class="полоски" aria-hidden="true"><span></span><span></span></span>Модели</button>
+      <button id="модели-кнопка" class="пилюля" aria-expanded="false" aria-controls="модели-панель"><span class="полоски" aria-hidden="true"><span></span><span></span><span></span></span>Модели</button>
       <button id="отправить" class="круглая отправить" aria-label="Отправить" title="Отправить (Ctrl+Enter)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 12.5V3.5M4 7.5 8 3.5l4 4"/></svg></button>
     </div>
   </div>
