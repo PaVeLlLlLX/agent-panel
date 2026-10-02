@@ -48,21 +48,23 @@ class Stub {
   decisions = [];
 }
 
-function room(limit = 3, options = {}) {
+function room(limit = 3, options = {}, { withGemini = false } = {}) {
   const catalog = mkdtempSync(join(tmpdir(), "panel-"));
   const journal = new Journal(join(catalog, "j.sqlite"));
   journal.ensureRoom("r", catalog);
   const claude = new Stub("claude");
   const codex = new Stub("codex");
+  const gemini = withGemini ? new Stub("gemini") : undefined;
   const events = [];
   const k = new Coordinator(claude, codex, journal, {
     room: "r",
     cwd: catalog,
     maxAutoRounds: limit,
     onEvent: (e) => events.push(e),
+    ...(gemini ? { gemini } : {}),
     ...options,
   });
-  return { k, claude, codex, journal, events, catalog };
+  return { k, claude, codex, gemini, journal, events, catalog };
 }
 
 /**
@@ -724,7 +726,7 @@ test("запрос разрешения не попадает в материа�
 
 test("спросить обоих: оба отвечают, друг другу ничего не пересылается", async () => {
   const { k, claude, codex, journal } = room();
-  await k.fromHuman("ваше мнение?", "both");
+  await k.fromHuman("ваше мнение?", "all");
   assert.equal(claude.received.length, 1);
   assert.equal(codex.received.length, 1);
   turn(k, "codex", "мнение Codex");
@@ -1143,7 +1145,7 @@ test("память: сбой поиска не задерживает сообщ
 
 test("память: ничего не найдено — сообщение как есть, без служебных строк", async () => {
   const { k, claude, journal, events } = room(3, { memory: async () => undefined });
-  await k.fromHuman("вопрос", "both");
+  await k.fromHuman("вопрос", "all");
   assert.equal(claude.received[0].text, "вопрос");
   assert.equal(systemEvents(events).filter((e) => /Память/.test(e.text ?? "")).length, 0);
   journal.close();
@@ -1293,5 +1295,83 @@ test("новая сессия: удержанная передача этому 
   await k.newSession("codex");
   assert.equal(k.state.held, undefined);
   assert.ok(systemEvents(events).some((e) => /снята/.test(e.text ?? "")));
+  journal.close();
+});
+
+// ---------------------------------------------------------------------------
+// Gemini вне цикла рецензии
+// ---------------------------------------------------------------------------
+
+test("«Спросить всех» — трём агентам независимо, друг другу ничего не передаётся", async () => {
+  const { k, claude, codex, gemini, journal } = room(3, {}, { withGemini: true });
+  await k.fromHuman("какой бейзлайн взять?", "all");
+  assert.equal(claude.received.length, 1);
+  assert.equal(codex.received.length, 1);
+  assert.equal(gemini.received.length, 1);
+  turn(k, "gemini", "логистическая регрессия");
+  await sleep(30);
+  assert.equal(claude.received.length, 1, "ответ Gemini никому не пересылается");
+  assert.deepEqual(k.state.reviewers, ["codex", "gemini"]);
+  journal.close();
+});
+
+test("без Gemini «Спросить всех» — двоим, «Только Gemini» — объяснение", async () => {
+  const { k, claude, codex, events, journal } = room();
+  await k.fromHuman("вопрос", "all");
+  assert.equal(claude.received.length, 1);
+  assert.equal(codex.received.length, 1);
+  await k.fromHuman("вопрос Gemini", "gemini");
+  assert.ok(systemEvents(events).some((e) => /Gemini не подключён/.test(e.text)));
+  assert.deepEqual(k.state.reviewers, ["codex"]);
+  assert.equal(k.state.geminiBusy, false);
+  journal.close();
+});
+
+test("«Прервать», «Остановить» и новая сессия касаются и Gemini", async () => {
+  const { k, gemini, journal } = room(3, {}, { withGemini: true });
+  journal.bindGeminiConversation("r", "g-1");
+  await k.interruptAll();
+  assert.equal(gemini.interrupted, 1);
+  await k.stopAll();
+  assert.equal(gemini.stopped, 1);
+  await k.newSession("gemini");
+  assert.equal(journal.binding("r").geminiConversationId, undefined);
+  journal.close();
+});
+
+test("занятость Gemini видна в состоянии комнаты", async () => {
+  const { k, gemini, journal } = room(3, {}, { withGemini: true });
+  gemini.busy = true;
+  assert.equal(k.state.geminiBusy, true);
+  journal.close();
+});
+
+test("квота Gemini запрашивается после его хода, не чаще раза в период", async () => {
+  let calls = 0;
+  const { k, journal } = room(
+    3,
+    { geminiUsage: async () => ((calls += 1), { weekPercent: 3, windowPercent: 11 }), geminiUsageEveryMs: 60_000 },
+    { withGemini: true },
+  );
+  turn(k, "gemini", "ответ");
+  await waitFor(() => k.state.usage.limits.geminiWeek?.percent === 3, "квота Gemini");
+  assert.equal(k.state.usage.limits.geminiWeek.session, 11);
+  turn(k, "gemini", "ещё ответ");
+  await sleep(30);
+  assert.equal(calls, 1);
+  journal.close();
+});
+
+test("неудачный повторный запрос квоты Gemini помечает прежнюю устаревшей", async () => {
+  let call = 0;
+  const { k, journal } = room(
+    3,
+    { geminiUsage: async () => ((call += 1), call === 1 ? { weekPercent: 3 } : undefined), geminiUsageEveryMs: 0 },
+    { withGemini: true },
+  );
+  await k.refreshGeminiUsage();
+  await k.refreshGeminiUsage();
+  assert.equal(k.state.usage.limits.geminiWeek.percent, 3);
+  assert.equal(k.state.usage.limits.geminiWeek.stale, true);
   journal.close();
 });

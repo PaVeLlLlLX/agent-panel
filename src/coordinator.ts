@@ -5,12 +5,14 @@
  * Сообщение уходило обоим сразу, ответы расходились по времени, и Claude пять
  * секунд спорил с замечанием, которое Codex уже отозвал. Отсюда устройство:
  *
- * **Три маршрута с разным смыслом.**
- *   review — задача с рецензией: Claude работает, Codex проверяет, строго по
- *            очереди, пока рецензент не примет работу;
- *   both   — вопрос обоим: оба отвечают независимо, друг другу ничего не
- *            пересылается;
- *   claude / codex — прямой вопрос одному, без пересылки.
+ * **Маршруты с разным смыслом.**
+ *   review — задача с рецензией: Claude работает, Codex (и Gemini, если он
+ *            подключён) проверяет, строго по очереди, пока рецензент не
+ *            примет работу;
+ *   all    — вопрос всем подключённым агентам: каждый отвечает независимо,
+ *            друг другу ничего не пересылается;
+ *   claude / codex / gemini — прямой вопрос одному, без пересылки; Gemini
+ *            без agy отвечает объяснением, а не отправкой.
  *
  * **Цикл кончается по итогу, а не по счёту.** Рецензент выносит вердикт.
  * «Принято» завершает цикл, «есть замечания» возвращает работу. Предел
@@ -55,8 +57,19 @@ import { Journal } from "./journal.js";
 import { Snapshot, describeSnapshot, takeSnapshot } from "./snapshot.js";
 import { VERDICT_REQUEST, Verdict, parseVerdict } from "./verdict.js";
 import type { ClaudeUsage } from "./claudeUsage.js";
+import type { GeminiUsage } from "./geminiUsage.js";
 
-export type Route = "review" | "both" | "claude" | "codex";
+export type Route = "review" | "all" | "claude" | "codex" | "gemini";
+
+/** Кто проверяет работу Claude: Codex — всегда, Gemini — если agy найден. */
+export type Reviewer = "codex" | "gemini";
+
+/** Агенты комнаты: у каждого процесс, расход и лимиты. */
+type Worker = "claude" | "codex" | "gemini";
+const WORKERS = new Set<AgentId>(["claude", "codex", "gemini"]);
+
+const GEMINI_MISSING =
+  "Gemini не подключён: agy не найден. Установите Antigravity CLI или укажите путь в agentPanel.geminiCommand.";
 
 export type Stage = "idle" | "working" | "reviewing" | "held" | "accepted" | "stopped";
 
@@ -70,6 +83,9 @@ export interface ClaudeWeek {
   /** Последний запрос не дал доли: показывается прежняя, со временем. */
   readonly stale?: boolean;
 }
+
+/** Квота Gemini из agy /usage; session — пятичасовое окно. */
+export type GeminiWeek = ClaudeWeek;
 
 export interface RoomState {
   readonly task: string | undefined;
@@ -95,14 +111,20 @@ export interface RoomState {
   readonly auto: boolean;
   readonly claudeBusy: boolean;
   readonly codexBusy: boolean;
+  readonly geminiBusy: boolean;
+  /** Кто проверяет: ["codex"] или ["codex", "gemini"]. */
+  readonly reviewers: readonly Reviewer[];
   /** Расход с начала текущей задачи и последние сведения о лимитах агентов. */
   readonly usage: {
-    readonly task: { readonly claude: TurnUsage; readonly codex: TurnUsage };
+    readonly task: { readonly claude: TurnUsage; readonly codex: TurnUsage; readonly gemini: TurnUsage };
     readonly limits: {
       readonly claude?: LimitInfo;
       readonly codex?: LimitInfo;
+      readonly gemini?: LimitInfo;
       /** Недельная доля Claude из /usage (см. claudeUsage.ts). */
       readonly claudeWeek?: ClaudeWeek;
+      /** Квота Gemini из agy /usage (geminiUsage.ts). */
+      readonly geminiWeek?: GeminiWeek;
     };
   };
   readonly snapshot: string | undefined;
@@ -130,6 +152,12 @@ export interface CoordinatorOptions {
   readonly claudeUsage?: () => Promise<ClaudeUsage | undefined>;
   /** Не чаще, мс; по умолчанию 5 минут. */
   readonly claudeUsageEveryMs?: number;
+  /** Gemini — второй рецензент (src/adapters/gemini.ts). Нет — agy не найден: проверяет один Codex. */
+  readonly gemini?: Adapter;
+  /** Квота Gemini (geminiUsage.ts): после его хода и при открытии, не чаще geminiUsageEveryMs. */
+  readonly geminiUsage?: () => Promise<GeminiUsage | undefined>;
+  /** Не чаще, мс; по умолчанию 5 минут. */
+  readonly geminiUsageEveryMs?: number;
   /**
    * Предел токенов задачи (вход и выход обоих агентов). Достигнут —
    * автоматическая передача ждёт решения человека. 0 или нет — без предела.
@@ -166,11 +194,14 @@ export class Coordinator {
   /** Сколько раз человек останавливал или прерывал: сообщение, ждавшее поиска, после этого не уходит. */
   #stops = 0;
   /** Расход с начала задачи и последние сведения о лимитах. */
-  #usage: { claude: TurnUsage; codex: TurnUsage } = { claude: NO_USAGE, codex: NO_USAGE };
-  #limits: { claude?: LimitInfo; codex?: LimitInfo } = {};
+  #usage: Record<Worker, TurnUsage> = { claude: NO_USAGE, codex: NO_USAGE, gemini: NO_USAGE };
+  #limits: Partial<Record<Worker, LimitInfo>> = {};
   #claudeWeek: ClaudeWeek | undefined;
+  #geminiWeek: GeminiWeek | undefined;
   #shareAskedAt = 0;
   #shareInFlight = false;
+  #geminiAskedAt = 0;
+  #geminiInFlight = false;
   #stage: Stage = "idle";
   #task: string | undefined;
   #round = 0;
@@ -224,9 +255,15 @@ export class Coordinator {
       auto: this.#auto,
       claudeBusy: this.claude.busy,
       codexBusy: this.codex.busy,
+      geminiBusy: this.options.gemini?.busy ?? false,
+      reviewers: this.#reviewers(),
       usage: {
-        task: { claude: this.#usage.claude, codex: this.#usage.codex },
-        limits: { ...this.#limits, ...(this.#claudeWeek ? { claudeWeek: this.#claudeWeek } : {}) },
+        task: { claude: this.#usage.claude, codex: this.#usage.codex, gemini: this.#usage.gemini },
+        limits: {
+          ...this.#limits,
+          ...(this.#claudeWeek ? { claudeWeek: this.#claudeWeek } : {}),
+          ...(this.#geminiWeek ? { geminiWeek: this.#geminiWeek } : {}),
+        },
       },
       snapshot: this.#roomSnapshot?.id,
     };
@@ -234,43 +271,42 @@ export class Coordinator {
 
   handle(event: PanelEvent): void {
     const agent = event.agent;
-    const snapshot =
-      agent === "claude" || agent === "codex"
-        ? (this.#snapshots.get(agent) ?? this.#roomSnapshot)
-        : this.#roomSnapshot;
+    const snapshot = WORKERS.has(agent) ? (this.#snapshots.get(agent) ?? this.#roomSnapshot) : this.#roomSnapshot;
     const marked: PanelEvent = snapshot ? { ...event, snapshot: snapshot.id } : event;
     this.journal.append(this.options.room, marked);
     this.options.onEvent(marked);
 
-    if (agent !== "claude" && agent !== "codex") return;
+    if (!WORKERS.has(agent)) return;
+    const worker = agent as Worker;
 
     if (marked.visibility === "turn" && FORWARDED_KINDS.has(marked.kind)) {
-      const buffer = this.#buffers.get(agent) ?? [];
+      const buffer = this.#buffers.get(worker) ?? [];
       buffer.push(marked);
-      this.#buffers.set(agent, buffer);
+      this.#buffers.set(worker, buffer);
     }
 
-    if (agent === "claude" && marked.kind === "turn_completed") void this.refreshClaudeUsage();
+    if (worker === "claude" && marked.kind === "turn_completed") void this.refreshClaudeUsage();
+    if (worker === "gemini" && marked.kind === "turn_completed") void this.refreshGeminiUsage();
 
     if (marked.kind === "approval_requested" && marked.callId) {
-      this.#requests.set(marked.callId, agent);
+      this.#requests.set(marked.callId, worker);
       this.#refresh();
     } else if (marked.kind === "approval_decided" && marked.callId) {
       this.#requests.delete(marked.callId);
       this.#refresh();
     } else if (marked.kind === "turn_completed" && marked.unsolicited) {
-      if (marked.limit) this.#limits[agent] = marked.limit;
-      void this.#autonomousFinished(agent);
+      if (marked.limit) this.#limits[worker] = marked.limit;
+      void this.#autonomousFinished(worker);
     } else if (marked.kind === "turn_completed") {
-      if (marked.limit) this.#limits[agent] = marked.limit;
-      void this.#turnFinished(agent, marked.failed === true, marked.denials ?? [], marked.usage);
+      if (marked.limit) this.#limits[worker] = marked.limit;
+      void this.#turnFinished(worker, marked);
     } else if (marked.kind === "error" && marked.failed) {
-      for (const [id, who] of this.#requests) if (who === agent) this.#requests.delete(id);
-      void this.#agentCrashed(agent);
+      for (const [id, who] of this.#requests) if (who === worker) this.#requests.delete(id);
+      void this.#agentCrashed(worker);
     } else if (marked.kind === "turn_started") {
       if (marked.unsolicited) {
         this.#report(
-          `${NAMES[agent]} продолжил сам${marked.text ? ` (${marked.text})` : ""}. ` +
+          `${NAMES[worker]} продолжил сам${marked.text ? ` (${marked.text})` : ""}. ` +
             "Этот ход не относится к задаче: рецензенту не передаётся и в расход задачи не входит; " +
             "сообщения ему подождут конца хода.",
         );
@@ -313,6 +349,37 @@ export class Coordinator {
   /** Новой доли нет: прежняя остаётся, но помечена (рецензия Codex 28.09); нулём не становится. */
   #shareStale(): void {
     if (this.#claudeWeek && !this.#claudeWeek.stale) this.#claudeWeek = { ...this.#claudeWeek, stale: true };
+  }
+
+  /** Квота Gemini: не чаще geminiUsageEveryMs; сбой — прежняя помечается устаревшей, нулём не становится. */
+  async refreshGeminiUsage(): Promise<void> {
+    const ask = this.options.geminiUsage;
+    if (!ask || this.#geminiInFlight) return;
+    const period = this.options.geminiUsageEveryMs ?? 5 * 60_000;
+    if (this.#geminiAskedAt && Date.now() - this.#geminiAskedAt < period) return;
+    this.#geminiInFlight = true;
+    this.#geminiAskedAt = Date.now();
+    const markStale = () => {
+      if (this.#geminiWeek && !this.#geminiWeek.stale) this.#geminiWeek = { ...this.#geminiWeek, stale: true };
+    };
+    try {
+      const quota = await ask();
+      if (quota) {
+        this.#geminiWeek = {
+          percent: quota.weekPercent,
+          ...(quota.windowPercent !== undefined ? { session: quota.windowPercent } : {}),
+          ...(quota.weekResets ? { resets: quota.weekResets } : {}),
+          at: Date.now(),
+        };
+      } else {
+        markStale();
+      }
+    } catch {
+      markStale();
+    } finally {
+      this.#geminiInFlight = false;
+      this.#refresh();
+    }
   }
 
   async fromHuman(text: string, route: Route): Promise<void> {
@@ -359,8 +426,14 @@ export class Coordinator {
       });
     } else {
       const direct: Target = { role: "direct", cycle: undefined };
-      for (const recipient of route === "both" ? (["claude", "codex"] as const) : [route as AgentId]) {
-        await this.#send({ to: recipient, prompt, target: direct, snapshot: this.#roomSnapshot });
+      if (route === "gemini" && !this.options.gemini) {
+        this.#report(GEMINI_MISSING);
+      } else {
+        const recipients: AgentId[] =
+          route === "all" ? ["claude", "codex", ...(this.options.gemini ? (["gemini"] as const) : [])] : [route as AgentId];
+        for (const recipient of recipients) {
+          await this.#send({ to: recipient, prompt, target: direct, snapshot: this.#roomSnapshot });
+        }
       }
     }
     this.#refresh();
@@ -394,8 +467,7 @@ export class Coordinator {
   }
 
   #taskTokens(): number {
-    const { claude, codex } = this.#usage;
-    return claude.input + claude.output + codex.input + codex.output;
+    return Object.values(this.#usage).reduce((sum, u) => sum + u.input + u.output, 0);
   }
 
   #limitReason(what: string): string {
@@ -424,7 +496,8 @@ export class Coordinator {
   async answerApproval(id: string, choice: ApprovalChoice): Promise<void> {
     const agent = this.#requests.get(id);
     if (!agent) return;
-    const adapter = agent === "claude" ? this.claude : this.codex;
+    const adapter = this.#adapter(agent);
+    if (!adapter) return;
     const accepted = (await adapter.answerApproval?.(id, choice)) ?? false;
     // Не принят — запрос уже закрыт на стороне агента; карточка не должна висеть.
     if (!accepted) this.#requests.delete(id);
@@ -445,7 +518,7 @@ export class Coordinator {
     this.#stops += 1;
     this.#resetWait("stopped");
     this.#queue.length = 0;
-    await Promise.allSettled([this.claude.stop(), this.codex.stop()]);
+    await Promise.allSettled(this.#adapters().map((a) => a.stop()));
     this.#refresh();
   }
 
@@ -454,8 +527,9 @@ export class Coordinator {
    * не помнит. Нужна, когда возобновляемая сессия разрослась: каждый ход
    * возобновляет её целиком, а расход растёт с длиной контекста.
    */
-  async newSession(agent: "claude" | "codex"): Promise<void> {
-    const adapter = agent === "claude" ? this.claude : this.codex;
+  async newSession(agent: Worker): Promise<void> {
+    const adapter = this.#adapter(agent);
+    if (!adapter) return;
     const previousSession = adapter.sessionId;
     // Журнал — раньше остановки: закрытие панели во время неё не вернёт
     // прежнюю привязку (рецензия Codex 28.09).
@@ -490,7 +564,7 @@ export class Coordinator {
     // (рецензии Codex 28.09); пересылки цикла сняты выше.
     const removed = this.#queue.length;
     this.#queue.length = 0;
-    await Promise.allSettled([this.claude.interrupt(), this.codex.interrupt()]);
+    await Promise.allSettled(this.#adapters().map((a) => a.interrupt()));
     // Написанное человеком уже после нажатия (пока агенты прерывались, оно
     // встало в очередь) — новое намерение: отправить (рецензия Codex 28.09).
     await this.#flushQueue();
@@ -517,7 +591,7 @@ export class Coordinator {
     this.#held = undefined;
     this.#lastWork = undefined;
     this.#taskMemory = undefined;
-    this.#usage = { claude: NO_USAGE, codex: NO_USAGE };
+    this.#usage = { claude: NO_USAGE, codex: NO_USAGE, gemini: NO_USAGE };
     this.#trail = [{ who: "task" }];
     this.#task = task;
     this.#round = 0;
@@ -549,16 +623,14 @@ export class Coordinator {
     return removedCount;
   }
 
-  async #turnFinished(
-    agent: AgentId,
-    failed: boolean,
-    denials: readonly string[],
-    usage?: TurnUsage,
-  ): Promise<void> {
+  async #turnFinished(agent: Worker, ended: PanelEvent): Promise<void> {
+    const failed = ended.failed === true;
+    const denials = ended.denials ?? [];
+    const usage = ended.usage;
     const target = this.#targets.get(agent)?.shift() ?? { role: "direct", cycle: undefined };
     // Расход — задаче, к циклу которой относится ход: поздний ход прежней
     // задачи и прямой вопрос в неё не идут (рецензия Codex 28.09).
-    if (usage && (agent === "claude" || agent === "codex") && target.cycle !== undefined && target.cycle === this.#cycle) {
+    if (usage && target.cycle !== undefined && target.cycle === this.#cycle) {
       this.#usage[agent] = addUsage(this.#usage[agent], usage);
     }
     const material = this.#take(agent);
@@ -597,7 +669,7 @@ export class Coordinator {
    * (иначе ответ на следующее сообщение остался бы без адресата), его
    * реплики к материалу задачи не добавляются.
    */
-  async #autonomousFinished(agent: AgentId): Promise<void> {
+  async #autonomousFinished(agent: Worker): Promise<void> {
     this.#take(agent);
     await this.#flushQueue();
     this.#refresh();
@@ -710,7 +782,7 @@ export class Coordinator {
     this.#report(reason);
   }
 
-  async #agentCrashed(agent: AgentId): Promise<void> {
+  async #agentCrashed(agent: Worker): Promise<void> {
     const waited = (this.#targets.get(agent) ?? []).some((c) => c.cycle !== undefined && this.#isCurrent(c.cycle));
     this.#targets.delete(agent);
     this.#buffers.delete(agent);
@@ -729,7 +801,11 @@ export class Coordinator {
   }
 
   async #send(o: Outgoing): Promise<void> {
-    const adapter = o.to === "claude" ? this.claude : this.codex;
+    const adapter = this.#adapter(o.to);
+    if (!adapter) {
+      this.#report(`${NAMES[o.to]} не подключён — сообщение не отправлено.`);
+      return;
+    }
     if (adapter.busy) {
       // Новее от того же цикла тому же адресату вытесняет старое.
       if (o.target.cycle !== undefined) {
@@ -788,7 +864,12 @@ export class Coordinator {
         this.#queue.splice(i, 1);
         continue;
       }
-      const adapter = o.to === "claude" ? this.claude : this.codex;
+      const adapter = this.#adapter(o.to);
+      if (!adapter) {
+        // Агента нет в комнате: ждать нечего, сообщение снимается.
+        this.#queue.splice(i, 1);
+        continue;
+      }
       if (adapter.busy) {
         i += 1;
         continue;
@@ -796,6 +877,21 @@ export class Coordinator {
       this.#queue.splice(i, 1);
       await this.#send(o);
     }
+  }
+
+  #adapter(agent: AgentId): Adapter | undefined {
+    if (agent === "claude") return this.claude;
+    if (agent === "codex") return this.codex;
+    if (agent === "gemini") return this.options.gemini;
+    return undefined;
+  }
+
+  #adapters(): Adapter[] {
+    return [this.claude, this.codex, ...(this.options.gemini ? [this.options.gemini] : [])];
+  }
+
+  #reviewers(): Reviewer[] {
+    return this.options.gemini ? ["codex", "gemini"] : ["codex"];
   }
 
   #report(text: string): void {

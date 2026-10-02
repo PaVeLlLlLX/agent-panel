@@ -27,7 +27,7 @@ import { fetchClaudeUsage } from "./claudeUsage.js";
 
 let room: Room | undefined;
 
-const ROUTES = new Set<Route>(["review", "both", "claude", "codex"]);
+const ROUTES = new Set<Route>(["review", "all", "claude", "codex"]);
 const CHOICES = new Set<ApprovalChoice>(["allow", "allowSession", "deny"]);
 
 type SelectableAgent = "claude" | "codex";
