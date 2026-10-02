@@ -28,6 +28,7 @@ const { Coordinator } = require("../out/coordinator.js");
 const { Journal } = require("../out/journal.js");
 const { resolveCodexCommand } = require("../out/codexBinary.js");
 const { resolveGeminiCommand } = require("../out/geminiBinary.js");
+const { agySettingsPath, checkReadOnlyRules, ensureReviewerAgent, reviewerAgentPath, rulesRefusal } = require("../out/geminiSetup.js");
 const { runMemorySearch } = require("../out/memory.js");
 
 const SUBAGENT = process.argv.includes("--subagent");
@@ -67,7 +68,22 @@ const codex = new CodexAdapter(
 const geminiLaunch = GEMINI ? resolveGeminiCommand("agy", process.env.LOCALAPPDATA, process.env.PATH) : undefined;
 if (GEMINI && !geminiLaunch) throw new Error("agy не найден");
 const gemini = geminiLaunch
-  ? new GeminiAdapter({ command: geminiLaunch.command, shell: geminiLaunch.shell, cwd: dir, model: "gemini-3.8-flash", effort: "low" }, accept)
+  ? new GeminiAdapter(
+      {
+        command: geminiLaunch.command,
+        shell: geminiLaunch.shell,
+        cwd: dir,
+        model: "gemini-3.8-flash",
+        effort: "low",
+        // Как делает панель перед запуском Gemini: без этого агента "agent-panel-reviewer"
+        // не существовало бы, а правила «только чтение» не проверялись бы повторно.
+        beforeStart: () => {
+          ensureReviewerAgent(reviewerAgentPath(homedir()));
+          return rulesRefusal(checkReadOnlyRules(agySettingsPath(homedir())), agySettingsPath(homedir()));
+        },
+      },
+      accept,
+    )
   : undefined;
 let lastState;
 coordinator = new Coordinator(claude, codex, journal, {

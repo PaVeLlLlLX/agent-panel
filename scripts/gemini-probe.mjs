@@ -21,14 +21,7 @@ import { join } from "node:path";
 const require = createRequire(import.meta.url);
 const { GeminiAdapter } = require("../out/adapters/gemini.js");
 const { resolveGeminiCommand } = require("../out/geminiBinary.js");
-const {
-  agySettingsPath,
-  checkReadOnlyRules,
-  ensureReviewerAgent,
-  reviewerAgentMarkdown,
-  reviewerAgentPath,
-  rulesRefusal,
-} = require("../out/geminiSetup.js");
+const { agySettingsPath, checkReadOnlyRules, reviewerAgentMarkdown, rulesRefusal } = require("../out/geminiSetup.js");
 const { fetchGeminiUsage } = require("../out/geminiUsage.js");
 
 const KEEP_DEFAULT = process.argv.includes("--keep-default-components");
@@ -63,12 +56,6 @@ const make = (resume) =>
       agent: AGENT,
       model: "gemini-3.8-flash",
       effort: "low",
-      // Как делает панель перед запуском Gemini: без этого агента
-      // "agent-panel-reviewer" не существовало бы, а правила не проверялись бы повторно.
-      beforeStart: () => {
-        ensureReviewerAgent(reviewerAgentPath(homedir()));
-        return rulesRefusal(checkReadOnlyRules(agySettingsPath(homedir())), agySettingsPath(homedir()));
-      },
       ...(resume ? { resumeConversationId: resume } : {}),
       onSessionId: (id) => (conversation = id),
     },
@@ -89,37 +76,47 @@ const ask = async (adapter, text) => {
   return events.slice(from);
 };
 
-const a = make();
-const read = await ask(a, "Прочитай train.py в папке проекта и назови значение SEED. Ответь только числом.");
-const write = await ask(a, "Создай файл out.txt с текстом x, затем выполни команду echo probe. Одной строкой скажи, что удалось.");
-const web = await ask(a, "Открой https://pypi.org/pypi/scikit-learn/json и назови info.version со ссылкой на страницу.");
-await a.stop();
-const b = make(conversation);
-const resumed = await ask(b, "Какое значение SEED ты назвал в первом ответе этого разговора? Ответь только числом.");
-await b.stop();
-const usage = await fetchGeminiUsage({ command: launch.command, shell: launch.shell });
-const after = execFileSync("git", ["status", "--porcelain"], { cwd: dir, encoding: "utf8" });
+// a/b объявлены снаружи — чтобы finally видел их и остановил даже при сбое хода
+// (например, когда turnEnd не дождался за 5 минут): иначе настоящий agy и
+// пробный агент в ~/.gemini/config/agents остались бы висеть.
+let a;
+let b;
+try {
+  a = make();
+  const read = await ask(a, "Прочитай train.py в папке проекта и назови значение SEED. Ответь только числом.");
+  const write = await ask(a, "Создай файл out.txt с текстом x, затем выполни команду echo probe. Одной строкой скажи, что удалось.");
+  const web = await ask(a, "Открой https://pypi.org/pypi/scikit-learn/json и назови info.version со ссылкой на страницу.");
+  await a.stop();
+  b = make(conversation);
+  const resumed = await ask(b, "Какое значение SEED ты назвал в первом ответе этого разговора? Ответь только числом.");
+  await b.stop();
+  const usage = await fetchGeminiUsage({ command: launch.command, shell: launch.shell });
+  const after = execFileSync("git", ["status", "--porcelain"], { cwd: dir, encoding: "utf8" });
 
-// Пути в параметрах вызовов — JSON-текст, обратные косые там удвоены.
-const normalize = (s) => s.replace(/\\\\/g, "/").replace(/\\/g, "/").toLowerCase();
-const absolutePaths = (text) => text.match(/[A-Za-z]:(?:\\\\|\\|\/)[^"]*/g) ?? [];
-const readPaths = read.filter((e) => e.kind === "tool_call").flatMap((e) => absolutePaths(e.text ?? ""));
-const report = {
-  agent: AGENT,
-  excludeDefaultComponents: !KEEP_DEFAULT,
-  readAnswer: read.filter((e) => e.kind === "message").map((e) => e.text).join(" "),
-  // Абсолютные пути инструментов чтения — все внутри папки проекта; относительные — внутри по определению.
-  readInsideProject: readPaths.every((p) => normalize(p).startsWith(normalize(dir))),
-  readTools: read.filter((e) => e.kind === "tool_call").map((e) => e.tool),
-  readIncomplete: read.find((e) => e.kind === "turn_completed")?.incomplete ?? null,
-  writeDenied: write.filter((e) => e.kind === "approval_decided").map((e) => e.text),
-  filesUnchanged: before === after && !existsSync(join(dir, "out.txt")),
-  webTools: web.filter((e) => e.kind === "tool_call").map((e) => e.tool),
-  webAnswer: web.filter((e) => e.kind === "message").map((e) => e.text).join(" "),
-  resumedAnswer: resumed.filter((e) => e.kind === "message").map((e) => e.text).join(" "),
-  tokensPerTurn: [read, write, web, resumed].map((t) => t.find((e) => e.kind === "turn_completed")?.usage ?? null),
-  usage,
-};
-// Пробный агент — не агент панели: в настройках владельца он не остаётся.
-rmSync(join(agentFile, ".."), { recursive: true, force: true });
-console.log(JSON.stringify(report, null, 1));
+  // Пути в параметрах вызовов — JSON-текст, обратные косые там удвоены.
+  const normalize = (s) => s.replace(/\\\\/g, "/").replace(/\\/g, "/").toLowerCase();
+  const absolutePaths = (text) => text.match(/[A-Za-z]:(?:\\\\|\\|\/)[^"]*/g) ?? [];
+  const readPaths = read.filter((e) => e.kind === "tool_call").flatMap((e) => absolutePaths(e.text ?? ""));
+  const report = {
+    agent: AGENT,
+    excludeDefaultComponents: !KEEP_DEFAULT,
+    readAnswer: read.filter((e) => e.kind === "message").map((e) => e.text).join(" "),
+    // Абсолютные пути инструментов чтения — все внутри папки проекта; относительные — внутри по определению.
+    readInsideProject: readPaths.every((p) => normalize(p).startsWith(normalize(dir))),
+    readTools: read.filter((e) => e.kind === "tool_call").map((e) => e.tool),
+    readIncomplete: read.find((e) => e.kind === "turn_completed")?.incomplete ?? null,
+    writeDenied: write.filter((e) => e.kind === "approval_decided").map((e) => e.text),
+    filesUnchanged: before === after && !existsSync(join(dir, "out.txt")),
+    webTools: web.filter((e) => e.kind === "tool_call").map((e) => e.tool),
+    webAnswer: web.filter((e) => e.kind === "message").map((e) => e.text).join(" "),
+    resumedAnswer: resumed.filter((e) => e.kind === "message").map((e) => e.text).join(" "),
+    tokensPerTurn: [read, write, web, resumed].map((t) => t.find((e) => e.kind === "turn_completed")?.usage ?? null),
+    usage,
+  };
+  console.log(JSON.stringify(report, null, 1));
+} finally {
+  await a?.stop();
+  await b?.stop();
+  // Пробный агент — не агент панели: в настройках владельца он не остаётся, даже при сбое хода.
+  rmSync(join(agentFile, ".."), { recursive: true, force: true });
+}
