@@ -525,7 +525,7 @@ test("режим отправки: переключатель, меню по н�
     js`
     result.buttonCount = getById("режимы").querySelectorAll("[role=radio]").length;
     result.title = getById("маршрут-название").textContent;
-    getById("режимы").querySelector("[data-route=both]").click();
+    getById("режимы").querySelector("[data-route=all]").click();
     result.afterToggle = getById("маршрут-название").textContent;
     getById("маршрут").click();
     result.menuOpen = !getById("маршрут-меню").hidden;
@@ -540,7 +540,7 @@ test("режим отправки: переключатель, меню по н�
   );
   assert.equal(r.buttonCount, 4);
   assert.equal(r.title, "Задача с рецензией");
-  assert.equal(r.afterToggle, "Спросить обоих");
+  assert.equal(r.afterToggle, "Спросить всех");
   assert.equal(r.menuOpen, true);
   assert.equal(r.menuClosed, true);
   assert.equal(r.checked, "codex");
@@ -582,8 +582,8 @@ test("отказ человека в карточке окрашивает бу�
 test("режим: после выбора фокус остаётся на переключателе или возвращается на название", { skip: NO_BROWSER }, () => {
   const r = open(
     js`
-    getById("режимы").querySelector("[data-route=both]").focus();
-    getById("режимы").querySelector("[data-route=both]").click();
+    getById("режимы").querySelector("[data-route=all]").focus();
+    getById("режимы").querySelector("[data-route=all]").click();
     result.afterToggle = document.activeElement?.dataset?.route;
     getById("маршрут").click();
     getById("маршрут-меню").querySelector("[data-route=codex]").focus();
@@ -596,7 +596,7 @@ test("режим: после выбора фокус остаётся на пе�
   `,
     { withUi: true },
   );
-  assert.equal(r.afterToggle, "both");
+  assert.equal(r.afterToggle, "all");
   assert.equal(r.afterMenu, "маршрут");
   assert.equal(r.afterEscape, "маршрут");
   assert.equal(r.menuClosed, true);
@@ -743,4 +743,70 @@ test("ссылка «новая сессия» в карточке модели 
     { withUi: true },
   );
   assert.deepEqual(r.requests, [{ type: "newSession", agent: "claude" }, { type: "newSession", agent: "codex" }]);
+});
+
+test("с Gemini пять режимов, без него — четыре; «Задача с рецензией» называет обоих рецензентов", { skip: NO_BROWSER }, () => {
+  const r = open(
+    js`
+    result.without = [...getById("режимы").querySelectorAll("[role=radio]")].map((k) => k.dataset.route);
+    postToPage({ type: "gemini", present: true, rules: { ok: true } });
+    result.with = [...getById("режимы").querySelectorAll("[role=radio]")].map((k) => k.dataset.route);
+    result.hint = getById("маршрут").title;
+    getById("режимы").querySelector("[data-route=gemini]").click();
+    getById("ввод").value = "вопрос";
+    getById("отправить").click();
+    result.sent = window.sentMessages.filter((m) => m.type === "send");
+    postToPage({ type: "gemini", present: false, rules: { ok: true } });
+    result.fallback = getById("маршрут-название").textContent;
+  `,
+    { withUi: true },
+  );
+  assert.deepEqual(r.without, ["review", "all", "claude", "codex"]);
+  assert.deepEqual(r.with, ["review", "all", "claude", "codex", "gemini"]);
+  assert.match(r.hint, /Codex и Gemini проверят/);
+  assert.deepEqual(r.sent, [{ type: "send", text: "вопрос", route: "gemini" }]);
+  assert.equal(r.fallback, "Задача с рецензией", "без agy режим «Только Gemini» уходит");
+});
+
+test("реплика Gemini — разметкой, вердикт значком; действия — бусины его цвета", { skip: NO_BROWSER }, () => {
+  const r = open(
+    js`
+    const e = (kind, extra) => ({ id: kind + Math.random(), agent: "gemini", kind, visibility: "turn", at: Date.now(), ...extra });
+    postToPage({ type: "event", event: e("tool_call", { tool: "view_file", callId: "g:1", text: "{}" }) });
+    postToPage({ type: "event", event: e("tool_result", { tool: "view_file", callId: "g:1", text: "2 lines, 21 bytes" }) });
+    postToPage({ type: "event", event: e("message", { text: "**Пробел**: нет F1 на test.\\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ" }) });
+    result.name = document.querySelector(".пузырь.gemini .автор .имя").textContent;
+    result.bold = !!document.querySelector(".пузырь.gemini .текст strong");
+    result.verdict = document.querySelector(".пузырь.gemini .вердикт-строка")?.className;
+    result.bead = document.querySelector(".действия.gemini .чётки .бусина")?.className;
+  `,
+    { withUi: true },
+  );
+  assert.equal(r.name, "Gemini");
+  assert.equal(r.bold, true);
+  assert.equal(r.verdict, "вердикт-строка remarks");
+  assert.match(r.bead, /ring/);
+});
+
+test("плашка правил: причина и кнопка «Добавить правила»; удержанная пара — «Отправить на проверку»", { skip: NO_BROWSER }, () => {
+  const r = open(
+    js`
+    postToPage({ type: "gemini", present: true, rules: { ok: false, reason: "нет режима «только чтение» в настройках agy: нет запрета записи: deny write_file(*)" } });
+    result.plate = !getById("правила-gemini").hidden;
+    result.reason = getById("правила-gemini-причина").textContent;
+    getById("добавить-правила").click();
+    result.asked = window.sentMessages.filter((m) => m.type === "addGeminiRules").length;
+    postToPage({ type: "gemini", present: true, rules: { ok: true } });
+    result.plateAfter = !getById("правила-gemini").hidden;
+    postToPage({ type: "state", state: { stage: "held", round: 3, maxRounds: 3, approvals: 0, queued: 0, auto: true, trail: [],
+      reviewers: ["codex", "gemini"], held: { to: "codex", action: "review", reason: "Предел проверок" } } });
+    result.button = getById("отпустить").textContent;
+  `,
+    { withUi: true },
+  );
+  assert.equal(r.plate, true);
+  assert.match(r.reason, /deny write_file\(\*\)\. Пока правил нет, работу проверяет один Codex\.$/);
+  assert.equal(r.asked, 1);
+  assert.equal(r.plateAfter, false);
+  assert.equal(r.button, "Отправить на проверку");
 });

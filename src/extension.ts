@@ -410,6 +410,11 @@ function markup(webview: vscode.Webview, context: vscode.ExtensionContext): stri
     <div class="суть"><b>Обмен остановлен</b><span id="удержано-причина"></span></div>
     <button id="отпустить" class="пилюля главная">Отправить</button>
   </section>
+  <section id="правила-gemini" class="удержано" hidden aria-label="Gemini нужен режим только чтения">
+    <span class="значок-паузы" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8v3.6M8 10.8v.3"/></svg></span>
+    <div class="суть"><b>Gemini нужен режим только чтения</b><span id="правила-gemini-причина"></span></div>
+    <button id="добавить-правила" class="пилюля главная" title="Дописать в настройки agy: разрешить чтение страниц, запретить запись файлов и команды. Остальное содержимое сохраняется">Добавить правила</button>
+  </section>
   <div id="модели-панель" class="модели" hidden>
     <span id="модели-состояние"></span>
     <div class="нить-карточка" data-agent="claude">

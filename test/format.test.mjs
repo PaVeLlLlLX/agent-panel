@@ -78,6 +78,14 @@ test("без вызовов — пустая сводка", () => {
   assert.equal(summarizeTools([]), "");
 });
 
+test("инструменты agy — по видам: чтение, поиск, команда, правка", () => {
+  assert.equal(toolCategory("view_file"), "read");
+  assert.equal(toolCategory("read_url_content"), "read");
+  for (const name of ["grep_search", "find_by_name", "list_dir", "search_web"]) assert.equal(toolCategory(name), "search");
+  assert.equal(toolCategory("run_command"), "command");
+  for (const name of ["write_to_file", "replace_file_content", "multi_replace_file_content"]) assert.equal(toolCategory(name), "edit");
+});
+
 test("прокрутка следует за текстом, только если человек уже внизу", () => {
   // Жалоба владельца 27.09: во время генерации прокрутка силой утягивала вниз,
   // и нельзя было читать текст выше.

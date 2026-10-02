@@ -29,6 +29,17 @@
     webSearch: "search",
     mcpToolCall: "mcp",
     dynamicToolCall: "mcp",
+    // Antigravity CLI (agy) — инструменты Gemini (проба 02.10.2026).
+    view_file: "read",
+    read_url_content: "read",
+    grep_search: "search",
+    find_by_name: "search",
+    list_dir: "search",
+    search_web: "search",
+    run_command: "command",
+    write_to_file: "edit",
+    replace_file_content: "edit",
+    multi_replace_file_content: "edit",
   };
 
   function toolCategory(name) {

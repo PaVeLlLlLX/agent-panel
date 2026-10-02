@@ -184,7 +184,10 @@ svg { flex-shrink: 0; }
 .нить-статус[data-flow="to-reviewers"] .ст-частица { animation: путь 1.6s linear infinite; }
 .нить-статус[data-flow="to-reviewers"] .ст-частица:nth-child(odd) { offset-path: path("M8 14 H54 C66 14 70 6 82 6"); }
 .нить-статус[data-flow="to-reviewers"] .ст-частица:nth-child(even) { offset-path: path("M8 14 H54 C66 14 70 22 82 22"); }
-.нить-статус[data-flow="to-claude"] .ст-частица { offset-path: path("M8 14 H82"); animation: путь 1.6s linear infinite reverse; }
+.нить-статус[data-pair="no"][data-flow="to-claude"] .ст-частица { offset-path: path("M8 14 H82"); animation: путь 1.6s linear infinite reverse; }
+.нить-статус[data-pair="yes"][data-flow="to-claude"] .ст-частица { animation: путь 1.6s linear infinite reverse; }
+.нить-статус[data-pair="yes"][data-flow="to-claude"] .ст-частица:nth-child(odd) { offset-path: path("M8 14 H54 C66 14 70 6 82 6"); }
+.нить-статус[data-pair="yes"][data-flow="to-claude"] .ст-частица:nth-child(even) { offset-path: path("M8 14 H54 C66 14 70 22 82 22"); }
 @keyframes путь {
   0% { offset-distance: 0%; opacity: 0; }
   15% { opacity: 1; }
@@ -431,6 +434,7 @@ details.действия[open] > summary .шеврон { transform: rotate(90deg
 .бусина.denied { --агент-цвет: var(--ошибка); }
 .действия.claude { --агент-цвет: var(--claude); }
 .действия.codex { --агент-цвет: var(--codex); }
+.действия.gemini { --агент-цвет: var(--gemini); }
 
 .список { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 0; }
 .вызов > summary {
@@ -654,10 +658,12 @@ details.действия[open] > summary .шеврон { transform: rotate(90deg
 .ик-линия { fill: none; stroke: var(--тихий); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .ик-claude { fill: var(--claude); }
 .ик-codex { fill: var(--codex); }
+.ик-gemini { fill: var(--gemini); }
 .ик-человек { fill: var(--человек); }
-.ик-кольцо-claude, .ик-кольцо-codex { fill: none; stroke-width: 1.5; stroke-opacity: 0.35; }
+.ик-кольцо-claude, .ик-кольцо-codex, .ик-кольцо-gemini { fill: none; stroke-width: 1.5; stroke-opacity: 0.35; }
 .ик-кольцо-claude { stroke: var(--claude); }
 .ик-кольцо-codex { stroke: var(--codex); }
+.ик-кольцо-gemini { stroke: var(--gemini); }
 
 .полоски { display: inline-flex; gap: 2px; }
 .полоски span { width: 9px; height: 6px; border-radius: 3px; }

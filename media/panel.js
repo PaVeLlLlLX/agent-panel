@@ -25,11 +25,21 @@ const inputBox = byId("ввод");
 
 const NAMES = { claude: "Claude", codex: "Codex", gemini: "Gemini", human: "Вы", system: "Панель" };
 const ROUTES = [
-  { id: "review", name: "Задача с рецензией", hint: "Claude сделает, Codex проверит — по очереди, до вердикта" },
-  { id: "both", name: "Спросить обоих", hint: "Оба ответят независимо, друг другу ничего не передаётся" },
+  {
+    id: "review",
+    name: "Задача с рецензией",
+    hint: "Claude сделает, Codex проверит — по очереди, до вердикта",
+    pairHint: "Claude сделает, Codex и Gemini проверят — до вердикта",
+  },
+  { id: "all", name: "Спросить всех", hint: "Все ответят независимо, друг другу ничего не передаётся" },
   { id: "claude", name: "Только Claude", hint: "Только Claude, без проверки" },
   { id: "codex", name: "Только Codex", hint: "Только Codex, без пересылки" },
+  { id: "gemini", name: "Только Gemini", hint: "Только Gemini, без пересылки", needsGemini: true },
 ];
+/** Gemini подключён (agy найден) — сообщает расширение. До ответа — нет. */
+let geminiPresent = false;
+const availableRoutes = () => ROUTES.filter((m) => !m.needsGemini || geminiPresent);
+const routeHint = (m) => (geminiPresent && m.pairHint ? m.pairHint : m.hint);
 const DIAGNOSTIC_LIMIT = 500;
 const SVG = "http://www.w3.org/2000/svg";
 
@@ -76,16 +86,24 @@ const ROUTE_ICONS = {
   review:
     '<path class="ик-линия" d="M6 7h9"/><path class="ик-линия" d="M13 4.5 15.5 7 13 9.5"/>' +
     '<circle class="ик-claude" cx="4" cy="7" r="3"/><circle class="ик-codex" cx="18.5" cy="7" r="3"/>',
-  both:
+  reviewPair:
+    '<path class="ик-линия" d="M6 7H11C14 7 14 3 16.5 3M11 7C14 7 14 11 16.5 11"/>' +
+    '<circle class="ик-claude" cx="4" cy="7" r="3"/><circle class="ик-codex" cx="18.5" cy="3" r="2.4"/><circle class="ик-gemini" cx="18.5" cy="11" r="2.4"/>',
+  all:
     '<path class="ик-линия" d="M4 7 15 3M4 7 15 11"/><circle class="ик-человек" cx="4" cy="7" r="2"/>' +
     '<circle class="ик-claude" cx="17" cy="3" r="2.6"/><circle class="ик-codex" cx="17" cy="11" r="2.6"/>',
+  allPair:
+    '<path class="ик-линия" d="M4 7 15 2M4 7 15 7M4 7 15 12"/><circle class="ик-человек" cx="4" cy="7" r="2"/>' +
+    '<circle class="ик-claude" cx="17" cy="2" r="2"/><circle class="ик-codex" cx="17" cy="7" r="2"/><circle class="ик-gemini" cx="17" cy="12" r="2"/>',
   claude: '<circle class="ик-кольцо-claude" cx="11" cy="7" r="5.5"/><circle class="ик-claude" cx="11" cy="7" r="3.2"/>',
   codex: '<circle class="ик-кольцо-codex" cx="11" cy="7" r="5.5"/><circle class="ик-codex" cx="11" cy="7" r="3.2"/>',
+  gemini: '<circle class="ик-кольцо-gemini" cx="11" cy="7" r="5.5"/><circle class="ик-gemini" cx="11" cy="7" r="3.2"/>',
 };
 
 function routeIcon(id) {
+  const key = geminiPresent && (id === "review" || id === "all") ? `${id}Pair` : id;
   const template = document.createElement("template");
-  template.innerHTML = `<svg xmlns="${SVG}" width="22" height="14" viewBox="0 0 22 14" aria-hidden="true">${ROUTE_ICONS[id]}</svg>`;
+  template.innerHTML = `<svg xmlns="${SVG}" width="22" height="14" viewBox="0 0 22 14" aria-hidden="true">${ROUTE_ICONS[key]}</svg>`;
   return template.content.firstChild;
 }
 
@@ -161,7 +179,7 @@ function render(p) {
   }
 }
 
-function bubble(agent, text, { asMarkup = agent === "claude" || agent === "codex", snapshot } = {}) {
+function bubble(agent, text, { asMarkup = agent === "claude" || agent === "codex" || agent === "gemini", snapshot } = {}) {
   const p = makeEl("article", `пузырь ${agent}`);
   const author = makeEl("div", "автор");
   author.append(makeEl("span", "имя", NAMES[agent] ?? agent));
@@ -183,7 +201,7 @@ function bubble(agent, text, { asMarkup = agent === "claude" || agent === "codex
 function finish(p, agent, text) {
   p.classList.remove("идёт");
   sources.set(p, text ?? "");
-  if (agent === "codex") p.dataset.verdict = "да";
+  if (agent === "codex" || agent === "gemini") p.dataset.verdict = "да";
   pendingRender.delete(p);
   render(p);
 }
@@ -539,9 +557,11 @@ function showState(s) {
   byId("удержано-причина").textContent = s.held?.reason ?? "";
   byId("отпустить").textContent = !s.held
     ? "Отправить"
-    : s.held.action === "retry"
-      ? `Повторить ${NAMES[s.held.to]}`
-      : `Отправить ${NAMES[s.held.to]}`;
+    : s.held.action === "review"
+      ? "Отправить на проверку"
+      : s.held.action === "retry"
+        ? `Повторить ${NAMES[s.held.to]}`
+        : `Отправить ${NAMES[s.held.to]}`;
 
   byId("авто").checked = s.auto;
 }
@@ -654,20 +674,20 @@ byId("эстафета").addEventListener("click", () => {
 
 // --- Режим отправки: переключатель и меню -----------------------------------------------
 
-let route = ROUTES.some((m) => m.id === saved.route) ? saved.route : "review";
+let route = savedRoute(saved.route, ROUTES.map((m) => m.id));
 
 function showRoute() {
-  const current = ROUTES.find((m) => m.id === route);
+  const current = availableRoutes().find((m) => m.id === route) ?? ROUTES[0];
   byId("маршрут-название").textContent = current.name;
-  byId("маршрут").title = `${current.hint}. Нажмите — выбрать режим`;
+  byId("маршрут").title = `${routeHint(current)}. Нажмите — выбрать режим`;
   byId("режимы").replaceChildren(
-    ...ROUTES.map((m) => {
+    ...availableRoutes().map((m) => {
       const k = makeEl("button");
       k.setAttribute("role", "radio");
       k.setAttribute("aria-checked", String(m.id === route));
       k.setAttribute("aria-label", m.name);
       k.dataset.route = m.id;
-      k.title = `${m.name}: ${m.hint}`;
+      k.title = `${m.name}: ${routeHint(m)}`;
       k.append(routeIcon(m.id));
       k.addEventListener("click", () => {
         selectRoute(m.id);
@@ -678,12 +698,12 @@ function showRoute() {
     }),
   );
   byId("маршрут-меню").replaceChildren(
-    ...ROUTES.map((m) => {
+    ...availableRoutes().map((m) => {
       const k = makeEl("button");
       k.setAttribute("role", "menuitemradio");
       k.setAttribute("aria-checked", String(m.id === route));
       k.dataset.route = m.id;
-      k.title = m.hint;
+      k.title = routeHint(m);
       const checkmark = icon(ICONS.check);
       checkmark.classList.add("галка");
       k.append(routeIcon(m.id), makeEl("span", "", m.name), checkmark);
@@ -723,6 +743,20 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeMenu(true);
 });
 showRoute();
+
+/** Gemini: подключён ли и на месте ли правила «только чтение» (Task 12 шлёт при открытии и после «Добавить правила»). */
+function receiveGemini(d) {
+  geminiPresent = d.present === true;
+  if (!geminiPresent && route === "gemini") route = "review";
+  const rulesMissing = geminiPresent && d.rules?.ok === false;
+  byId("правила-gemini").hidden = !rulesMissing;
+  byId("правила-gemini-причина").textContent = rulesMissing
+    ? `${d.rules.reason ?? "правил нет"}. Пока правил нет, работу проверяет один Codex.`
+    : "";
+  showRoute();
+  showModels();
+}
+byId("добавить-правила").addEventListener("click", () => vscode.postMessage({ type: "addGeminiRules" }));
 
 // --- Модель и уровень рассуждения: шкала «Нить» --------------------------------------
 // Список запрашивается по кнопке, а не при открытии: каждый поднимает
@@ -989,6 +1023,7 @@ window.addEventListener("message", (event) => {
   else if (d?.type === "state") showState(d.state);
   else if (d?.type === "models") receiveModels(d);
   else if (d?.type === "permissions") receiveMode(d.mode);
+  else if (d?.type === "gemini") receiveGemini(d);
 });
 
 function send() {
