@@ -18,6 +18,8 @@
  *   ОШИБКА-ХОДА — ход завершается со статусом failed;
  *   ЗАПИСАТЬ    — сервер запрашивает у клиента одобрение на изменение файла
  *                 и пишет в stderr, что клиент ответил.
+ * РАЗРЫВ в id возобновляемой ветки — ответ thread/resume с U+2028/U+2029
+ * внутри строки JSON.
  */
 import { existsSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -75,7 +77,14 @@ lines.on("line", (line) => {
         developerInstructions: String(z.params.developerInstructions ?? "").slice(0, 60),
       })}
 `);
-      reply({ thread: { id: z.params.threadId } });
+      // РАЗРЫВ в id ветки: в истории U+2028/U+2029 «как есть» — так их пишет
+      // настоящий app-server, и JSON.stringify здесь тоже их не экранирует.
+      reply({
+        thread: {
+          id: z.params.threadId,
+          ...(String(z.params.threadId).includes("РАЗРЫВ") ? { preview: "до после конец" } : {}),
+        },
+      });
       return;
     case "model/list": {
       // Форма из схемы ModelListResponse (Codex 0.153.0); скрытая модель — чтобы

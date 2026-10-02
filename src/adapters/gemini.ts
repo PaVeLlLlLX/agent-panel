@@ -43,8 +43,9 @@
  * причиной хода: без них «ход завершён: ERROR» ничего не объясняет.
  */
 import { ChildProcessWithoutNullStreams } from "node:child_process";
-import { createInterface, Interface } from "node:readline";
+import { createInterface } from "node:readline";
 import { sameChoice } from "../models.js";
+import { readJsonLines, LineReader } from "./jsonLines.js";
 import { geminiModelSlug, parseGeminiModels } from "../geminiCatalog.js";
 import { REVIEWER_AGENT } from "../geminiSetup.js";
 import { spawnProcess, killTree } from "./process.js";
@@ -112,7 +113,7 @@ export class GeminiAdapter implements Adapter {
   readonly id = "gemini" as const;
 
   #proc: ChildProcessWithoutNullStreams | undefined;
-  #lines: Interface | undefined;
+  #lines: LineReader | undefined;
   #conversation: string | undefined;
   #busy = false;
   #turnId: string | undefined;
@@ -170,8 +171,7 @@ export class GeminiAdapter implements Adapter {
     this.#proc = proc;
     this.#deniedSeen = 0;
     this.#processChoice = this.#choice;
-    this.#lines = createInterface({ input: proc.stdout });
-    this.#lines.on("line", (line) => this.#parse(line));
+    this.#lines = readJsonLines(proc.stdout, (line) => this.#parse(line));
     createInterface({ input: proc.stderr }).on("line", (line) => this.#stderr(proc, line));
     proc.stdin.on("error", (err) => this.#channelFailure(proc, err));
     proc.on("error", (err) => this.#end(proc, `Gemini не запустился: ${err.message}`));

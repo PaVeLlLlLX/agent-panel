@@ -42,8 +42,9 @@
  * формирование аргументов, а не выполнение.
  */
 import { ChildProcessWithoutNullStreams } from "node:child_process";
-import { createInterface, Interface } from "node:readline";
+import { createInterface } from "node:readline";
 import { sameChoice } from "../models.js";
+import { readJsonLines, LineReader } from "./jsonLines.js";
 import { spawnProcess, killTree } from "./process.js";
 import {
   Adapter,
@@ -237,7 +238,7 @@ export class ClaudeAdapter implements Adapter {
   readonly id = "claude" as const;
 
   #proc: ChildProcessWithoutNullStreams | undefined;
-  #lines: Interface | undefined;
+  #lines: LineReader | undefined;
   #session: string | undefined;
   #busy = false;
   #turnInProgress: string | undefined;
@@ -353,8 +354,7 @@ export class ClaudeAdapter implements Adapter {
     this.#processChoice = this.#choice;
     this.#processMode = this.#mode;
 
-    this.#lines = createInterface({ input: proc.stdout });
-    this.#lines.on("line", (line) => this.#parse(line));
+    this.#lines = readJsonLines(proc.stdout, (line) => this.#parse(line));
     createInterface({ input: proc.stderr }).on("line", (line) => {
       const text = stripAnsi(line).trim();
       if (text) this.#emit("diagnostic", "stream", { text: clamp(text) });
@@ -457,14 +457,14 @@ export class ClaudeAdapter implements Adapter {
     );
     proc.stderr.resume();
     proc.stdin.on("error", () => undefined);
-    const lines = createInterface({ input: proc.stdout });
+    let lines: LineReader | undefined;
     let timer: NodeJS.Timeout | undefined;
     try {
       const reply = await new Promise<Record<string, unknown>>((resolve, reject) => {
         timer = setTimeout(() => reject(new Error("Claude не прислал список моделей за 30 с")), 30_000);
         proc.on("error", reject);
         proc.on("exit", (code) => reject(new Error(`Claude завершился, не прислав список моделей (код ${code})`)));
-        lines.on("line", (line) => {
+        lines = readJsonLines(proc.stdout, (line) => {
           let record: Record<string, unknown>;
           try {
             record = JSON.parse(line) as Record<string, unknown>;
@@ -483,7 +483,7 @@ export class ClaudeAdapter implements Adapter {
       return claudeCatalog(reply["models"]);
     } finally {
       clearTimeout(timer);
-      lines.close();
+      lines?.close();
       await killTree(proc);
     }
   }

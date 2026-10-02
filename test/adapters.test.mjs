@@ -90,6 +90,20 @@ test("Claude: процесс поднимается сам при первой �
   }
 });
 
+test("Claude: U+2028 и U+2029 внутри строки JSON не режут её", async () => {
+  // readline делит строки и по U+2028/U+2029, а JSON.stringify пишет их как
+  // есть: ответ рвался на куски вне протокола (живой прогон 02.10, у Codex).
+  const s = collector();
+  const a = claude(s);
+  try {
+    await a.send({ text: "РАЗРЫВ", from: "human" });
+    await waitFor(() => s.events.some((e) => e.kind === "turn_completed"), "конец хода");
+    assert.deepEqual(s.events.filter((e) => e.kind === "message").map((e) => e.text), ["до после конец"]);
+  } finally {
+    await a.stop();
+  }
+});
+
 test("Claude: длинный вывод инструмента — усечённый текст для показа и полный для рецензента", async () => {
   const s = collector();
   const a = claude(s);
@@ -1591,6 +1605,25 @@ const threadParams = (events) =>
     .filter((e) => e.kind === "diagnostic" && (e.text ?? "").startsWith(THREAD_PREFIX))
     .map((e) => JSON.parse(e.text.slice(THREAD_PREFIX.length)));
 
+test("Codex: U+2028 в истории ветки не обрывает возобновление", async () => {
+  // Живой прогон 02.10: ответ thread/resume (14 МБ истории) нёс U+2028/U+2029
+  // как есть; readline резал по ним строку, ответ не разбирался, и запуск
+  // ждал его вечно — пара висела на «Codex и Gemini проверяют».
+  const s = collector();
+  const a = codex(s, { resumeThreadId: "ветка-РАЗРЫВ" });
+  let started = false;
+  const sending = a.send({ text: "здравствуй", from: "claude" }).then(() => {
+    started = true;
+  });
+  sending.catch(() => undefined);
+  try {
+    await waitFor(() => started, "ход в возобновлённой ветке", 3000);
+    assert.equal(s.events.some((e) => /вне протокола/.test(e.text ?? "")), false);
+  } finally {
+    await a.stop();
+  }
+});
+
 test("Codex: при возобновлении ветки роль рецензента задаётся заново", async () => {
   // Ветка владельца заведена в приложении Codex с ролью разработчика. При
   // возобновлении панель обязана вернуть роль рецензента: thread/resume
@@ -1642,6 +1675,19 @@ test("Codex: при возобновлении ветки роль реценз�
       assert.equal(call.tool, "view_file");
       assert.equal(s.events.find((e) => e.kind === "tool_result").text, "2 lines, 21 bytes");
       assert.ok(!s.events.some((e) => e.kind === "error"), "служебный лог stderr — диагностика, а не ошибка");
+    } finally {
+      await a.stop();
+    }
+  });
+
+  test("Gemini: U+2028 и U+2029 внутри строки JSON не режут её", async () => {
+    const s = collector();
+    const a = gemini(s);
+    try {
+      await a.send({ text: "РАЗРЫВ", from: "human" });
+      await waitFor(() => completed(s.events).length === 1, "конец хода");
+      assert.deepEqual(s.events.filter((e) => e.kind === "message").map((e) => e.text), ["до после конец"]);
+      assert.equal(completed(s.events)[0].incomplete, undefined);
     } finally {
       await a.stop();
     }

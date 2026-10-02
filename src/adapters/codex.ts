@@ -36,7 +36,8 @@
  * **Остановка — всем деревом и с подтверждением.** См. process.ts.
  */
 import { ChildProcessWithoutNullStreams } from "node:child_process";
-import { createInterface, Interface } from "node:readline";
+import { createInterface } from "node:readline";
+import { readJsonLines, LineReader } from "./jsonLines.js";
 import { spawnProcess, killTree } from "./process.js";
 import {
   Adapter,
@@ -120,7 +121,7 @@ interface Waiter {
 /** Всё, что принадлежит одному запущенному процессу. */
 interface Context {
   readonly proc: ChildProcessWithoutNullStreams;
-  readonly lines: Interface;
+  readonly lines: LineReader;
   readonly waiters: Map<number, Waiter>;
   stopped: boolean;
   reported: boolean;
@@ -247,14 +248,13 @@ export class CodexAdapter implements Adapter {
     );
     const k: Context = {
       proc,
-      lines: createInterface({ input: proc.stdout }),
+      lines: readJsonLines(proc.stdout, (line) => this.#parse(k, line)),
       waiters: new Map(),
       stopped: false,
       reported: false,
     };
     this.#ctx = k;
 
-    k.lines.on("line", (line) => this.#parse(k, line));
     createInterface({ input: proc.stderr }).on("line", (line) => {
       const text = stripAnsi(line).trim();
       if (text) this.#emit("diagnostic", "stream", { text: clamp(text) });
@@ -382,12 +382,11 @@ export class CodexAdapter implements Adapter {
     );
     proc.stderr.resume();
     proc.stdin.on("error", () => undefined);
-    const lines = createInterface({ input: proc.stdout });
     const waiters = new Map<number, Waiter>();
     let next = 1;
     let timer: NodeJS.Timeout | undefined;
     const writeMessage = (record: unknown) => proc.stdin.write(`${JSON.stringify(record)}\n`);
-    lines.on("line", (line) => {
+    const lines = readJsonLines(proc.stdout, (line) => {
       let record: Record<string, unknown>;
       try {
         record = JSON.parse(line) as Record<string, unknown>;

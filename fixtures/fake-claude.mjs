@@ -9,7 +9,8 @@
  *
  * Управляется словами в тексте реплики:
  *   ОШИБКА-ХОДА — result с is_error: true;
- *   УПАСТЬ      — внезапный выход процесса посреди хода.
+ *   УПАСТЬ      — внезапный выход процесса посреди хода;
+ *   РАЗРЫВ      — ответ с U+2028/U+2029 внутри строки JSON.
  *
  * В system/init добавлено поле argv — его нет у настоящего Claude, но оно
  * позволяет проверить, с какими флагами адаптер запускает процесс.
@@ -514,6 +515,13 @@ lines.on("line", (line) => {
       num_turns: 1,
       session_id: SESSION,
     });
+    return;
+  }
+
+  // РАЗРЫВ: ответ с U+2028/U+2029 — JSON.stringify пишет их как есть.
+  if (text.includes("РАЗРЫВ")) {
+    writeLine({ type: "assistant", message: { content: [{ type: "text", text: "до после конец" }] }, session_id: SESSION });
+    writeLine({ type: "result", subtype: "success", is_error: false, num_turns: 1, session_id: SESSION });
     return;
   }
 
