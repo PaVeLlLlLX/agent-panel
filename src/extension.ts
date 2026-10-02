@@ -236,13 +236,19 @@ class Room {
         void this.#coordinator.refreshGeminiUsage();
         return;
       case "addGeminiRules": {
-        const check = addReadOnlyRules(this.#agySettings);
-        const refusal = rulesRefusal(check, this.#agySettings);
-        this.#coordinator.notice(
-          refusal
-            ? `Правила для Gemini не добавлены: ${refusal}.`
-            : "Правила «только чтение» для Gemini добавлены в настройки agy: со следующей проверки Gemini проверяет вместе с Codex.",
-        );
+        try {
+          const check = addReadOnlyRules(this.#agySettings);
+          const refusal = rulesRefusal(check, this.#agySettings);
+          this.#coordinator.notice(
+            refusal
+              ? `Правила для Gemini не добавлены: ${refusal}.`
+              : "Правила «только чтение» для Gemini добавлены в настройки agy: со следующей проверки Gemini проверяет вместе с Codex.",
+          );
+        } catch (err) {
+          this.#coordinator.notice(
+            `Правила для Gemini не добавлены: ${(err as Error).message}. Настройки agy: ${this.#agySettings}.`,
+          );
+        }
         this.#postGemini();
         return;
       }
