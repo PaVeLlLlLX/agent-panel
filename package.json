@@ -1,7 +1,7 @@
 {
   "name": "agent-panel",
   "displayName": "Agent Panel",
-  "description": "Общая комната для человека, Claude Code и Codex: один поток разговора, действия обоих агентов и рецензирование с привязкой к версии файлов.",
+  "description": "Общая комната для человека, Claude Code, Codex и Gemini: один поток разговора, действия агентов и рецензирование с привязкой к версии файлов.",
   "version": "0.1.0",
   "private": true,
   "publisher": "local",
@@ -22,7 +22,7 @@
       },
       {
         "command": "agentPanel.stopAll",
-        "title": "Agent Panel: остановить обоих"
+        "title": "Agent Panel: остановить всех"
       },
       {
         "command": "agentPanel.newClaudeSession",
@@ -31,6 +31,10 @@
       {
         "command": "agentPanel.newCodexSession",
         "title": "Agent Panel: новая сессия Codex для комнаты"
+      },
+      {
+        "command": "agentPanel.newGeminiSession",
+        "title": "Agent Panel: новая сессия Gemini для комнаты"
       }
     ],
     "configuration": {
@@ -46,10 +50,21 @@
           "default": "codex",
           "description": "Исполняемый файл Codex. Значение codex означает: взять codex из расширения ChatGPT для VS Code (тот же, что в вашем чате Codex, с теми же моделями), а если его нет — из PATH. Явный путь важнее."
         },
+        "agentPanel.geminiCommand": {
+          "type": "string",
+          "default": "agy",
+          "description": "Исполняемый файл Antigravity CLI (agy) — второго рецензента Gemini. Значение agy означает: взять %LOCALAPPDATA%\\agy\\bin\\agy.exe (туда ставит установщик), а если его нет — agy из PATH. Явный путь важнее. Не найден — Gemini в комнате нет, проверяет один Codex."
+        },
+        "agentPanel.geminiWaitMinutes": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "description": "Сколько минут после ответа Codex ждать проверку Gemini. Не успел — «Gemini не проверял», итог по вердикту Codex; поздний ответ виден в ленте, но в проверку не входит."
+        },
         "agentPanel.maxAutoRounds": {
           "type": "number",
           "default": 3,
-          "description": "Сколько раз Codex может проверить работу Claude по одной задаче. Когда предел достигнут, непроверенная работа ждёт вашего решения. 0 — каждую передачу подтверждаете вы."
+          "description": "Сколько раз рецензенты могут проверить работу Claude по одной задаче; Codex и Gemini вместе — одна проверка. Когда предел достигнут, непроверенная работа ждёт вашего решения. 0 — каждую передачу подтверждаете вы."
         },
         "agentPanel.reviewEvidenceChars": {
           "type": "number",
@@ -61,7 +76,7 @@
           "type": "number",
           "default": 0,
           "minimum": 0,
-          "description": "Предел токенов на задачу (вход и выход обоих агентов, с кешем). Достигнут — автоматическая передача ждёт вашего решения. 0 — без предела. Сам расход виден в дорожке цикла."
+          "description": "Предел токенов на задачу (вход и выход всех агентов, с кешем). Достигнут — автоматическая передача ждёт вашего решения. 0 — без предела. Сам расход виден в дорожке цикла."
         },
         "agentPanel.memorySearchCommand": {
           "type": "string",

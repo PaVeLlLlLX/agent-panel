@@ -13,26 +13,30 @@
  * сообщения, отправленные до загрузки скрипта, могут потеряться.
  */
 import * as vscode from "vscode";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { ClaudeAdapter } from "./adapters/claude.js";
 import { CodexAdapter } from "./adapters/codex.js";
+import { GeminiAdapter } from "./adapters/gemini.js";
 import { Adapter, ApprovalChoice, ModelChoice, ModelOption, PanelEvent, forDisplay, stripAnsi } from "./adapters/types.js";
 import { Coordinator, RoomState, Route } from "./coordinator.js";
 import { Journal } from "./journal.js";
 import { describeChoice, normalizeChoice, sameChoice } from "./models.js";
 import { resolveCodexCommand } from "./codexBinary.js";
+import { resolveGeminiCommand } from "./geminiBinary.js";
+import { addReadOnlyRules, agySettingsPath, checkReadOnlyRules, ensureReviewerAgent, reviewerAgentPath, rulesRefusal } from "./geminiSetup.js";
+import { fetchGeminiUsage } from "./geminiUsage.js";
 import { argumentForLaunch, resolveClaudeCommand } from "./claudeBinary.js";
 import { runMemorySearch } from "./memory.js";
 import { fetchClaudeUsage } from "./claudeUsage.js";
 
 let room: Room | undefined;
 
-const ROUTES = new Set<Route>(["review", "all", "claude", "codex"]);
+const ROUTES = new Set<Route>(["review", "all", "claude", "codex", "gemini"]);
 const CHOICES = new Set<ApprovalChoice>(["allow", "allowSession", "deny"]);
 
-type SelectableAgent = "claude" | "codex";
-const AGENTS: readonly SelectableAgent[] = ["claude", "codex"];
-const AGENT_NAMES: Record<SelectableAgent, string> = { claude: "Claude", codex: "Codex" };
+type SelectableAgent = "claude" | "codex" | "gemini";
+const AGENT_NAMES: Record<SelectableAgent, string> = { claude: "Claude", codex: "Codex", gemini: "Gemini" };
 
 /** Режимы разрешений, которые принимает Claude Code (2.1.220 и 2.1.280), плюс default — не передавать флаг. */
 const MODES = new Set(["default", "acceptEdits", "auto", "manual", "dontAsk", "plan", "bypassPermissions"]);
@@ -57,7 +61,11 @@ class Room {
   readonly #modelsKey: string;
   readonly #choices: Record<SelectableAgent, ModelChoice>;
   readonly #catalogs: Partial<Record<SelectableAgent, readonly ModelOption[]>> = {};
-  readonly #adapters: Record<SelectableAgent, Adapter>;
+  /** Агенты комнаты: Gemini — если agy найден. */
+  readonly #agents: readonly SelectableAgent[];
+  readonly #adapters: Partial<Record<SelectableAgent, Adapter>>;
+  /** settings.json agy: правила «только чтение» проверяются и дописываются здесь. */
+  readonly #agySettings: string;
   #modelsLoading: Promise<void> | undefined;
   /** Режим разрешений Claude для папки; по умолчанию — из настройки. */
   #mode: string;
@@ -72,6 +80,7 @@ class Room {
     this.#choices = {
       claude: normalizeChoice(undefined, savedChoices["claude"]),
       codex: normalizeChoice(undefined, savedChoices["codex"]),
+      gemini: normalizeChoice(undefined, savedChoices["gemini"]),
     };
     this.#modeKey = `agentPanel.claudePermissions:${cwd}`;
     const savedMode = this.#memento.get<string>(this.#modeKey);
@@ -144,7 +153,37 @@ class Room {
       accept,
     );
 
-    this.#adapters = { claude, codex };
+    // Gemini — второй рецензент: agy из папки установщика или PATH. Нет — проверяет один Codex.
+    this.#agySettings = agySettingsPath(homedir());
+    const geminiLaunch = resolveGeminiCommand(
+      settings.get<string>("geminiCommand", "agy"),
+      process.env["LOCALAPPDATA"],
+      process.env["PATH"],
+    );
+    const gemini = geminiLaunch
+      ? new GeminiAdapter(
+          {
+            command: geminiLaunch.command,
+            ...(geminiLaunch.shell !== undefined ? { shell: geminiLaunch.shell } : {}),
+            cwd,
+            model: this.#choices.gemini.model,
+            effort: this.#choices.gemini.effort,
+            ...(binding?.geminiConversationId ? { resumeConversationId: binding.geminiConversationId } : {}),
+            // Роль пишется перед каждым запуском (файл принадлежит панели); без правил «только чтение» — не запускать.
+            beforeStart: () => {
+              ensureReviewerAgent(reviewerAgentPath(homedir()));
+              return rulesRefusal(checkReadOnlyRules(this.#agySettings), this.#agySettings);
+            },
+            onSessionId: (id) => {
+              if (!this.#closed) this.#journal.bindGeminiConversation(this.#name, id);
+            },
+          },
+          accept,
+        )
+      : undefined;
+
+    this.#agents = gemini ? ["claude", "codex", "gemini"] : ["claude", "codex"];
+    this.#adapters = { claude, codex, ...(gemini ? { gemini } : {}) };
     this.#coordinator = new Coordinator(claude, codex, this.#journal, {
       room: this.#name,
       cwd,
@@ -160,6 +199,17 @@ class Room {
               fetchClaudeUsage({
                 command: claudeLaunch.command,
                 ...(claudeLaunch.shell !== undefined ? { shell: claudeLaunch.shell } : {}),
+              }),
+          }
+        : {}),
+      ...(gemini && geminiLaunch
+        ? {
+            gemini,
+            geminiWaitMs: settings.get<number>("geminiWaitMinutes", 10) * 60_000,
+            geminiUsage: () =>
+              fetchGeminiUsage({
+                command: geminiLaunch.command,
+                ...(geminiLaunch.shell !== undefined ? { shell: geminiLaunch.shell } : {}),
               }),
           }
         : {}),
@@ -179,10 +229,23 @@ class Room {
           this.#postToPanel({ type: "event", event: clean, history: true });
         }
         this.#postToPanel({ type: "state", state: this.#coordinator.state });
-        for (const agent of AGENTS) this.#sendModels(agent);
+        for (const agent of this.#agents) this.#sendModels(agent);
         this.#postToPanel({ type: "permissions", mode: this.#mode });
+        this.#postGemini();
         void this.#coordinator.refreshClaudeUsage();
+        void this.#coordinator.refreshGeminiUsage();
         return;
+      case "addGeminiRules": {
+        const check = addReadOnlyRules(this.#agySettings);
+        const refusal = rulesRefusal(check, this.#agySettings);
+        this.#coordinator.notice(
+          refusal
+            ? `Правила для Gemini не добавлены: ${refusal}.`
+            : "Правила «только чтение» для Gemini добавлены в настройки agy: со следующей проверки Gemini проверяет вместе с Codex.",
+        );
+        this.#postGemini();
+        return;
+      }
       case "send":
         if (!message.text.trim() || !ROUTES.has(message.route as Route)) return;
         await this.#coordinator.fromHuman(message.text, message.route as Route);
@@ -203,7 +266,7 @@ class Room {
         if (!MODES.has(message.mode)) return;
         // Адаптеру — всегда: «Больше не спрашивать» на карточке должна
         // разрешить открытый запрос, даже если режим уже был выбран.
-        this.#adapters.claude.setPermissionMode?.(message.mode);
+        this.#adapters.claude?.setPermissionMode?.(message.mode);
         if (message.mode !== this.#mode) {
           this.#mode = message.mode;
           await this.#memento.update(this.#modeKey, message.mode);
@@ -220,11 +283,12 @@ class Room {
         await this.#loadModels();
         return;
       case "newSession":
-        if (message.agent === "claude" || message.agent === "codex") await this.newSession(message.agent);
+        if (message.agent === "claude" || message.agent === "codex" || message.agent === "gemini") await this.newSession(message.agent);
+        else await this.pickNewSession();
         return;
       case "setModel": {
         const agent = message.agent as SelectableAgent;
-        if (!AGENTS.includes(agent)) return;
+        if (!this.#agents.includes(agent)) return;
         const choice = normalizeChoice(this.#catalogs[agent], message);
         if (!sameChoice(choice, this.#choices[agent])) {
           await this.#applyChoice(agent, choice);
@@ -259,9 +323,9 @@ class Room {
    */
   #loadModels(): Promise<void> {
     this.#modelsLoading ??= Promise.all(
-      AGENTS.map(async (agent) => {
+      this.#agents.map(async (agent) => {
         try {
-          const catalog = (await this.#adapters[agent].listModels?.()) ?? [];
+          const catalog = (await this.#adapters[agent]?.listModels?.()) ?? [];
           this.#catalogs[agent] = catalog;
           const valid = normalizeChoice(catalog, this.#choices[agent]);
           if (!sameChoice(valid, this.#choices[agent])) {
@@ -282,8 +346,25 @@ class Room {
 
   async #applyChoice(agent: SelectableAgent, choice: ModelChoice): Promise<void> {
     this.#choices[agent] = choice;
-    this.#adapters[agent].setModel?.(choice);
+    this.#adapters[agent]?.setModel?.(choice);
     await this.#memento.update(this.#modelsKey, this.#choices);
+  }
+
+  /** Gemini для webview: подключён ли и на месте ли правила «только чтение». */
+  #postGemini(): void {
+    const present = this.#agents.includes("gemini");
+    const reason = present ? rulesRefusal(checkReadOnlyRules(this.#agySettings), this.#agySettings) : undefined;
+    this.#postToPanel({ type: "gemini", present, rules: reason ? { ok: false, reason } : { ok: true } });
+  }
+
+  /** «новая сессия…» из карточки «Модели»: для какого агента — спросить. */
+  async pickNewSession(): Promise<void> {
+    const picked = await vscode.window.showQuickPick(
+      this.#agents.map((a) => AGENT_NAMES[a]),
+      { placeHolder: "Новая сессия какого агента?" },
+    );
+    const agent = this.#agents.find((a) => AGENT_NAMES[a] === picked);
+    if (agent) await this.newSession(agent);
   }
 
   #sendModels(agent: SelectableAgent, error?: string): void {
@@ -298,8 +379,12 @@ class Room {
   }
 
   /** Новая сессия агента — после подтверждения: прежний разговор агент помнить не будет. */
-  async newSession(agent: "claude" | "codex"): Promise<void> {
-    const name = agent === "claude" ? "Claude" : "Codex";
+  async newSession(agent: SelectableAgent): Promise<void> {
+    if (!this.#agents.includes(agent)) {
+      vscode.window.showInformationMessage("Gemini не подключён: agy не найден (agentPanel.geminiCommand).");
+      return;
+    }
+    const name = AGENT_NAMES[agent];
     const reply = await vscode.window.showWarningMessage(
       `Начать новую сессию ${name} для этой комнаты? Прежний разговор останется в истории ${name}, ` +
         "но агент не будет его помнить. Беседа в панели сохранится.",
@@ -315,7 +400,8 @@ class Room {
       | { type: "event"; event: PanelEvent; history?: boolean }
       | { type: "state"; state: RoomState }
       | ModelsMessage
-      | { type: "permissions"; mode: string },
+      | { type: "permissions"; mode: string }
+      | { type: "gemini"; present: boolean; rules: { ok: boolean; reason?: string } },
   ): void {
     if (this.#closed) return;
     void this.#panel.webview.postMessage(message);
@@ -342,7 +428,8 @@ type UiMessage =
   | { type: "listModels" }
   | { type: "setModel"; agent: string; model: unknown; effort: unknown }
   | { type: "setPermissionMode"; mode: string }
-  | { type: "newSession"; agent: string };
+  | { type: "newSession"; agent?: string }
+  | { type: "addGeminiRules" };
 
 /**
  * Разметка webview.
@@ -491,6 +578,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("agentPanel.newCodexSession", async () => {
       await room?.newSession("codex");
+    }),
+    vscode.commands.registerCommand("agentPanel.newGeminiSession", async () => {
+      await room?.newSession("gemini");
     }),
   );
 }
