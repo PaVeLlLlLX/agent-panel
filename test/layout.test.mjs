@@ -732,6 +732,24 @@ test("устаревшая недельная доля Claude показана �
   assert.match(r.usage, /Claude: неделя 4% \(на 20\.09 05:14\)/);
 });
 
+test("«Ультра»: ветки и пульс узла не выходят за строку агента", { skip: NO_BROWSER }, () => {
+  const r = open(
+    js`
+    getById("модели-кнопка").click();
+    postToPage({ type: "models", agent: "codex", choice: { model: "", effort: "ultra" }, options: [
+      { id: "", label: "по умолчанию", description: "", efforts: ["low", "high", "ultra"] },
+    ] });
+    const row = getById("строка-codex").getBoundingClientRect();
+    const dots = [...getById("нить-codex").querySelectorAll(".нить-субагент")].map((d) => d.getBoundingClientRect());
+    result.inside = dots.every((d) => d.top >= row.top - 0.5 && d.bottom <= row.bottom + 0.5);
+    result.dotCount = dots.length;
+  `,
+    { withUi: true },
+  );
+  assert.equal(r.dotCount, 3, "«Ультра» — три ветки, три бусины субагента");
+  assert.equal(r.inside, true, "бусины веток не выходят за строку агента");
+});
+
 test("ссылка «новая сессия…» просит расширение спросить, для какого агента", { skip: NO_BROWSER }, () => {
   const r = open(
     js`
