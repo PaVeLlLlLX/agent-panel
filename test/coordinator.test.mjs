@@ -1407,6 +1407,25 @@ test("проверка пары: один материал и версия у о
   journal.close();
 });
 
+test("запуск Codex повис — Gemini всё равно получает материал, панель видит проверку", async () => {
+  // Живой прогон 03.10: ответ thread/resume не разобрался, отправка Codex не
+  // завершалась. Gemini ждал её и материала не получил, а панель до конца
+  // показывала «Claude работает»: состояние уходило только после обеих отправок.
+  const states = [];
+  const { k, codex, gemini, journal } = room(3, { onState: (s) => states.push(s) }, { withGemini: true });
+  codex.send = (prompt) => {
+    codex.received.push(prompt);
+    return new Promise(() => {});
+  };
+  await k.fromHuman("подобрать порог классификатора", "review");
+  turn(k, "claude", "порог 0.4, F1 на валидации 0.71");
+  await waitFor(() => gemini.received.length === 1, "материал у Gemini");
+  await waitFor(() => states.some((s) => s.stage === "reviewing"), "состояние проверки у панели");
+  const shown = states.filter((s) => s.stage === "reviewing").at(-1);
+  assert.deepEqual(shown.pair, { round: 1, sides: { codex: { state: "waiting" }, gemini: { state: "waiting" } } });
+  journal.close();
+});
+
 test("сведение: оба приняли — задача принята, Claude ничего не получает", async () => {
   const { k, claude, events, journal } = await pairRoom();
   turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");

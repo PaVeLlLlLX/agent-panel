@@ -862,8 +862,15 @@ export class Coordinator {
       this.#trail.push({ who: "codex", round });
       if (geminiOut) this.#trail.push({ who: "gemini", round });
     }
-    await this.#send(codexOut);
-    if (geminiOut && this.#isCurrent(cycle)) await this.#send(geminiOut);
+    // Рецензенты независимы: зависший запуск одного не задерживает другого, и
+    // панель видит проверку сразу, а не после отправок. Живой прогон 03.10:
+    // ответ на возобновление ветки Codex не разобрался, его отправка не
+    // завершалась, Gemini материала не получил, а панель показывала «Claude
+    // работает».
+    this.#refresh();
+    const sends = [this.#send(codexOut)];
+    if (geminiOut && this.#isCurrent(cycle)) sends.push(this.#send(geminiOut));
+    await Promise.all(sends);
     this.#refresh();
   }
 
