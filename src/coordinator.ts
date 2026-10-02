@@ -1129,6 +1129,18 @@ export class Coordinator {
         this.#queue.splice(i, 1);
         continue;
       }
+      // Проверка Gemini устарела внутри ТЕКУЩЕГО цикла: пара, которой она
+      // адресована, уже сведена (срок истёк, Codex не прошёл, пара снята)
+      // или это не та пара, которую мы ждём. Доставлять её освободившемуся
+      // Gemini незачем — ответ придёт «поздним» и потратит его квоту впустую.
+      if (
+        o.to === "gemini" &&
+        o.target.role === "review" &&
+        !(this.#pair && this.#pair.cycle === o.target.cycle && this.#pair.round === o.target.round && this.#pair.waiting.has("gemini"))
+      ) {
+        this.#queue.splice(i, 1);
+        continue;
+      }
       const adapter = this.#adapter(o.to);
       if (!adapter) {
         // Агента нет в комнате: ждать нечего, сообщение снимается.
