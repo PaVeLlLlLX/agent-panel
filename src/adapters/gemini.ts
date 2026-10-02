@@ -168,7 +168,7 @@ export class GeminiAdapter implements Adapter {
     this.#processChoice = this.#choice;
     this.#lines = createInterface({ input: proc.stdout });
     this.#lines.on("line", (line) => this.#parse(line));
-    createInterface({ input: proc.stderr }).on("line", (line) => this.#stderr(line));
+    createInterface({ input: proc.stderr }).on("line", (line) => this.#stderr(proc, line));
     proc.stdin.on("error", (err) => this.#channelFailure(proc, err));
     proc.on("error", (err) => this.#end(proc, `Gemini не запустился: ${err.message}`));
     proc.on("exit", (code, signal) => this.#end(proc, `процесс Gemini завершился неожиданно (код ${code}, сигнал ${signal})`));
@@ -271,11 +271,16 @@ export class GeminiAdapter implements Adapter {
     });
   }
 
-  #stderr(line: string): void {
+  #stderr(proc: ChildProcessWithoutNullStreams, line: string): void {
     const text = stripAnsi(line).trim();
     if (!text) return;
-    if (text.startsWith("AGY_ERROR:")) this.#lastError = agyErrorReason(text);
-    else if (/Eligibility check failed/i.test(text)) this.#lastError = "Antigravity отказал по региону (Eligibility check failed)";
+    // Канал stderr не гарантированно дочитан к моменту killTree: поздняя строка
+    // остановленного или заменённого процесса не должна объяснять ход, который
+    // уже идёт в другом процессе (смена модели, «Прервать» и следующая отправка).
+    if (proc === this.#proc) {
+      if (text.startsWith("AGY_ERROR:")) this.#lastError = agyErrorReason(text);
+      else if (/Eligibility check failed/i.test(text)) this.#lastError = "Antigravity отказал по региону (Eligibility check failed)";
+    }
     this.#emit("diagnostic", "stream", { text: clamp(text) });
   }
 
