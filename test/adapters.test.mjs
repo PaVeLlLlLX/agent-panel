@@ -26,10 +26,12 @@ import { fileURLToPath } from "node:url";
 
 import { ClaudeAdapter, formatForClaude } from "../out/adapters/claude.js";
 import { CodexAdapter } from "../out/adapters/codex.js";
+import { GeminiAdapter, formatForGemini } from "../out/adapters/gemini.js";
 
 const fixturePath = (name) => fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url));
 const FAKE_CLAUDE = fixturePath("fake-claude.mjs");
 const FAKE_CODEX = fixturePath("fake-codex.mjs");
+const FAKE_AGY = fixturePath("fake-agy.mjs");
 const MISSING_COMMAND = "nesushchestvuyushchaya-komanda-agent-panel";
 
 function collector() {
@@ -61,6 +63,10 @@ function codex(s, extra = {}) {
     { command: "node", commandArgs: [FAKE_CODEX], cwd: catalog(), ...extra },
     s.sink,
   );
+}
+
+function gemini(s, extra = {}) {
+  return new GeminiAdapter({ command: "node", commandArgs: [FAKE_AGY], cwd: catalog(), ...extra }, s.sink);
 }
 
 // ---------------------------------------------------------------------------
@@ -1602,3 +1608,191 @@ test("Codex: при возобновлении ветки роль реценз�
     await a.stop();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Gemini (agy)
+//
+// Блок — своя область видимости: launches ниже разбирает argv из init agy
+// (raw.init.argv), а не из raw.argv, как у Claude/Codex выше, и под тем же
+// именем не может быть вторым const на уровне модуля.
+// ---------------------------------------------------------------------------
+{
+  /** argv процесса agy из его init: поле есть только у фальшивого agy. */
+  const launches = (events) => events.filter((e) => e.kind === "diagnostic" && e.raw?.event === "init").map((e) => e.raw.init.argv);
+  const completed = (events) => events.filter((e) => e.kind === "turn_completed");
+
+  test("Gemini: запуск с -p=, потоком и своим агентом; реплика и расход хода — сумма шагов", async () => {
+    const s = collector();
+    const a = gemini(s);
+    try {
+      await a.send({ text: "проверь", from: "human" });
+      await waitFor(() => completed(s.events).length === 1, "конец хода");
+      const [argv] = launches(s.events);
+      assert.ok(argv.includes("-p="), "-p без значения съел бы следующий флаг");
+      assert.deepEqual(argv.slice(argv.indexOf("--agent"), argv.indexOf("--agent") + 2), ["--agent", "agent-panel-reviewer"]);
+      assert.ok(argv.includes("stream-json"));
+      assert.ok(!argv.includes("--model"), "модель по умолчанию — флаг не передаётся");
+      assert.deepEqual(s.events.filter((e) => e.kind === "message").map((e) => e.text), ["готово: файл прочитан"]);
+      const done = completed(s.events)[0];
+      assert.deepEqual(done.usage, { input: 300, cached: 0, output: 12 });
+      assert.equal(done.incomplete, undefined);
+      assert.equal(done.failed, undefined);
+      assert.equal(a.sessionId, "fake-agy-conv");
+      const call = s.events.find((e) => e.kind === "tool_call");
+      assert.equal(call.tool, "view_file");
+      assert.equal(s.events.find((e) => e.kind === "tool_result").text, "2 lines, 21 bytes");
+      assert.ok(!s.events.some((e) => e.kind === "error"), "служебный лог stderr — диагностика, а не ошибка");
+    } finally {
+      await a.stop();
+    }
+  });
+
+  test("Gemini: сообщение несёт заголовок, папку проекта и версию файлов", () => {
+    const text = formatForGemini({ text: "материал", from: "claude", heading: "[материал проверки от панели]", snapshot: "abc" }, "C:/proj");
+    assert.equal(text, "[материал проверки от панели]\n[папка проекта: C:/proj — ищи и читай файлы только в ней]\n[версия файлов: abc]\nматериал");
+    assert.match(formatForGemini({ text: "т", from: "human" }, "C:/p"), /^\[от человека\]\n/);
+  });
+
+  test("Gemini: продолжение разговора — --conversation; накопительный итог прежнего процесса в расход не идёт", async () => {
+    const s = collector();
+    const ids = [];
+    const a = gemini(s, { resumeConversationId: "conv-7", onSessionId: (id) => ids.push(id) });
+    try {
+      await a.send({ text: "продолжи", from: "human" });
+      await waitFor(() => completed(s.events).length === 1, "конец хода");
+      const [argv] = launches(s.events);
+      assert.deepEqual(argv.slice(argv.indexOf("--conversation"), argv.indexOf("--conversation") + 2), ["--conversation", "conv-7"]);
+      assert.deepEqual(completed(s.events)[0].usage, { input: 300, cached: 0, output: 12 }, "100 000 прежнего процесса не засчитаны");
+      assert.deepEqual(ids, [], "тот же разговор — привязка не меняется");
+    } finally {
+      await a.stop();
+    }
+  });
+
+  test("Gemini: мягкий отказ — пустой ответ и прирост denied_actions — проверка неполная", async () => {
+    const s = collector();
+    const a = gemini(s);
+    try {
+      await a.send({ text: "ОТКАЗ-БЕЗ-ЗАПРОСА", from: "human" });
+      await waitFor(() => completed(s.events).length === 1, "первый ход");
+      assert.match(completed(s.events)[0].incomplete, /отклонены без запроса: ReadUrlContent/);
+      assert.deepEqual(completed(s.events)[0].denials, ["ReadUrlContent"]);
+      await a.send({ text: "обычный ход", from: "human" });
+      await waitFor(() => completed(s.events).length === 2, "второй ход");
+      assert.equal(completed(s.events)[1].incomplete, undefined, "прежний отказ не засчитывается второй раз");
+    } finally {
+      await a.stop();
+    }
+  });
+
+  test("Gemini: запрет правилом — ошибка шага видна отказом, ход продолжается и отвечает", async () => {
+    const s = collector();
+    const a = gemini(s);
+    try {
+      await a.send({ text: "ЗАПРЕТ", from: "human" });
+      await waitFor(() => completed(s.events).length === 1, "конец хода");
+      assert.match(s.events.find((e) => e.kind === "tool_result").text, /permission check failed/);
+      const decided = s.events.find((e) => e.kind === "approval_decided");
+      assert.match(decided.text, /^отклонено правилом «только чтение»: write_to_file/);
+      assert.equal(decided.toolCallId, s.events.find((e) => e.kind === "tool_call").callId);
+      assert.ok(s.events.some((e) => e.kind === "message" && /запись запрещена/.test(e.text)));
+      assert.equal(completed(s.events)[0].incomplete, undefined);
+    } finally {
+      await a.stop();
+    }
+  });
+
+  test("Gemini: ход с ошибкой и отказ по региону — failed с причиной из stderr", async () => {
+    const s = collector();
+    const a = gemini(s);
+    try {
+      await a.send({ text: "ОШИБКА-ХОДА", from: "human" });
+      await waitFor(() => completed(s.events).length === 1, "ход с ошибкой");
+      assert.equal(completed(s.events)[0].failed, true);
+      assert.match(completed(s.events)[0].text, /ERROR — model error \(model overloaded\)/);
+
+      await a.send({ text: "РЕГИОН", from: "human" });
+      await waitFor(() => completed(s.events).length === 2 && errors(s.events).length === 1, "отказ по региону и выход");
+      assert.match(completed(s.events)[1].text, /Eligibility check failed/);
+      // exit приходит раньше, чем дочитан stderr, не всегда — причина в тексте ошибки не обязательна.
+      assert.match(errors(s.events)[0].text, /завершился неожиданно \(код 1/);
+      assert.equal(a.busy, false);
+    } finally {
+      await a.stop();
+    }
+  });
+
+  test("Gemini: без правил «только чтение» процесс не запускается, причина — в отказе отправки", async () => {
+    const s = collector();
+    const a = gemini(s, { beforeStart: () => "нет режима «только чтение» в настройках agy: нет запрета записи: deny write_file(*)" });
+    await assert.rejects(a.send({ text: "проверь", from: "human" }), /нет режима «только чтение»/);
+    assert.equal(launches(s.events).length, 0);
+    assert.equal(a.busy, false);
+  });
+
+  test("Gemini: смена модели — перезапуск между ходами с --model и тем же разговором", async () => {
+    const s = collector();
+    const a = gemini(s);
+    try {
+      await a.send({ text: "раз", from: "human" });
+      await waitFor(() => completed(s.events).length === 1, "первый ход");
+      a.setModel({ model: "gemini-3.1-pro", effort: "low" });
+      await a.send({ text: "два", from: "human" });
+      await waitFor(() => completed(s.events).length === 2, "второй ход");
+      const second = launches(s.events)[1];
+      assert.deepEqual(second.slice(second.indexOf("--model"), second.indexOf("--model") + 2), ["--model", "gemini-3.1-pro-low"]);
+      assert.deepEqual(second.slice(second.indexOf("--conversation"), second.indexOf("--conversation") + 2), ["--conversation", "fake-agy-conv"]);
+    } finally {
+      await a.stop();
+    }
+  });
+
+  test("Gemini: «Прервать» останавливает процесс; следующий ход продолжает разговор", async () => {
+    const s = collector();
+    const a = gemini(s);
+    try {
+      await a.send({ text: "ДОЛГО", from: "human" });
+      await waitFor(() => launches(s.events).length === 1, "процесс поднят");
+      await a.interrupt();
+      assert.equal(a.busy, false);
+      assert.equal(errors(s.events).length, 0, "плановая остановка — не ошибка");
+      await a.send({ text: "дальше", from: "human" });
+      await waitFor(() => completed(s.events).length === 1, "ход после прерывания");
+      assert.ok(launches(s.events)[1].includes("--conversation"));
+    } finally {
+      await a.stop();
+    }
+  });
+
+  test("Gemini: новая сессия — следующий запуск без --conversation", async () => {
+    const s = collector();
+    const a = gemini(s, { resumeConversationId: "conv-7" });
+    try {
+      await a.forgetSession();
+      await a.send({ text: "с чистого листа", from: "human" });
+      await waitFor(() => completed(s.events).length === 1, "ход");
+      assert.ok(!launches(s.events)[0].includes("--conversation"));
+    } finally {
+      await a.stop();
+    }
+  });
+
+  test("Gemini: падение процесса посреди хода — ошибка с отметкой failed", async () => {
+    const s = collector();
+    const a = gemini(s);
+    try {
+      await a.send({ text: "УПАСТЬ", from: "human" });
+      await waitFor(() => errors(s.events).length === 1, "ошибка процесса");
+      assert.equal(errors(s.events)[0].failed, true);
+      assert.equal(a.busy, false);
+    } finally {
+      await a.stop();
+    }
+  });
+
+  test("Gemini: список моделей из agy models — только gemini, уровни из суффикса", async () => {
+    const a = gemini(collector());
+    const list = await a.listModels();
+    assert.deepEqual(list.map((o) => o.id), ["", "gemini-3.8-flash", "gemini-3.1-pro"]);
+  });
+}
