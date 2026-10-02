@@ -1847,6 +1847,44 @@ test("Codex: при возобновлении ветки роль реценз�
     }
   });
 
+  test("Gemini: признак жизни — вывод текущего процесса; расход идущего хода виден до его конца", async () => {
+    // Живой прогон 03.10: ход Gemini шёл 8,7 мин, из них ~7 — веб-запросы, а
+    // координатору такие шаги почти не видны. Срок молчания считается от
+    // любой строки stdout или stderr текущего процесса; строка остановленного
+    // процесса жизнью нового хода не считается. Расход снятого хода панель
+    // берёт из pendingUsage: turn_completed у остановленного хода не будет.
+    const s = collector();
+    const a = gemini(s);
+    try {
+      assert.equal(a.pendingUsage, undefined, "до хода расхода нет");
+      await a.send({ text: "ЖИВОЙ", from: "human" });
+      await waitFor(() => a.pendingUsage !== undefined, "расход первого вызова модели");
+      assert.deepEqual(a.pendingUsage, { input: 100, cached: 0, output: 2 });
+      const first = a.lastOutputAt;
+      assert.equal(typeof first, "number");
+      await waitFor(() => a.lastOutputAt > first, "новые строки stderr двигают признак жизни");
+      const before = a.lastOutputAt;
+      await a.stop();
+      assert.equal(a.pendingUsage, undefined, "остановленный ход больше не идёт");
+      await new Promise((r) => setTimeout(r, 100));
+      assert.equal(a.lastOutputAt, before, "поздние строки остановленного процесса не в счёт");
+    } finally {
+      await a.stop();
+    }
+  });
+
+  test("Gemini: расход законченного хода не остаётся «идущим»", async () => {
+    const s = collector();
+    const a = gemini(s);
+    try {
+      await a.send({ text: "проверь", from: "human" });
+      await waitFor(() => completed(s.events).length === 1, "конец хода");
+      assert.equal(a.pendingUsage, undefined);
+    } finally {
+      await a.stop();
+    }
+  });
+
   test("Gemini: новая сессия — следующий запуск без --conversation", async () => {
     const s = collector();
     const a = gemini(s, { resumeConversationId: "conv-7" });

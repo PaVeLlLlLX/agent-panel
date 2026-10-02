@@ -24,7 +24,10 @@
  *     result ERROR и выход с кодом 1;
  *   РАЗРЫВ            — ответ с U+2028/U+2029 внутри строки JSON;
  *   ДОЛГО             — ответ через 30 с (для «Прервать» до ответа);
- *   УПАСТЬ            — процесс завершается кодом 3 без result.
+ *   ЖИВОЙ             — вызов модели с расходом сразу, затем строка stderr
+ *     каждые 10 мс и никакого result: долгий ход, который подаёт признаки
+ *     жизни (срок Gemini, живой прогон 03.10);
+ *   УПАСТЬ           — процесс завершается кодом 3 без result.
  * Поле init.argv — весь argv процесса, только у этой фальшивки.
  * Лежит вне test/ по той же причине, что fake-claude.mjs: читает stdin.
  */
@@ -140,6 +143,11 @@ lines.on("line", (line) => {
   const text = String(record.message?.content ?? "");
   stepUpdate({ state: "DONE", step_type: "user_input" });
   step += 1;
+  if (text.includes("ЖИВОЙ")) {
+    modelCall(100, 2);
+    setInterval(() => process.stderr.write("думаю…\n"), 10);
+    return;
+  }
   if (text.includes("УПАСТЬ")) {
     modelCall(50, 1);
     process.exit(3);

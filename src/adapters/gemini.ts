@@ -129,6 +129,8 @@ export class GeminiAdapter implements Adapter {
   #deniedSeen = 0;
   /** Причина из stderr для текущего хода: AGY_ERROR, отказ по региону. */
   #lastError: string | undefined;
+  /** Последняя строка stdout или stderr текущего процесса, мс epoch. */
+  #lastOutputAt: number | undefined;
   readonly #stopping = new WeakSet<object>();
   readonly #reported = new WeakSet<object>();
   #choice: ModelChoice;
@@ -151,6 +153,21 @@ export class GeminiAdapter implements Adapter {
     return this.#conversation;
   }
 
+  /**
+   * Признак жизни для срока молчания (координатор): шаги agent_response без
+   * текста адаптер не показывает, а tool_running говорит об инструменте один
+   * раз — по событиям долгое рассуждение не отличить от зависания.
+   */
+  get lastOutputAt(): number | undefined {
+    return this.#lastOutputAt;
+  }
+
+  /** Расход идущего хода: координатор засчитывает его, когда снимает ход сам. */
+  get pendingUsage(): TurnUsage | undefined {
+    const u = this.#turnUsage;
+    return this.#busy && u.input + u.output > 0 ? u : undefined;
+  }
+
   async start(): Promise<void> {
     if (this.#proc) throw new Error("адаптер Gemini уже запущен");
     const slug = geminiModelSlug(this.#choice, this.#catalog);
@@ -171,7 +188,10 @@ export class GeminiAdapter implements Adapter {
     this.#proc = proc;
     this.#deniedSeen = 0;
     this.#processChoice = this.#choice;
-    this.#lines = readJsonLines(proc.stdout, (line) => this.#parse(line));
+    this.#lines = readJsonLines(proc.stdout, (line) => {
+      if (proc === this.#proc) this.#lastOutputAt = Date.now();
+      this.#parse(line);
+    });
     createInterface({ input: proc.stderr }).on("line", (line) => this.#stderr(proc, line));
     proc.stdin.on("error", (err) => this.#channelFailure(proc, err));
     proc.on("error", (err) => this.#end(proc, `Gemini не запустился: ${err.message}`));
@@ -285,6 +305,9 @@ export class GeminiAdapter implements Adapter {
   }
 
   #stderr(proc: ChildProcessWithoutNullStreams, line: string): void {
+    // Любая строка текущего процесса — признак жизни, даже пустая; строка
+    // остановленного жизнью нового хода не считается.
+    if (proc === this.#proc) this.#lastOutputAt = Date.now();
     const text = stripAnsi(line).trim();
     if (!text) return;
     // Канал stderr не гарантированно дочитан к моменту killTree: поздняя строка
