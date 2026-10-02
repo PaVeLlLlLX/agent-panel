@@ -440,7 +440,7 @@ test("след цикла: задача, работа и проверка с о�
   assert.deepEqual(k.state.trail, [
     { who: "task" },
     { who: "claude" },
-    { who: "codex", mark: "!" },
+    { who: "codex", round: 1, mark: "!" },
     { who: "claude" },
   ]);
   journal.close();
@@ -453,7 +453,7 @@ test("след цикла: принятие ставит галочку, уде�
   await waitFor(() => acceptRoom.codex.received.length === 1, "проверка");
   turn(acceptRoom.k, "codex", "Хорошо.\nВЕРДИКТ: ПРИНЯТО");
   await waitFor(() => acceptRoom.k.state.stage === "accepted", "принятие");
-  assert.deepEqual(acceptRoom.k.state.trail.at(-1), { who: "codex", mark: "✓" });
+  assert.deepEqual(acceptRoom.k.state.trail.at(-1), { who: "codex", round: 1, mark: "✓" });
   acceptRoom.journal.close();
 
   const holdRoom = room();
@@ -462,7 +462,7 @@ test("след цикла: принятие ставит галочку, уде�
   await waitFor(() => holdRoom.codex.received.length === 1, "проверка");
   turn(holdRoom.k, "codex", "Нужны данные.\nВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА");
   await waitFor(() => holdRoom.k.state.stage === "held", "удержание");
-  assert.deepEqual(holdRoom.k.state.trail.slice(-2), [{ who: "codex", mark: "?" }, { who: "you" }]);
+  assert.deepEqual(holdRoom.k.state.trail.slice(-2), [{ who: "codex", round: 1, mark: "?" }, { who: "you" }]);
   holdRoom.journal.close();
 });
 
@@ -1373,5 +1373,195 @@ test("неудачный повторный запрос квоты Gemini по�
   await k.refreshGeminiUsage();
   assert.equal(k.state.usage.limits.geminiWeek.percent, 3);
   assert.equal(k.state.usage.limits.geminiWeek.stale, true);
+  journal.close();
+});
+
+// ---------------------------------------------------------------------------
+// Пара рецензентов: Codex и Gemini
+// ---------------------------------------------------------------------------
+
+async function pairRoom(options = {}, limit = 3) {
+  const r = room(limit, options, { withGemini: true });
+  await r.k.fromHuman("подобрать порог классификатора", "review");
+  turn(r.k, "claude", "порог 0.4, F1 на валидации 0.71");
+  await waitFor(() => r.codex.received.length === 1 && r.gemini.received.length === 1, "проверка у обоих");
+  return r;
+}
+
+test("проверка пары: один материал и версия у обоих, счётчик +1 за пару", async () => {
+  const { k, codex, gemini, journal } = await pairRoom();
+  assert.match(codex.received[0].text, /порог 0\.4/);
+  assert.match(gemini.received[0].text, /порог 0\.4/);
+  assert.match(gemini.received[0].text, /методологию эксперимента/);
+  assert.doesNotMatch(codex.received[0].text, /методологию эксперимента/, "Codex проверяет как прежде");
+  assert.equal(gemini.received[0].heading, "[материал проверки от панели]");
+  assert.equal(codex.received[0].snapshot, gemini.received[0].snapshot);
+  assert.equal(k.state.round, 1);
+  assert.equal(k.state.stage, "reviewing");
+  assert.deepEqual(k.state.pair, { round: 1, sides: { codex: { state: "waiting" }, gemini: { state: "waiting" } } });
+  assert.deepEqual(k.state.trail.slice(-2), [{ who: "codex", round: 1 }, { who: "gemini", round: 1 }]);
+  journal.close();
+});
+
+test("сведение: оба приняли — задача принята, Claude ничего не получает", async () => {
+  const { k, claude, events, journal } = await pairRoom();
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  await sleep(30);
+  assert.equal(k.state.stage, "reviewing", "ждём Gemini");
+  assert.deepEqual(k.state.pair.sides.codex, { state: "done", verdict: "accepted" });
+  turn(k, "gemini", "Утечек нет: свидетельство — вызов c1.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => k.state.stage === "accepted", "принятие");
+  assert.equal(claude.received.length, 1);
+  assert.equal(k.state.verdict, "accepted");
+  assert.ok(systemEvents(events).some((e) => /Итог проверки 1: Codex — принято, Gemini — принято/.test(e.text)));
+  assert.deepEqual(k.state.trail.slice(-2), [
+    { who: "codex", round: 1, mark: "✓" },
+    { who: "gemini", round: 1, mark: "✓" },
+  ]);
+  journal.close();
+});
+
+test("сведение: замечания у одного — Claude получает одно сообщение с обоими отзывами", async () => {
+  const { k, claude, journal } = await pairRoom();
+  turn(k, "gemini", "Пробел: пересечение id train/test не показано.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => claude.received.length === 2, "возврат Claude");
+  const back = claude.received[1];
+  assert.equal(back.heading, "[замечания рецензентов Codex и Gemini]");
+  assert.match(back.text, /— Codex — код — принято/);
+  assert.match(back.text, /— Gemini — методология и факты —\nПробел: пересечение/);
+  assert.equal(k.state.stage, "working");
+  assert.equal(k.state.verdict, "remarks");
+  journal.close();
+});
+
+test("сведение: Gemini просит решения человека — обмен ждёт вас", async () => {
+  const { k, claude, journal } = await pairRoom();
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  turn(k, "gemini", "Нужен доступ к данным.\nВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА");
+  await waitFor(() => k.state.stage === "held", "удержание");
+  assert.match(k.state.held.reason, /^Gemini просит вашего решения/);
+  assert.equal(k.state.held.to, "claude");
+  assert.equal(claude.received.length, 1);
+  journal.close();
+});
+
+test("сведение: Gemini без вердикта — ждём вас", async () => {
+  const { k, journal } = await pairRoom();
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  turn(k, "gemini", "Посмотрел, вроде нормально.");
+  await waitFor(() => k.state.stage === "held", "удержание");
+  assert.match(k.state.held.reason, /^Gemini не вынес вердикт/);
+  journal.close();
+});
+
+test("Gemini не проверял — пустой ответ, ошибка хода, падение процесса — итог по Codex", async () => {
+  const endings = [
+    (k) => k.handle(event("gemini", "turn_completed", { incomplete: "пустой ответ" })),
+    (k) => k.handle(event("gemini", "turn_completed", { failed: true, text: "ход завершён: ERROR — model error" })),
+    (k) => k.handle(event("gemini", "error", { failed: true, text: "процесс Gemini завершился неожиданно (код 3)" })),
+  ];
+  for (const ending of endings) {
+    const { k, events, journal } = await pairRoom();
+    turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+    ending(k);
+    await waitFor(() => k.state.stage === "accepted", "принятие по Codex");
+    assert.ok(systemEvents(events).some((e) => /^Gemini не проверял: /.test(e.text)));
+    assert.equal(k.state.pair.sides.gemini.state, "unchecked");
+    assert.ok(k.state.trail.at(-1).unchecked, "причина — в следе для дорожки");
+    journal.close();
+  }
+});
+
+test("Gemini не успел за срок после Codex — итог по Codex, поздний ответ не входит в следующую проверку", async () => {
+  const { k, claude, events, journal } = await pairRoom({ geminiWaitMs: 40 });
+  turn(k, "codex", "Дефект в пороге.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => claude.received.length === 2, "замечания Claude без Gemini");
+  assert.match(claude.received[1].text, /— Gemini — методология и факты — не проверял: не успел за 1 с после ответа Codex/);
+  turn(k, "gemini", "Поздно.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await sleep(30);
+  assert.ok(systemEvents(events).some((e) => /Поздний ответ Gemini \(проверка 1\)/.test(e.text)));
+  assert.equal(claude.received.length, 2, "поздний ответ не пересылается");
+  assert.equal(k.state.stage, "working");
+  journal.close();
+});
+
+test("«Прервать» во время ожидания Gemini — срок не сводит снятую проверку", async () => {
+  const { k, claude, events, journal } = await pairRoom({ geminiWaitMs: 40 });
+  turn(k, "codex", "Дефект.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await k.interruptAll();
+  await sleep(120);
+  assert.equal(claude.received.length, 1, "после «Прервать» замечания не уходят");
+  assert.equal(k.state.stage, "stopped");
+  assert.ok(!systemEvents(events).some((e) => /Итог проверки/.test(e.text)));
+  journal.close();
+});
+
+test("удержанная пара уходит обоим по кнопке «Отправить на проверку»", async () => {
+  const { k, codex, gemini, journal } = room(0, {}, { withGemini: true });
+  await k.fromHuman("задача", "review");
+  turn(k, "claude", "сделал");
+  await waitFor(() => k.state.stage === "held", "удержание по пределу");
+  assert.equal(k.state.held.action, "review");
+  assert.match(k.state.held.reason, /не проверена рецензентами/);
+  await k.releaseHeld();
+  assert.equal(codex.received.length, 1);
+  assert.equal(gemini.received.length, 1);
+  assert.equal(k.state.round, 1);
+  assert.equal(k.state.stage, "reviewing");
+  journal.close();
+});
+
+test("Gemini не запустился (нет правил «только чтение») — не проверял, цикл идёт с Codex", async () => {
+  const { k, codex, gemini, events, journal } = room(3, {}, { withGemini: true });
+  gemini.send = async () => {
+    throw new Error("нет режима «только чтение» в настройках agy: нет запрета записи: deny write_file(*)");
+  };
+  await k.fromHuman("задача", "review");
+  turn(k, "claude", "сделал");
+  await waitFor(() => codex.received.length === 1, "Codex получил проверку");
+  assert.equal(k.state.stage, "reviewing", "сбой Gemini не останавливает цикл");
+  turn(k, "codex", "Хорошо.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => k.state.stage === "accepted", "принятие по Codex");
+  assert.ok(systemEvents(events).some((e) => /Gemini не проверял: нет режима «только чтение»/.test(e.text)));
+  journal.close();
+});
+
+test("принятая работа при сдвинутом дереве — отметка версии в ленте", async () => {
+  let n = 0;
+  const snapshot = async () => ({ id: `v${(n += 1)}`, commit: undefined, dirty: true, at: Date.now(), source: "filesystem" });
+  const { k, codex, events, journal } = room(3, { snapshot }, { withGemini: true });
+  await k.fromHuman("задача", "review");
+  turn(k, "claude", "сделал");
+  await waitFor(() => codex.received.length === 1, "проверка");
+  turn(k, "codex", "ВЕРДИКТ: ПРИНЯТО");
+  turn(k, "gemini", "ВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => k.state.stage === "accepted", "принятие");
+  assert.ok(systemEvents(events).some((e) => /Файлы изменились за время проверки: принята версия/.test(e.text)));
+  journal.close();
+});
+
+test("расход Gemini в проверке входит в расход задачи и в предел токенов", async () => {
+  const { k, claude, gemini, journal } = room(3, { taskTokenLimit: 1000 }, { withGemini: true });
+  await k.fromHuman("задача", "review");
+  turn(k, "claude", "сделал", { usage: { input: 300, cached: 0, output: 10 } });
+  await waitFor(() => gemini.received.length === 1, "проверка");
+  turn(k, "codex", "Дефект.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ", { usage: { input: 300, cached: 0, output: 10 } });
+  turn(k, "gemini", "Пробел.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ", { usage: { input: 400, cached: 0, output: 10 } });
+  await waitFor(() => k.state.stage === "held", "предел токенов");
+  assert.equal(k.state.usage.task.gemini.input, 400);
+  assert.match(k.state.held.reason, /1030 токенов/);
+  assert.equal(claude.received.length, 1);
+  journal.close();
+});
+
+test("сбой Codex по-прежнему останавливает цикл, и срок Gemini не срабатывает", async () => {
+  const { k, claude, events, journal } = await pairRoom({ geminiWaitMs: 40 });
+  k.handle(event("codex", "turn_completed", { failed: true, text: "ход завершён: failed" }));
+  await sleep(120);
+  assert.equal(k.state.stage, "stopped");
+  assert.equal(claude.received.length, 1);
+  assert.ok(systemEvents(events).some((e) => /Ход Codex завершился с ошибкой/.test(e.text)));
+  assert.ok(!systemEvents(events).some((e) => /Итог проверки/.test(e.text)));
   journal.close();
 });
