@@ -12,6 +12,7 @@
  *   --two-subagents — двум сразу, один заметно дольше другого;
  *   --background-bash — фоновая команда кончается, пока идёт рецензия;
  *   --memory   — «Память по теме»: команда поиска с каталогом Trading.
+ *   --gemini   — пара рецензентов на ML-задаче с подложенной утечкой: Gemini должен найти её чек-листом.
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
@@ -22,14 +23,17 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { ClaudeAdapter } = require("../out/adapters/claude.js");
 const { CodexAdapter } = require("../out/adapters/codex.js");
+const { GeminiAdapter } = require("../out/adapters/gemini.js");
 const { Coordinator } = require("../out/coordinator.js");
 const { Journal } = require("../out/journal.js");
 const { resolveCodexCommand } = require("../out/codexBinary.js");
+const { resolveGeminiCommand } = require("../out/geminiBinary.js");
 const { runMemorySearch } = require("../out/memory.js");
 
 const SUBAGENT = process.argv.includes("--subagent");
 const TWO = process.argv.includes("--two-subagents");
 const BACKGROUND = process.argv.includes("--background-bash");
+const GEMINI = process.argv.includes("--gemini");
 const parents = new Set();
 let claudeTurns = 0;
 let autonomousEnds = 0;
@@ -60,11 +64,17 @@ const codex = new CodexAdapter(
   { command: launch.command, shell: launch.shell, cwd: dir, model: "gpt-6-luna", effort: "low" },
   accept,
 );
+const geminiLaunch = GEMINI ? resolveGeminiCommand("agy", process.env.LOCALAPPDATA, process.env.PATH) : undefined;
+if (GEMINI && !geminiLaunch) throw new Error("agy не найден");
+const gemini = geminiLaunch
+  ? new GeminiAdapter({ command: geminiLaunch.command, shell: geminiLaunch.shell, cwd: dir, model: "gemini-3.8-flash", effort: "low" }, accept)
+  : undefined;
 let lastState;
 coordinator = new Coordinator(claude, codex, journal, {
   room: "e2e",
   cwd: dir,
   maxAutoRounds: 2,
+  ...(gemini ? { gemini, geminiWaitMs: 5 * 60_000 } : {}),
   ...(memoryCommand
     ? { memory: (text) => runMemorySearch(memoryCommand, "C:/Users/21435/source/Trading", text) }
     : {}),
@@ -85,6 +95,12 @@ coordinator = new Coordinator(claude, codex, journal, {
   },
 });
 
+if (GEMINI) {
+  writeFileSync(
+    join(dir, "data.csv"),
+    "id,split,x,y\n1,train,-1.2,0\n2,train,0.8,1\n3,train,1.1,1\n3,test,1.0,1\n4,test,-0.9,0\n5,test,0.3,1\n",
+  );
+}
 await coordinator.fromHuman(
   BACKGROUND
     ? "Запусти инструментом Bash с параметром run_in_background: true команду: sleep 15; echo поздно > late.txt\nНе жди её и ничего не проверяй. Сразу ответь одной фразой: команда запущена в фоне, файл late.txt появится через 15 секунд."
@@ -92,6 +108,8 @@ await coordinator.fromHuman(
     ? "Одним сообщением запусти двух субагентов параллельно (два вызова инструмента Agent, subagent_type general-purpose). Первый создаёт файл one.txt с одной строкой «один». Второй сначала выполняет команду sleep 25, затем создаёт файл two.txt с одной строкой «два». Сам файлы не трогай. Когда закончат оба, покажи оба файла командой cat и одной фразой скажи, что сделано."
     : SUBAGENT
     ? "Поручи ровно одному субагенту (инструмент Agent, subagent_type general-purpose) создать файл hello.txt с одной строкой «привет» и показать его командой cat. Сам файлы не трогай. Когда субагент закончит, одной фразой скажи, что сделано. Для справки: почему в проекте отозвали эффект FOMC?"
+    : GEMINI
+    ? "Напиши evaluate.py без сторонних библиотек: прочитай data.csv, нормализуй x по среднему и стандартному отклонению всех строк, затем раздели по колонке split и посчитай долю верных предсказаний правила x>0 на test. Запусти и покажи вывод."
     : "Создай файл hello.txt с одной строкой: привет. Покажи его содержимое командой cat. Больше ничего не делай.",
   "review",
 );
@@ -113,6 +131,12 @@ console.log(time(), "ИТОГ", JSON.stringify({
   usage: lastState?.usage,
   ...(TWO || SUBAGENT || BACKGROUND
     ? { subagentParents: parents.size, claudeTurns, autonomousEnds, files: readdirSync(dir).filter((it) => it.endsWith(".txt")) }
+    : {}),
+  ...(GEMINI
+    ? {
+        pair: lastState?.pair,
+        geminiFirst: (journal.history("e2e").find((e) => e.agent === "gemini" && e.kind === "message")?.text ?? "").slice(0, 400),
+      }
     : {}),
 }, null, 1));
 await coordinator.stopAll();
