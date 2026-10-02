@@ -1393,6 +1393,10 @@ test("проверка пары: один материал и версия у о
   assert.match(codex.received[0].text, /порог 0\.4/);
   assert.match(gemini.received[0].text, /порог 0\.4/);
   assert.match(gemini.received[0].text, /методологию эксперимента/);
+  // I1: Gemini не должен сам закрывать глаза на свой же «пробел» — правило
+  // явно идёт в тексте хода, а не только в agent.md.
+  assert.match(gemini.received[0].text, /пробел.*ВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ/s);
+  assert.match(gemini.received[0].text, /предписанный самим поручением человека.*ВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА/s);
   assert.doesNotMatch(codex.received[0].text, /методологию эксперимента/, "Codex проверяет как прежде");
   assert.equal(gemini.received[0].heading, "[материал проверки от панели]");
   assert.equal(codex.received[0].snapshot, gemini.received[0].snapshot);
@@ -1457,27 +1461,70 @@ test("сведение: Gemini без вердикта — ждём вас", asy
 
 test("Gemini не проверял — пустой ответ, ошибка хода, падение процесса — итог по Codex", async () => {
   const endings = [
-    (k) => k.handle(event("gemini", "turn_completed", { incomplete: "пустой ответ" })),
-    (k) => k.handle(event("gemini", "turn_completed", { failed: true, text: "ход завершён: ERROR — model error" })),
-    (k) => k.handle(event("gemini", "error", { failed: true, text: "процесс Gemini завершился неожиданно (код 3)" })),
+    { fn: (k) => k.handle(event("gemini", "turn_completed", { incomplete: "пустой ответ" })), reason: /пустой ответ/ },
+    { fn: (k) => k.handle(event("gemini", "turn_completed", { failed: true, text: "ход завершён: ERROR — model error" })), reason: /model error/ },
+    {
+      fn: (k) => k.handle(event("gemini", "error", { failed: true, text: "процесс Gemini завершился неожиданно (код 3)" })),
+      reason: /процесс Gemini завершился неожиданно \(код 3\)/,
+    },
   ];
-  for (const ending of endings) {
+  for (const { fn, reason } of endings) {
     const { k, events, journal } = await pairRoom();
     turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
-    ending(k);
+    fn(k);
     await waitFor(() => k.state.stage === "accepted", "принятие по Codex");
-    assert.ok(systemEvents(events).some((e) => /^Gemini не проверял: /.test(e.text)));
+    // T7-crash: причина хода самой ошибки — в ленте, а не общая заглушка.
+    assert.ok(systemEvents(events).some((e) => /^Gemini не проверял: /.test(e.text) && reason.test(e.text)));
     assert.equal(k.state.pair.sides.gemini.state, "unchecked");
     assert.ok(k.state.trail.at(-1).unchecked, "причина — в следе для дорожки");
     journal.close();
   }
 });
 
+test("T7-wording: принятие при непроверенном Gemini — «Codex принял работу», не «Рецензенты»", async () => {
+  const { k, events, journal } = await pairRoom();
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  k.handle(event("gemini", "turn_completed", { incomplete: "пустой ответ" }));
+  await waitFor(() => k.state.stage === "accepted", "принятие по Codex");
+  assert.ok(systemEvents(events).some((e) => /^Codex принял работу \(Gemini не проверял\)\. Цикл завершён\./.test(e.text)));
+  assert.ok(!systemEvents(events).some((e) => /^Рецензенты приняли работу/.test(e.text)));
+  journal.close();
+});
+
+test("T7-wording: оба приняли — «Рецензенты приняли работу»", async () => {
+  const { k, events, journal } = await pairRoom();
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  turn(k, "gemini", "Утечек нет.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => k.state.stage === "accepted", "принятие");
+  assert.ok(systemEvents(events).some((e) => /^Рецензенты приняли работу\. Цикл завершён\./.test(e.text)));
+  journal.close();
+});
+
+test("M6: новая сессия Gemini во время пары не останавливает цикл — «не проверял», Codex продолжает", async () => {
+  const { k, codex, events, journal } = await pairRoom();
+  await k.newSession("gemini");
+  assert.equal(k.state.stage, "reviewing", "цикл не должен остановиться");
+  assert.equal(k.state.pair.sides.gemini.state, "unchecked");
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => k.state.stage === "accepted", "принятие по Codex");
+  assert.ok(systemEvents(events).some((e) => /^Gemini не проверял: новая сессия Gemini/.test(e.text)));
+  assert.equal(codex.received.length, 1, "Codex не перезапущен и не остановлен");
+  journal.close();
+});
+
+test("M7: прямой вопрос Gemini, закончившийся пустым ответом, виден в ленте", async () => {
+  const { k, events, journal } = room(3, {}, { withGemini: true });
+  await k.fromHuman("вопрос", "gemini");
+  k.handle(event("gemini", "turn_completed", { incomplete: "пустой ответ" }));
+  await waitFor(() => systemEvents(events).some((e) => /^Gemini не ответил: пустой ответ\./.test(e.text)), "сообщение о неполном прямом ответе");
+  journal.close();
+});
+
 test("Gemini не успел за срок после Codex — итог по Codex, поздний ответ не входит в следующую проверку", async () => {
   const { k, claude, events, journal } = await pairRoom({ geminiWaitMs: 40 });
   turn(k, "codex", "Дефект в пороге.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
   await waitFor(() => claude.received.length === 2, "замечания Claude без Gemini");
-  assert.match(claude.received[1].text, /— Gemini — методология и факты — не проверял: не успел за 1 с после ответа Codex/);
+  assert.match(claude.received[1].text, /— Gemini — методология и факты — не проверял \(это не замечание, исправлять нечего\)/);
   turn(k, "gemini", "Поздно.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
   await sleep(30);
   assert.ok(systemEvents(events).some((e) => /Поздний ответ Gemini \(проверка 1\)/.test(e.text)));
@@ -1655,7 +1702,7 @@ test("сведение пары: таблица исходов Codex × Gemini �
       assert.equal(back.heading, "[замечания рецензентов Codex и Gemini]");
       assert.match(back.text, /— Codex — код —/);
       assert.match(back.text, /— Gemini — методология и факты —/);
-      if (row.uncheckedBlock) assert.match(back.text, /— Gemini — методология и факты — не проверял: пустой ответ/);
+      if (row.uncheckedBlock) assert.match(back.text, /— Gemini — методология и факты — не проверял \(это не замечание, исправлять нечего\)/);
     } else if (row.stage === "held") {
       assert.match(k.state.held.reason, row.held, `${label}: причина удержания`);
       assert.equal(claude.received.length, 1, `${label}: удержание не должно уйти Claude само`);

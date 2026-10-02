@@ -14,6 +14,8 @@
  * Управляющие слова в тексте хода (разбираются один раз, в порядке строк):
  *   ОТКАЗ-БЕЗ-ЗАПРОСА — действие отклонено без интерфейса: пустой response,
  *     status SUCCESS, denied_actions копится;
+ *   ОТКАЗ-С-ОТВЕТОМ   — тот же мягкий отказ, но модель всё равно отвечает
+ *     текстом (M8: непустой ответ — не «не проверял», отказ остаётся в denials);
  *   ЗАПРЕТ            — write_to_file кончается ERROR с permission check
  *     failed, ход продолжается и отвечает;
  *   ОШИБКА-ХОДА       — status ERROR с error "model error", строка AGY_ERROR
@@ -166,6 +168,15 @@ lines.on("line", (line) => {
     denied.push({ action: "read_url", display_name: "ReadUrlContent" });
     process.stderr.write('jetski: no output produced — a tool required the "read_url" permission that headless mode cannot prompt for, so it was auto-denied.\n');
     result("SUCCESS", "");
+    return;
+  }
+  if (text.includes("ОТКАЗ-С-ОТВЕТОМ")) {
+    modelCall(100, 2);
+    tool("read_url_content", { Url: "https://pypi.org/pypi/scikit-learn/json" }, "DONE");
+    denied.push({ action: "read_url", display_name: "ReadUrlContent" });
+    process.stderr.write('jetski: no output produced — a tool required the "read_url" permission that headless mode cannot prompt for, so it was auto-denied.\n');
+    modelCall(150, 6, "страницу не открыл, но вот ответ по памяти");
+    result("SUCCESS", "страницу не открыл, но вот ответ по памяти\n");
     return;
   }
   if (text.includes("ЗАПРЕТ")) {

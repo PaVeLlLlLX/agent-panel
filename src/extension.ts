@@ -160,6 +160,9 @@ class Room {
       process.env["LOCALAPPDATA"],
       process.env["PATH"],
     );
+    // Состояние правил на прошлой проверке beforeStart: сменилось — плашка
+    // должна появиться или исчезнуть сама, без переоткрытия панели (I2).
+    let lastRulesOk: boolean | undefined;
     const gemini = geminiLaunch
       ? new GeminiAdapter(
           {
@@ -170,9 +173,14 @@ class Room {
             effort: this.#choices.gemini.effort,
             ...(binding?.geminiConversationId ? { resumeConversationId: binding.geminiConversationId } : {}),
             // Роль пишется перед каждым запуском (файл принадлежит панели); без правил «только чтение» — не запускать.
+            // Проверяется на каждом ходу (gemini.ts): правила могли пропасть между ходами возобновляемой сессии.
             beforeStart: () => {
               ensureReviewerAgent(reviewerAgentPath(homedir()));
-              return rulesRefusal(checkReadOnlyRules(this.#agySettings), this.#agySettings);
+              const refusal = rulesRefusal(checkReadOnlyRules(this.#agySettings), this.#agySettings);
+              const ok = refusal === undefined;
+              if (lastRulesOk !== undefined && lastRulesOk !== ok) this.#postGemini();
+              lastRulesOk = ok;
+              return refusal;
             },
             onSessionId: (id) => {
               if (!this.#closed) this.#journal.bindGeminiConversation(this.#name, id);
@@ -242,7 +250,8 @@ class Room {
           this.#coordinator.notice(
             refusal
               ? `Правила для Gemini не добавлены: ${refusal}.`
-              : "Правила «только чтение» для Gemini добавлены в настройки agy: со следующей проверки Gemini проверяет вместе с Codex.",
+              : "Правила «только чтение» для Gemini добавлены в настройки agy (нестандартный режим toolPermission, " +
+                  "если он был, снят — иначе Gemini не смог бы читать файлы): со следующей проверки Gemini проверяет вместе с Codex.",
           );
         } catch (err) {
           this.#coordinator.notice(
@@ -506,7 +515,7 @@ function markup(webview: vscode.Webview, context: vscode.ExtensionContext): stri
   <section id="правила-gemini" class="удержано" hidden aria-label="Gemini нужен режим только чтения">
     <span class="значок-паузы" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8v3.6M8 10.8v.3"/></svg></span>
     <div class="суть"><b>Gemini нужен режим только чтения</b><span id="правила-gemini-причина"></span></div>
-    <button id="добавить-правила" class="пилюля главная" title="Дописать в настройки agy: разрешить чтение страниц, запретить запись файлов и команды. Остальное содержимое сохраняется">Добавить правила</button>
+    <button id="добавить-правила" class="пилюля главная" title="Дописать в настройки agy: разрешить чтение страниц, запретить запись файлов и команды; нестандартный режим (например strict) будет снят, чтобы Gemini мог читать файлы. Остальное содержимое сохраняется">Добавить правила</button>
   </section>
   <div id="модели-панель" class="модели" hidden>
     <span id="модели-состояние"></span>

@@ -245,7 +245,10 @@ const VERDICT_WORDS: Record<Verdict, string> = {
 const GEMINI_FOCUS =
   "Ты второй рецензент: проверь методологию эксперимента (чек-лист: утечки, разбиения, метрики, бейзлайн, " +
   "сиды и разброс, обоснованность выводов — у каждого пункта «свидетельство: …» или «пробел: …») и факты " +
-  "вне репозитория (с адресом страницы и датой проверки). Код целиком не перепроверяй — это делает Codex.";
+  "вне репозитория (с адресом страницы и датой проверки). Код целиком не перепроверяй — это делает Codex. " +
+  "Любой открытый «пробел: …» или найденный дефект методологии — это «ВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ»; дефект, " +
+  "прямо предписанный самим поручением человека — «ВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА»; «ВЕРДИКТ: ПРИНЯТО» — " +
+  "только когда пробелов и дефектов нет.";
 
 function waitWords(ms: number): string {
   return ms >= 60_000 ? `${Math.round(ms / 60_000)} мин` : `${Math.max(1, Math.round(ms / 1000))} с`;
@@ -258,7 +261,9 @@ function movedNote(reviewed: Snapshot | undefined, current: Snapshot): string {
 }
 
 function reviewBlock(title: string, outcome: ReviewOutcome, current: Snapshot): string {
-  if (outcome.kind === "unchecked") return `— ${title} — не проверял: ${outcome.reason}`;
+  // Причина отказа — не замечание к работе разработчика, поэтому Claude её не
+  // видит здесь: она остаётся в строке ленты «Gemini не проверял: …» (M5).
+  if (outcome.kind === "unchecked") return `— ${title} — не проверял (это не замечание, исправлять нечего)`;
   if (outcome.verdict === "accepted") return `— ${title} — принято`;
   const shift =
     outcome.snapshot && outcome.snapshot.id !== current.id
@@ -395,7 +400,7 @@ export class Coordinator {
       void this.#turnFinished(worker, marked);
     } else if (marked.kind === "error" && marked.failed) {
       for (const [id, who] of this.#requests) if (who === worker) this.#requests.delete(id);
-      void this.#agentCrashed(worker);
+      void this.#agentCrashed(worker, marked.text);
     } else if (marked.kind === "turn_started") {
       if (marked.unsolicited) {
         this.#report(
@@ -632,7 +637,16 @@ export class Coordinator {
     // Журнал — раньше остановки: закрытие панели во время неё не вернёт
     // прежнюю привязку (рецензия Codex 28.09).
     this.journal.forgetSession(this.options.room, agent);
-    if (adapter.busy) {
+    if (agent === "gemini") {
+      // Gemini — не арбитр: новая сессия для него не должна рвать весь цикл
+      // (M6, финальная рецензия 02.10). Если пара сейчас ждёт его ответа,
+      // засчитать «не проверял» и дать Codex доводить проверку одному —
+      // #resetWait здесь не нужен, процесс всё равно остановит forgetSession ниже.
+      const pair = this.#pair;
+      if (pair && this.#isCurrent(pair.cycle) && pair.waiting.has("gemini")) {
+        await this.#recordOutcome(pair, "gemini", { kind: "unchecked", reason: "новая сессия Gemini" });
+      }
+    } else if (adapter.busy) {
       // Ход обрывается вместе с процессом: ждать его ответа циклу нечего.
       this.#stops += 1;
       this.#resetWait("stopped");
@@ -759,6 +773,10 @@ export class Coordinator {
       await this.#afterWork(material, cycle, this.#task ?? "");
     } else if (denials.length > 0) {
       this.#report(`${NAMES[agent]} получил отказы в разрешениях (${denials.length}): ${denials.join("; ")}.`);
+    } else if (agent === "gemini" && target.role === "direct" && ended.incomplete) {
+      // Прямой вопрос Gemini мимо цикла рецензии: «не проверял» здесь не
+      // подходит (это не проверка), но и молчать о пустом ответе нельзя (M7).
+      this.#report(`Gemini не ответил: ${ended.incomplete}.`);
     }
 
     await this.#flushQueue();
@@ -929,7 +947,10 @@ export class Coordinator {
     if (!this.#isCurrent(pair.cycle)) return;
     if (combined === "accepted") {
       this.#stage = "accepted";
-      this.#report(`Рецензенты приняли работу. Цикл завершён.${movedNote(codex.snapshot, current)}`);
+      // Gemini не проверял — принятие на самом деле вынес один Codex, и
+      // ленте не следует говорить «рецензенты» во множественном (T7-wording).
+      const who = gemini.kind === "unchecked" ? "Codex принял работу (Gemini не проверял)." : "Рецензенты приняли работу.";
+      this.#report(`${who} Цикл завершён.${movedNote(codex.snapshot, current)}`);
       return;
     }
     const outgoing: Outgoing = {
@@ -1030,15 +1051,16 @@ export class Coordinator {
     this.#report(reason);
   }
 
-  async #agentCrashed(agent: Worker): Promise<void> {
+  async #agentCrashed(agent: Worker, reason?: string): Promise<void> {
     const pending = this.#targets.get(agent) ?? [];
     this.#targets.delete(agent);
     this.#buffers.delete(agent);
     if (agent === "gemini") {
       // Gemini — не арбитр: его сбой — «не проверял», цикл идёт с Codex.
+      // Причина хода — слова самой ошибки (T7-crash), а не общая заглушка.
       const pair = this.#pair;
       if (pair && this.#isCurrent(pair.cycle) && pending.some((t) => t.role === "review" && t.cycle === pair.cycle && t.round === pair.round)) {
-        await this.#recordOutcome(pair, "gemini", { kind: "unchecked", reason: "процесс Gemini завершился" });
+        await this.#recordOutcome(pair, "gemini", { kind: "unchecked", reason: reason ?? "процесс Gemini завершился" });
       }
     } else if (pending.some((c) => c.cycle !== undefined && this.#isCurrent(c.cycle))) {
       this.#stage = "stopped";

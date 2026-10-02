@@ -1685,6 +1685,20 @@ test("Codex: при возобновлении ветки роль реценз�
     }
   });
 
+  test("Gemini: отказ с непустым ответом — не «не проверял», отказ всё равно виден в denials (M8)", async () => {
+    const s = collector();
+    const a = gemini(s);
+    try {
+      await a.send({ text: "ОТКАЗ-С-ОТВЕТОМ", from: "human" });
+      await waitFor(() => completed(s.events).length === 1, "конец хода");
+      assert.equal(completed(s.events)[0].incomplete, undefined, "непустой ответ — проверка состоялась");
+      assert.deepEqual(completed(s.events)[0].denials, ["ReadUrlContent"]);
+      assert.ok(s.events.some((e) => e.kind === "message" && /страницу не открыл/.test(e.text ?? "")));
+    } finally {
+      await a.stop();
+    }
+  });
+
   test("Gemini: запрет правилом — ошибка шага видна отказом, ход продолжается и отвечает", async () => {
     const s = collector();
     const a = gemini(s);
@@ -1728,6 +1742,29 @@ test("Codex: при возобновлении ветки роль реценз�
     await assert.rejects(a.send({ text: "проверь", from: "human" }), /нет режима «только чтение»/);
     assert.equal(launches(s.events).length, 0);
     assert.equal(a.busy, false);
+  });
+
+  test("Gemini: правила проверяются на каждом ходу — пропали между ходами, живой процесс останавливается (I2)", async () => {
+    const s = collector();
+    let allow = true;
+    const a = gemini(s, {
+      beforeStart: () => (allow ? undefined : "нет режима «только чтение» в настройках agy: нет запрета записи: deny write_file(*)"),
+    });
+    try {
+      await a.send({ text: "первый ход", from: "human" });
+      await waitFor(() => completed(s.events).length === 1, "первый ход завершён");
+      assert.equal(launches(s.events).length, 1, "один процесс поднят");
+      allow = false;
+      await assert.rejects(a.send({ text: "второй ход", from: "human" }), /нет режима «только чтение»/);
+      assert.equal(a.busy, false, "ход не остался занятым");
+      assert.equal(launches(s.events).length, 1, "второй процесс не поднимался — второго init нет");
+      await waitFor(
+        () => s.events.some((e) => e.kind === "diagnostic" && /процесс Gemini остановлен/.test(e.text ?? "")),
+        "живой процесс остановлен, а не продолжен молча",
+      );
+    } finally {
+      await a.stop();
+    }
   });
 
   test("Gemini: смена модели — перезапуск между ходами с --model и тем же разговором", async () => {

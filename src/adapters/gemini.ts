@@ -23,12 +23,18 @@
  * **Пустой ответ и прирост denied_actions — проверки не было.** Действие, на
  * которое нужно согласие, без интерфейса отклоняется мягко: ход кончается со
  * status SUCCESS и пустым response, шаг бывает DONE без ошибки. Отметка
- * incomplete говорит координатору «не проверял». denied_actions копится за
- * процесс, поэтому новые отказы считаются по приросту.
+ * incomplete говорит координатору «не проверял», но только когда ответа нет
+ * вовсе: прирост denied_actions при непустом ответе incomplete не ставит —
+ * отказы всё равно видны координатору через denials (M8, финальная рецензия
+ * 02.10). denied_actions копится за процесс, поэтому новые отказы считаются
+ * по приросту.
  *
  * **Только чтение — правила agy, а не tools агента.** Список tools в agent.md
  * инструменты не ограничивает (проба); запись и команды запрещены правилами
- * deny в настройках agy, их проверяет beforeStart до запуска процесса.
+ * deny в настройках agy. beforeStart проверяет их на КАЖДОМ ходу, не только
+ * перед запуском процесса: разговор возобновляемый, и правила могли пропасть
+ * между ходами — тогда живой процесс останавливается, а не продолжает молча
+ * (I2, финальная рецензия 02.10).
  *
  * **Прервать — остановка процесса.** Управляющих сообщений в stream-json нет;
  * следующий ход продолжит разговор через --conversation.
@@ -146,8 +152,6 @@ export class GeminiAdapter implements Adapter {
 
   async start(): Promise<void> {
     if (this.#proc) throw new Error("адаптер Gemini уже запущен");
-    const refusal = this.options.beforeStart?.();
-    if (refusal) throw new Error(refusal);
     const slug = geminiModelSlug(this.#choice, this.#catalog);
     const args = [
       ...(this.options.commandArgs ?? []),
@@ -175,6 +179,15 @@ export class GeminiAdapter implements Adapter {
   }
 
   async send(prompt: AgentPrompt): Promise<void> {
+    // Правила «только чтение» проверяются на КАЖДОМ ходу, не только при первом
+    // запуске процесса: разговор возобновляемый, и правила могли пропасть
+    // между ходами (находка I2, финальная рецензия 02.10). Живой процесс при
+    // отказе останавливается — продолжать его молча нельзя.
+    const refusal = this.options.beforeStart?.();
+    if (refusal) {
+      if (this.#proc) await this.stop();
+      throw new Error(refusal);
+    }
     // Модель — флаг запуска: сменилась — перезапуск между ходами, разговор тот же.
     const changed = this.#processChoice !== undefined && !sameChoice(this.#processChoice, this.#choice);
     if (this.#proc && !this.#busy && changed) {
@@ -374,12 +387,15 @@ export class GeminiAdapter implements Adapter {
     const failed = status !== "SUCCESS";
     if (!failed && response && !this.#answered) this.#emit("message", "turn", { text: clamp(response) });
     const error = typeof r["error"] === "string" && r["error"] ? ` — ${r["error"]}` : "";
+    // Неполная проверка — только когда ответа нет вовсе: прирост denied_actions
+    // при непустом ответе сам по себе её не портит (M8, финальная рецензия
+    // 02.10) — отказы всё равно видны координатору через denials.
     const incomplete = failed
       ? undefined
-      : fresh.length > 0
-        ? `действия отклонены без запроса: ${fresh.join(", ")}`
-        : response
-          ? undefined
+      : response
+        ? undefined
+        : fresh.length > 0
+          ? `действия отклонены без запроса: ${fresh.join(", ")}`
           : "пустой ответ";
     this.#busy = false;
     this.#emit("turn_completed", "turn", {
