@@ -165,14 +165,41 @@ export interface CoordinatorOptions {
    * автоматическая передача ждёт решения человека. 0 или нет — без предела.
    */
   readonly taskTokenLimit?: number;
-  /** Сколько ждать Gemini после ответа Codex, мс (GEMINI_WAIT_MS). */
+  /** Сколько ждать Gemini после замечаний Codex, мс (GEMINI_WAIT_MS). */
   readonly geminiWaitMs?: number;
+  /** Сколько Gemini может не подавать признаков жизни, мс (GEMINI_SILENCE_MS). */
+  readonly geminiSilenceMs?: number;
+  /** Предел ожидания Gemini, когда Codex принял работу или просит решения, мс (GEMINI_SAFETY_MS). */
+  readonly geminiSafetyMs?: number;
 }
 
 type Role = "work" | "review" | "direct";
 
-/** Сколько ждать Gemini после ответа Codex, по умолчанию (agentPanel.geminiWaitMinutes). */
-export const GEMINI_WAIT_MS = 10 * 60_000;
+/**
+ * Сколько ждать Gemini после ответа Codex, если Codex нашёл замечания:
+ * Claude в это время простаивает (agentPanel.geminiWaitMinutes). Живой прогон
+ * 03.10: Flash high проверял 8,7 мин, ~7 из них — около 40 обращений к вебу,
+ * и уложился за 1,6 мин до прежнего срока в 10 мин.
+ */
+export const GEMINI_WAIT_MS = 20 * 60_000;
+
+/**
+ * Сколько Gemini может молчать (ни строки вывода, ни события), пока
+ * проверяет. Это только детектор зависания, всё остальное ограничивают
+ * сроки. 10 мин, а не 5: долгое рассуждение Pro high живой пробой не
+ * замерено (нужна квота с одобрения владельца) — предел взят с запасом.
+ */
+export const GEMINI_SILENCE_MS = 10 * 60_000;
+
+/**
+ * Предел ожидания Gemini, когда Codex принял работу, просит решения или не
+ * вынес вердикт: тогда итог без Gemini был бы ложным «Цикл завершён», и его
+ * ждут, пока он работает, — но не дольше этого.
+ */
+export const GEMINI_SAFETY_MS = 45 * 60_000;
+
+/** Пометка к первому сообщению Gemini после хода, снятого панелью (R11, дизайн 03.10). */
+const CUT_NOTE = "[прошлый ход прерван панелью — его материал устарел, проверяй только этот]";
 
 interface Target {
   readonly role: Role;
@@ -194,6 +221,11 @@ type Held = Outgoing & {
   action: "send" | "retry" | "review";
   /** Вторая половина удержанной пары — материал для Gemini. */
   companion?: Outgoing;
+  /**
+   * Удержаны замечания, сведённые из проверки с этим номером (цикл — в
+   * target): поздний отзыв Gemini к ней ещё можно в них добавить.
+   */
+  pairRound?: number;
 };
 
 /** Исход проверки одного рецензента. */
@@ -208,7 +240,20 @@ interface ReviewPair {
   readonly round: number;
   readonly waiting: Set<Reviewer>;
   readonly outcomes: Map<Reviewer, ReviewOutcome>;
+  /** Единственные часы ожидания Gemini этой пары; переставляются при срабатывании. */
   deadline: NodeJS.Timeout | undefined;
+  /** Когда ответил Codex, мс epoch: с него идут сроки Gemini. */
+  codexAt?: number;
+  /** Срок после ответа Codex: geminiWaitMs при замечаниях, geminiSafetyMs иначе. */
+  limit?: number;
+  /** Когда материал этой проверки действительно отдан Gemini, а не встал в очередь. */
+  geminiSentAt?: number;
+  /** Последнее событие Gemini, пока его ход — эта проверка (признак жизни без адаптера). */
+  lastEventAt?: number;
+  /** Срок при замечаниях Codex истёк, а Gemini ещё проверяет: его поздний отзыв можно принять. */
+  overdue: boolean;
+  /** Строка ленты для сведения вместо общей «Gemini не проверял: …». */
+  note?: string;
 }
 
 /** Сторона пары для интерфейса. */
@@ -221,6 +266,12 @@ export interface PairSide {
 export interface PairView {
   readonly round: number;
   readonly sides: Readonly<Partial<Record<Reviewer, PairSide>>>;
+  /**
+   * Codex ответил, Gemini ещё проверяет: до какого момента его ждут, мс
+   * epoch. Верхняя граница — молчание может снять его раньше. «Эстафета»
+   * показывает «срок ЧЧ:ММ» (R9, дизайн 03.10).
+   */
+  readonly waitUntil?: number;
 }
 
 export interface Step {
@@ -260,19 +311,59 @@ function movedNote(reviewed: Snapshot | undefined, current: Snapshot): string {
     : "";
 }
 
-function reviewBlock(title: string, outcome: ReviewOutcome, current: Snapshot): string {
+function reviewBlock(title: string, outcome: ReviewOutcome, current: Snapshot | undefined): string {
   // Причина отказа — не замечание к работе разработчика, поэтому Claude её не
   // видит здесь: она остаётся в строке ленты «Gemini не проверял: …» (M5).
   if (outcome.kind === "unchecked") return `— ${title} — не проверял (это не замечание, исправлять нечего)`;
   if (outcome.verdict === "accepted") return `— ${title} — принято`;
   const shift =
-    outcome.snapshot && outcome.snapshot.id !== current.id
+    outcome.snapshot && current && outcome.snapshot.id !== current.id
       ? `\n\nФайлы изменились после начала проверки: замечания относятся к версии ${describeSnapshot(outcome.snapshot)}, сейчас ${describeSnapshot(current)}.`
       : "";
   return `— ${title} —\n${outcome.text}${shift}`;
 }
 
-function pairView(pair: ReviewPair, reviewers: readonly Reviewer[]): PairView {
+/** Общее сообщение Claude по итогу пары; его же пересобирает поздний отзыв Gemini (R7). */
+function mergedText(round: number, codex: ReviewOutcome, gemini: ReviewOutcome, current: Snapshot | undefined): string {
+  return (
+    `Замечания рецензентов (проверка ${round}):\n\n` +
+    `${reviewBlock("Codex — код", codex, current)}\n\n` +
+    `${reviewBlock("Gemini — методология и факты", gemini, current)}\n\n` +
+    "Исправьте или обоснуйте несогласие по каждому пункту."
+  );
+}
+
+/** Сведение пары: строже побеждает. */
+function strictest(verdicts: readonly Verdict[]): Verdict {
+  return verdicts.includes("human")
+    ? "human"
+    : verdicts.includes("missing")
+      ? "missing"
+      : verdicts.includes("remarks")
+        ? "remarks"
+        : "accepted";
+}
+
+/** Кто из пары вынес этот вердикт: «Codex», «Gemini» или «Codex и Gemini». */
+function whoSaid(v: Verdict, codex: ReviewOutcome, gemini: ReviewOutcome): string {
+  return [codex, gemini]
+    .filter((o) => o.kind === "verdict" && o.verdict === v)
+    .map((o) => (o === codex ? "Codex" : "Gemini"))
+    .join(" и ");
+}
+
+function humanHoldReason(codex: ReviewOutcome, gemini: ReviewOutcome): string {
+  const asking = whoSaid("human", codex, gemini);
+  return `${asking} ${asking.includes(" и ") ? "просят" : "просит"} вашего решения: обмен остановлен. Отзывы можно отправить Claude.`;
+}
+
+/** Местное время ЧЧ:ММ — для строк ленты о сроках Gemini. */
+function clockTime(at: number): string {
+  const d = new Date(at);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function pairView(pair: ReviewPair, reviewers: readonly Reviewer[], waitUntil: number | undefined): PairView {
   const sides: Partial<Record<Reviewer, PairSide>> = {};
   for (const r of reviewers) {
     const outcome = pair.outcomes.get(r);
@@ -282,7 +373,7 @@ function pairView(pair: ReviewPair, reviewers: readonly Reviewer[]): PairView {
         ? { state: "done", verdict: outcome.verdict }
         : { state: "unchecked", reason: outcome.reason };
   }
-  return { round: pair.round, sides };
+  return { round: pair.round, sides, ...(waitUntil !== undefined ? { waitUntil } : {}) };
 }
 
 export class Coordinator {
@@ -317,6 +408,13 @@ export class Coordinator {
   /** Заметки памяти, приложенные к задаче текущего цикла: их видит и рецензент. */
   #taskMemory: string | undefined;
   #trail: Step[] = [];
+  /**
+   * Панель сняла ход Gemini (молчание, предел, новая проверка, «Прервать»):
+   * следующее его сообщение говорит, что прошлый ход прерван и устарел.
+   * Иначе возобновлённый разговор может продолжить прерванную проверку
+   * (R11; живая проба «снять и продолжить» не проводилась — нужна квота).
+   */
+  #geminiCut = false;
   readonly #capture: (cwd: string) => Promise<Snapshot>;
 
   constructor(
@@ -354,7 +452,7 @@ export class Coordinator {
       codexBusy: this.codex.busy,
       geminiBusy: this.options.gemini?.busy ?? false,
       reviewers: this.#reviewers(),
-      pair: this.#pair ? pairView(this.#pair, this.#reviewers()) : undefined,
+      pair: this.#pair ? pairView(this.#pair, this.#reviewers(), this.#waitUntil(this.#pair)) : undefined,
       usage: {
         task: { claude: this.#usage.claude, codex: this.#usage.codex, gemini: this.#usage.gemini },
         limits: {
@@ -376,6 +474,13 @@ export class Coordinator {
 
     if (!WORKERS.has(agent)) return;
     const worker = agent as Worker;
+
+    // Любое событие Gemini, пока его ход — проверка ждущей пары, — признак
+    // жизни для срока молчания (вместе с lastOutputAt адаптера).
+    if (worker === "gemini") {
+      const pair = this.#pair;
+      if (pair && pair.waiting.has("gemini") && this.#geminiOnPair(pair)) pair.lastEventAt = Date.now();
+    }
 
     if (marked.visibility === "turn" && FORWARDED_KINDS.has(marked.kind)) {
       const buffer = this.#buffers.get(worker) ?? [];
@@ -619,6 +724,7 @@ export class Coordinator {
 
   async stopAll(): Promise<void> {
     this.#stops += 1;
+    if (this.options.gemini?.busy) this.#geminiCut = true;
     this.#resetWait("stopped");
     this.#queue.length = 0;
     await Promise.allSettled(this.#adapters().map((a) => a.stop()));
@@ -637,13 +743,19 @@ export class Coordinator {
     // Журнал — раньше остановки: закрытие панели во время неё не вернёт
     // прежнюю привязку (рецензия Codex 28.09).
     this.journal.forgetSession(this.options.room, agent);
+    let forgetting: Promise<void> | undefined;
     if (agent === "gemini") {
       // Gemini — не арбитр: новая сессия для него не должна рвать весь цикл
       // (M6, финальная рецензия 02.10). Если пара сейчас ждёт его ответа,
       // засчитать «не проверял» и дать Codex доводить проверку одному —
-      // #resetWait здесь не нужен, процесс всё равно остановит forgetSession ниже.
+      // #resetWait здесь не нужен, процесс останавливает forgetSession.
+      // Цели и материал хода снимаются ДО первого ожидания: иначе конец
+      // следующего хода (прямой вопрос) брал прежнюю цель проверки и
+      // становился «поздним ответом» (остаток M6, дизайн 03.10, R12).
       const pair = this.#pair;
-      if (pair && this.#isCurrent(pair.cycle) && pair.waiting.has("gemini")) {
+      const wasWaiting = pair !== undefined && this.#isCurrent(pair.cycle) && pair.waiting.has("gemini");
+      forgetting = this.#cutGemini("forget");
+      if (pair && wasWaiting) {
         await this.#recordOutcome(pair, "gemini", { kind: "unchecked", reason: "новая сессия Gemini" });
       }
     } else if (adapter.busy) {
@@ -657,7 +769,7 @@ export class Coordinator {
       this.#stage = "stopped";
       this.#report(`Удержанная передача ${NAMES[agent]} снята: новая сессия не знает прежнего разговора. Поставьте задачу заново.`);
     }
-    await adapter.forgetSession?.();
+    await (forgetting ?? adapter.forgetSession?.());
     this.#report(
       `Новая сессия ${NAMES[agent]}: прежняя${previousSession ? ` (${previousSession.slice(0, 8)})` : ""} сохранена в истории ` +
         `${NAMES[agent]}, но следующий ход её не продолжит — агент не будет помнить прежних разговоров.`,
@@ -669,6 +781,7 @@ export class Coordinator {
 
   async interruptAll(): Promise<void> {
     this.#stops += 1;
+    if (this.options.gemini?.busy) this.#geminiCut = true;
     this.#resetWait("stopped");
     // Прямые сообщения человека ждали конца хода, а его теперь не будет.
     // Отправлять их сразу нельзя: человек мог прервать именно чтобы отменить,
@@ -695,6 +808,15 @@ export class Coordinator {
   }
 
   #startCycle(task: string): number {
+    // Идущая проверка Gemini прежней задачи новой не нужна: снять её, иначе
+    // она держит Gemini, а материал новой ждёт в очереди (R6, дизайн 03.10).
+    const stopping = this.#dropStaleGemini(undefined, undefined, "новая задача");
+    if (stopping) {
+      void stopping.then(async () => {
+        await this.#flushQueue();
+        this.#refresh();
+      });
+    }
     const stale = this.#dropCycleForwards();
     if (stale > 0) {
       this.#report(`Новая задача: не доставлено устаревших пересылок прежней — ${stale}.`);
@@ -851,12 +973,17 @@ export class Coordinator {
     const cycle = codexOut.target.cycle as number;
     this.#clearPair();
     const round = this.#round;
+    // Поздняя проверка прежнего номера (срок истёк при замечаниях Codex, а
+    // Gemini ещё работал) снимается до отправок: иначе материал этой проверки
+    // ждал бы её конца в очереди, и опоздание переходило бы дальше (R6).
+    const stopping = this.#dropStaleGemini(cycle, round, `началась проверка ${round}`);
     this.#pair = {
       cycle,
       round,
       waiting: new Set<Reviewer>(geminiOut ? ["codex", "gemini"] : ["codex"]),
       outcomes: new Map(),
       deadline: undefined,
+      overdue: false,
     };
     if (cycle === this.#cycle) {
       this.#trail.push({ who: "codex", round });
@@ -869,7 +996,17 @@ export class Coordinator {
     // работает».
     this.#refresh();
     const sends = [this.#send(codexOut)];
-    if (geminiOut && this.#isCurrent(cycle)) sends.push(this.#send(geminiOut));
+    if (geminiOut && this.#isCurrent(cycle)) {
+      // Снятый процесс сначала дорабатывает остановку: два agy на одном
+      // разговоре не нужны. Codex этого не ждёт.
+      sends.push(
+        stopping
+          ? stopping.then(async () => {
+              if (this.#isCurrent(cycle) && this.#pair?.round === round) await this.#send(geminiOut);
+            })
+          : this.#send(geminiOut),
+      );
+    }
     await Promise.all(sends);
     this.#refresh();
   }
@@ -882,6 +1019,18 @@ export class Coordinator {
   /** Ответ рецензента: поздний — не входит; сбой Codex — остановка; Gemini без проверки — «не проверял». */
   async #reviewFinished(agent: Reviewer, target: Target, material: PanelEvent[], ended: PanelEvent): Promise<void> {
     const pair = this.#pair;
+    if (
+      agent === "gemini" &&
+      pair?.overdue &&
+      pair.cycle === target.cycle &&
+      pair.round === target.round &&
+      this.#isCurrent(pair.cycle) &&
+      !pair.waiting.has("gemini")
+    ) {
+      pair.overdue = false; // поздний отзыв принимается один раз
+      await this.#lateGemini(pair, material, ended);
+      return;
+    }
     if (!pair || pair.cycle !== target.cycle || pair.round !== target.round || !pair.waiting.has(agent)) {
       this.#report(`Поздний ответ ${NAMES[agent]} (проверка ${target.round ?? "?"}) в проверку не вошёл: она уже сведена или снята.`);
       return;
@@ -919,14 +1068,212 @@ export class Coordinator {
     this.#refresh();
   }
 
-  /** Codex ответил — Gemini ждём не дольше geminiWaitMs; не успел — «не проверял». */
+  /**
+   * Codex ответил, Gemini ещё нет. Срок зависит от вердикта Codex (R1, дизайн
+   * 03.10): при замечаниях Claude простаивает — ждём geminiWaitMs и сводим по
+   * Codex, не останавливая Gemini; при принятии, просьбе решения или без
+   * вердикта итог без Gemini был бы ложным — ждём, пока он работает, и
+   * снимаем только по молчанию или пределу безопасности. Прежде один срок
+   * в 10 мин сводил пару без Gemini, что бы Codex ни сказал, а процесс
+   * работал дальше и держал очередь (живой прогон 03.10).
+   */
   #watchGemini(pair: ReviewPair): void {
-    const limit = this.options.geminiWaitMs ?? GEMINI_WAIT_MS;
-    pair.deadline = setTimeout(() => {
-      pair.deadline = undefined;
-      if (this.#pair !== pair || !this.#isCurrent(pair.cycle)) return;
-      void this.#recordOutcome(pair, "gemini", { kind: "unchecked", reason: `не успел за ${waitWords(limit)} после ответа Codex` });
-    }, limit);
+    const codex = pair.outcomes.get("codex");
+    pair.codexAt = Date.now();
+    pair.limit =
+      codex?.kind === "verdict" && codex.verdict === "remarks"
+        ? (this.options.geminiWaitMs ?? GEMINI_WAIT_MS)
+        : (this.options.geminiSafetyMs ?? GEMINI_SAFETY_MS);
+    this.#geminiTick(pair);
+  }
+
+  /** Ход Gemini, идущий сейчас (голова его целей), — проверка именно этой пары (R3). */
+  #geminiOnPair(pair: ReviewPair): boolean {
+    const head = this.#targets.get("gemini")?.[0];
+    return head?.role === "review" && head.cycle === pair.cycle && head.round === pair.round;
+  }
+
+  /**
+   * Часы Gemini (R3): срок идёт с позднего из двух моментов — ответа Codex и
+   * передачи материала Gemini (материал мог ждать в очереди за прямым
+   * вопросом). Признаки жизни — вывод процесса и события, но только пока его
+   * ход — эта проверка, и не раньше начала срока.
+   */
+  #geminiClock(pair: ReviewPair): { ours: boolean; capAt: number; alive: number } | undefined {
+    if (pair.codexAt === undefined || pair.limit === undefined) return undefined;
+    const ours = this.#geminiOnPair(pair);
+    const start = Math.max(pair.codexAt, pair.geminiSentAt ?? pair.codexAt);
+    const output = ours ? (this.options.gemini?.lastOutputAt ?? 0) : 0;
+    const event = ours ? (pair.lastEventAt ?? 0) : 0;
+    return { ours, capAt: start + pair.limit, alive: Math.max(start, output, event) };
+  }
+
+  /** Срок ожидания Gemini для «Эстафеты»: только пока Codex ответил, а Gemini ещё проверяет. */
+  #waitUntil(pair: ReviewPair): number | undefined {
+    return pair.waiting.has("gemini") ? this.#geminiClock(pair)?.capAt : undefined;
+  }
+
+  /** Одни часы на пару (R4); unref — открытая панель не держит процесс (и тесты) живыми. */
+  #armGemini(pair: ReviewPair, delay: number): void {
+    if (pair.deadline) clearTimeout(pair.deadline);
+    // setTimeout дольше 2^31−1 мс срабатывает сразу — огромный срок из настроек не должен крутить часы.
+    pair.deadline = setTimeout(() => this.#geminiTick(pair), Math.min(Math.max(1, delay), 2_147_483_647));
+    pair.deadline.unref();
+  }
+
+  /** Срабатывание часов: молчание, срок или перестановка часов на ближайший из них. */
+  #geminiTick(pair: ReviewPair): void {
+    if (pair.deadline) clearTimeout(pair.deadline); // вызов не из часов (#watchGemini) — часов не двое
+    pair.deadline = undefined;
+    if (this.#pair !== pair || !this.#isCurrent(pair.cycle) || !pair.waiting.has("gemini")) return;
+    const clock = this.#geminiClock(pair);
+    if (!clock || pair.limit === undefined) return;
+    const { ours, capAt, alive } = clock;
+    const now = Date.now();
+    const silence = this.options.geminiSilenceMs ?? GEMINI_SILENCE_MS;
+    const limit = waitWords(pair.limit);
+    if (ours && now >= alive + silence) {
+      pair.note =
+        `Gemini ${waitWords(silence)} не подавал признаков жизни (последнее действие в ${clockTime(alive)}) — ` +
+        `процесс остановлен. Итог проверки ${pair.round} — по Codex.`;
+      void this.#stopGeminiReview(pair, `замолчал на ${waitWords(silence)} — остановлен`);
+      return;
+    }
+    if (now < capAt) {
+      this.#armGemini(pair, Math.min(capAt, ours ? alive + silence : capAt) - now);
+      return;
+    }
+    if (!ours) {
+      // Gemini занят другим ходом (прямой вопрос человека): его не снимаем,
+      // а материал этой проверки ему уже не нужен — снять из очереди сразу.
+      for (let i = this.#queue.length - 1; i >= 0; i -= 1) {
+        const o = this.#queue[i];
+        if (o && o.to === "gemini" && o.target.role === "review" && o.target.cycle === pair.cycle && o.target.round === pair.round) {
+          this.#queue.splice(i, 1);
+        }
+      }
+      pair.note = `Gemini был занят другим ходом и проверку ${pair.round} не начал. Итог — по Codex.`;
+      void this.#recordOutcome(pair, "gemini", {
+        kind: "unchecked",
+        reason: `был занят другим ходом — материал проверки ${pair.round} не дошёл`,
+      });
+      return;
+    }
+    const codex = pair.outcomes.get("codex");
+    if (codex?.kind === "verdict" && codex.verdict === "remarks") {
+      // Claude простаивает — замечания Codex уходят ему, а Gemini работает
+      // дальше: его поздний отзыв ещё может пригодиться (R7).
+      pair.overdue = true;
+      void this.#recordOutcome(pair, "gemini", { kind: "unchecked", reason: `не уложился в ${limit} после ответа Codex — ещё проверяет` });
+      return;
+    }
+    pair.note = `Gemini не закончил за ${limit} после ответа Codex — процесс остановлен. Итог проверки ${pair.round} — по Codex.`;
+    void this.#stopGeminiReview(pair, `не закончил за ${limit} после ответа Codex — остановлен`);
+  }
+
+  /** Снять проверку Gemini этой пары (молчание, предел безопасности) и свести пару по Codex. */
+  async #stopGeminiReview(pair: ReviewPair, reason: string): Promise<void> {
+    await this.#cutGemini("interrupt");
+    if (this.#pair === pair && this.#isCurrent(pair.cycle)) {
+      await this.#recordOutcome(pair, "gemini", { kind: "unchecked", reason });
+    }
+    await this.#flushQueue();
+    this.#refresh();
+  }
+
+  /**
+   * Снять ход Gemini, начатый панелью (R5). Всё до первого ожидания —
+   * синхронно: расход хода (turn_completed у снятого хода не будет), затем
+   * цели и материал — иначе конец следующего хода взял бы цель снятого, — и
+   * только потом остановка. Вызывающий ждёт возвращённое обещание.
+   */
+  #cutGemini(how: "interrupt" | "forget"): Promise<void> {
+    const gemini = this.options.gemini;
+    if (!gemini) return Promise.resolve();
+    const head = this.#targets.get("gemini")?.[0];
+    const partial = gemini.pendingUsage;
+    if (partial && head?.cycle !== undefined && head.cycle === this.#cycle) {
+      this.#usage.gemini = addUsage(this.#usage.gemini, partial);
+    }
+    this.#targets.delete("gemini");
+    this.#buffers.delete("gemini");
+    // Новая сессия не помнит прерванного хода — пометка ей не нужна.
+    this.#geminiCut = how === "interrupt";
+    const stopping = how === "interrupt" ? gemini.interrupt() : (gemini.forgetSession?.() ?? Promise.resolve());
+    return stopping.catch(() => undefined);
+  }
+
+  /**
+   * Каскад (R6): ход Gemini — проверка, не относящаяся к начинающейся паре
+   * (cycle, round) или к новой задаче (undefined). Идёт — снять и сказать;
+   * не идёт — убрать оставшиеся цели. Прямой вопрос человека не трогается.
+   */
+  #dropStaleGemini(cycle: number | undefined, round: number | undefined, why: string): Promise<void> | undefined {
+    const gemini = this.options.gemini;
+    const head = this.#targets.get("gemini")?.[0];
+    if (!gemini || head?.role !== "review" || (head.cycle === cycle && head.round === round)) return undefined;
+    if (!gemini.busy) {
+      this.#targets.delete("gemini");
+      this.#buffers.delete("gemini");
+      return undefined;
+    }
+    const stopping = this.#cutGemini("interrupt");
+    this.#report(`Поздняя проверка Gemini (проверка ${head.round ?? "?"}) снята: ${why}.`);
+    return stopping;
+  }
+
+  /**
+   * Поздний отзыв Gemini после срока при замечаниях Codex (R7). Удержанные
+   * замечания этой пары ещё не ушли — отзыв входит в них; иначе Claude уже
+   * работает по замечаниям Codex, и отзыв остаётся в ленте.
+   */
+  async #lateGemini(pair: ReviewPair, material: PanelEvent[], ended: PanelEvent): Promise<void> {
+    const problem = ended.failed ? ended.text || "ход завершился с ошибкой" : ended.incomplete;
+    if (problem) {
+      this.#report(`Gemini так и не дал проверки ${pair.round}: ${problem}.`);
+      return;
+    }
+    const text = material
+      .filter((e) => e.kind === "message" && e.text)
+      .map((e) => e.text as string)
+      .join("\n\n");
+    const late: VerdictOutcome = { kind: "verdict", verdict: parseVerdict(text), text, snapshot: this.#snapshots.get("gemini") };
+    const v = late.verdict;
+    pair.outcomes.set("gemini", late);
+    const step = [...this.#trail].reverse().find((sh) => sh.who === "gemini" && sh.round === pair.round);
+    if (step) {
+      step.mark = MARKS[v];
+      delete step.unchecked;
+    }
+    const codex = pair.outcomes.get("codex");
+    const held = this.#held;
+    const n = pair.round;
+    if (codex && held && held.pairRound === pair.round && held.target.cycle === pair.cycle) {
+      if (v === "accepted") {
+        this.#report(`Gemini опоздал к проверке ${n}: принято.`);
+      } else {
+        this.#held = {
+          ...held,
+          prompt: { ...held.prompt, text: mergedText(n, codex, late, held.snapshot) },
+          ...(v === "human" ? { reason: humanHoldReason(codex, late) } : {}),
+        };
+        this.#verdict = strictest([...(codex.kind === "verdict" ? [codex.verdict] : []), v]);
+        this.#report(`Gemini опоздал к проверке ${n}, но успел до отправки: его отзыв добавлен к удержанным замечаниям.`);
+      }
+    } else {
+      const words: Record<Verdict, string> = {
+        remarks:
+          `Gemini опоздал к проверке ${n}: есть замечания (текст выше). Claude их не получил — он уже работает ` +
+          `по замечаниям Codex; проверку ${n + 1} Gemini получит вместе с Codex.`,
+        accepted: `Gemini опоздал к проверке ${n}: принято.`,
+        human:
+          `Gemini опоздал к проверке ${n} и просит вашего решения (текст выше); Claude работает по замечаниям ` +
+          "Codex — при необходимости остановите его.",
+        missing: `Gemini опоздал к проверке ${n} и не вынес вердикт (ответ выше).`,
+      };
+      this.#report(words[v]);
+    }
+    this.#refresh();
   }
 
   /** Сведение: строже побеждает; сбой Gemini — итог по Codex. */
@@ -939,17 +1286,15 @@ export class Coordinator {
       return;
     }
     const verdicts: Verdict[] = [codex.verdict, ...(gemini.kind === "verdict" ? [gemini.verdict] : [])];
-    const combined: Verdict = verdicts.includes("human")
-      ? "human"
-      : verdicts.includes("missing")
-        ? "missing"
-        : verdicts.includes("remarks")
-          ? "remarks"
-          : "accepted";
+    const combined = strictest(verdicts);
     this.#verdict = combined;
     const geminiWords = gemini.kind === "verdict" ? VERDICT_WORDS[gemini.verdict] : `не проверял (${gemini.reason})`;
     this.#report(`Итог проверки ${pair.round}: Codex — ${VERDICT_WORDS[codex.verdict]}, Gemini — ${geminiWords}.`);
-    if (gemini.kind === "unchecked") this.#report(`Gemini не проверял: ${gemini.reason}. Итог — по вердикту Codex.`);
+    if (gemini.kind === "unchecked") {
+      // Сроки Gemini объясняются одной своей строкой (R13); прочие причины
+      // (новая сессия, сбой, отказ отправки, пустой ответ) — общей.
+      this.#report(pair.overdue ? this.#overdueNote(pair) : (pair.note ?? `Gemini не проверял: ${gemini.reason}. Итог — по вердикту Codex.`));
+    }
     const current = await this.#capture(this.options.cwd);
     if (!this.#isCurrent(pair.cycle)) return;
     if (combined === "accepted") {
@@ -963,11 +1308,7 @@ export class Coordinator {
     const outgoing: Outgoing = {
       to: "claude",
       prompt: {
-        text:
-          `Замечания рецензентов (проверка ${pair.round}):\n\n` +
-          `${reviewBlock("Codex — код", codex, current)}\n\n` +
-          `${reviewBlock("Gemini — методология и факты", gemini, current)}\n\n` +
-          "Исправьте или обоснуйте несогласие по каждому пункту.",
+        text: mergedText(pair.round, codex, gemini, current),
         from: "codex",
         heading: "[замечания рецензентов Codex и Gemini]",
         snapshot: describeSnapshot(codex.snapshot ?? current),
@@ -975,31 +1316,41 @@ export class Coordinator {
       target: { role: "work", cycle: pair.cycle },
       snapshot: current,
     };
-    const who = (v: Verdict) =>
-      [codex, gemini]
-        .filter((o) => o.kind === "verdict" && o.verdict === v)
-        .map((o) => (o === codex ? "Codex" : "Gemini"))
-        .join(" и ");
+    // Удержанное помечено номером проверки: поздний отзыв Gemini к ней ещё
+    // можно добавить, пока человек не отправил (R7).
+    const hold = (reason: string) => {
+      this.#hold(outgoing, reason);
+      if (this.#held) this.#held.pairRound = pair.round;
+    };
     if (combined === "human") {
-      const asking = who("human");
-      this.#hold(outgoing, `${asking} ${asking.includes(" и ") ? "просят" : "просит"} вашего решения: обмен остановлен. Отзывы можно отправить Claude.`);
+      hold(humanHoldReason(codex, gemini));
       return;
     }
     if (combined === "missing") {
-      const silent = who("missing");
-      this.#hold(outgoing, `${silent} ${silent.includes(" и ") ? "не вынесли" : "не вынес"} вердикт: решите, передавать ли отзывы разработчику.`);
+      const silent = whoSaid("missing", codex, gemini);
+      hold(`${silent} ${silent.includes(" и ") ? "не вынесли" : "не вынес"} вердикт: решите, передавать ли отзывы разработчику.`);
       return;
     }
     if (this.#overLimit()) {
-      this.#hold(outgoing, this.#limitReason("замечания ждут отправки разработчику"));
+      hold(this.#limitReason("замечания ждут отправки разработчику"));
       return;
     }
     if (!this.#auto) {
-      this.#hold(outgoing, "Автопересылка выключена: замечания ждут отправки разработчику.");
+      hold("Автопересылка выключена: замечания ждут отправки разработчику.");
       return;
     }
     this.#stage = "working";
     await this.#send(outgoing);
+  }
+
+  /** Пояснение к сроку при замечаниях Codex: что будет с поздним отзывом Gemini. */
+  #overdueNote(pair: ReviewPair): string {
+    const limit = waitWords(pair.limit ?? this.options.geminiWaitMs ?? GEMINI_WAIT_MS);
+    // Сведение при замечаниях Codex удерживает только по пределу токенов или
+    // выключенной автопересылке — те же условия, что ниже в #mergePair.
+    return this.#overLimit() || !this.#auto
+      ? `Gemini не уложился в ${limit} и ещё проверяет: если он закончит, пока замечания ждут вашего решения, его отзыв будет добавлен к ним.`
+      : `Gemini не уложился в ${limit} и ещё проверяет: Claude получил замечания одного Codex. Если Gemini закончит до проверки ${pair.round + 1}, его ответ появится в ленте.`;
   }
 
   /** Комната без Gemini: прежний путь одного Codex. */
@@ -1116,9 +1467,22 @@ export class Coordinator {
     targets.push(target);
     this.#targets.set(o.to, targets);
 
+    // Материал проверки действительно отдан Gemini: с этого момента идёт его
+    // срок, если материал ждал в очереди дольше ответа Codex (R3).
+    const reviewed = this.#pair;
+    if (o.to === "gemini" && o.target.role === "review" && reviewed && reviewed.cycle === o.target.cycle && reviewed.round === o.target.round) {
+      reviewed.geminiSentAt = Date.now();
+      if (reviewed.codexAt !== undefined) this.#refresh(); // срок в «Эстафете» сдвинулся
+    }
+    // Первое сообщение после хода, снятого панелью, говорит об этом (R11).
+    const cutNote = o.to === "gemini" && this.#geminiCut;
+    if (cutNote) this.#geminiCut = false;
+    const prompt: AgentPrompt = cutNote ? { ...o.prompt, text: `${CUT_NOTE}${NL}${o.prompt.text}` } : o.prompt;
+
     try {
-      await adapter.send(o.prompt);
+      await adapter.send(prompt);
     } catch (err) {
+      if (cutNote) this.#geminiCut = true; // пометка не дошла — нужна следующему
       const list = this.#targets.get(o.to);
       const i = list?.indexOf(target) ?? -1;
       if (list && i >= 0) list.splice(i, 1);

@@ -241,6 +241,12 @@
 
   const MARK_OF = { accepted: "✓", remarks: "!", human: "?", missing: "–" };
 
+  /** Местное время ЧЧ:ММ. */
+  function clockTime(at) {
+    const d = new Date(at);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  }
+
   /** Сторона пары словами: «принято», «не проверял», «проверяет». */
   function sideWords(side) {
     if (side?.state === "done") return VERDICTS[side.verdict] ?? "";
@@ -288,7 +294,11 @@
         }
         if (geminiWaiting) {
           lit.gemini = true;
-          return view("gemini", "Gemini проверяет", "to-gemini", `Codex: ${sideWords(sides.codex)}`);
+          // Срок — верхняя граница ожидания Gemini (молчание может снять его
+          // раньше), абсолютным временем, без тиканья (R9, дизайн 03.10).
+          const until = s.pair?.waitUntil;
+          const deadline = typeof until === "number" ? ` · срок ${clockTime(until)}` : "";
+          return view("gemini", "Gemini проверяет", "to-gemini", `Codex: ${sideWords(sides.codex)}${deadline}`);
         }
         lit.codex = true;
         return view("codex", "Codex проверяет", "to-codex", `Gemini: ${sideWords(sides.gemini)}`);

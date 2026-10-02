@@ -276,6 +276,20 @@ test("эстафета пары: Codex закончил — горит Gemini, �
   assert.deepEqual(r.marks, { codex: "✓", gemini: "" });
 });
 
+test("эстафета пары: пока ждём Gemini после Codex, подпись называет срок «срок ЧЧ:ММ»; без срока — как прежде", () => {
+  // R9 (дизайн срока Gemini 03.10): верхняя граница ожидания — абсолютным
+  // временем, без тиканья. Часы и минуты — местные, из тех же getHours и
+  // getMinutes, поэтому проверка не зависит от часового пояса машины.
+  const waitUntil = new Date(2026, 9, 3, 9, 5, 30).getTime();
+  const sides = { codex: { state: "done", verdict: "accepted" }, gemini: { state: "waiting" } };
+  const r = relayView(pairState(sides, { pair: { round: 1, sides, waitUntil } }));
+  const d = new Date(waitUntil);
+  const clock = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  assert.equal(clock, "09:05");
+  assert.equal(r.sub, `Codex: принято · срок ${clock}`);
+  assert.equal(relayView(pairState(sides)).sub, "Codex: принято");
+});
+
 test("эстафета пары: принято обоими и принято без Gemini", () => {
   const both = relayView(pairState({ codex: { state: "done", verdict: "accepted" }, gemini: { state: "done", verdict: "accepted" } }, { stage: "accepted" }));
   assert.equal(both.sub, "Codex и Gemini: принято");

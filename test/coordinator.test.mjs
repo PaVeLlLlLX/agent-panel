@@ -48,13 +48,48 @@ class Stub {
   decisions = [];
 }
 
-function room(limit = 3, options = {}, { withGemini = false } = {}) {
+/**
+ * Gemini, занятый, как настоящий адаптер: от отправки до конца хода;
+ * «Прервать», «Остановить» и новая сессия снимают занятость сразу (у
+ * GeminiAdapter это синхронная часть stop). Признак жизни lastOutputAt и
+ * расход идущего хода partial задаёт тест. Остальные тесты пользуются
+ * прежней заглушкой: их поведение не меняется.
+ */
+class LiveGemini extends Stub {
+  constructor() {
+    super("gemini");
+    this.lastOutputAt = undefined;
+    this.partial = undefined;
+    this.forgotten = 0;
+  }
+  async send(prompt) {
+    this.received.push(prompt);
+    this.busy = true;
+  }
+  async interrupt() {
+    this.interrupted += 1;
+    this.busy = false;
+  }
+  async stop() {
+    this.stopped += 1;
+    this.busy = false;
+  }
+  async forgetSession() {
+    this.forgotten += 1;
+    this.busy = false;
+  }
+  get pendingUsage() {
+    return this.busy ? this.partial : undefined;
+  }
+}
+
+function room(limit = 3, options = {}, { withGemini = false, liveGemini = false } = {}) {
   const catalog = mkdtempSync(join(tmpdir(), "panel-"));
   const journal = new Journal(join(catalog, "j.sqlite"));
   journal.ensureRoom("r", catalog);
   const claude = new Stub("claude");
   const codex = new Stub("codex");
-  const gemini = withGemini ? new Stub("gemini") : undefined;
+  const gemini = liveGemini ? new LiveGemini() : withGemini ? new Stub("gemini") : undefined;
   const events = [];
   const k = new Coordinator(claude, codex, journal, {
     room: "r",
@@ -1380,13 +1415,22 @@ test("неудачный повторный запрос квоты Gemini по�
 // Пара рецензентов: Codex и Gemini
 // ---------------------------------------------------------------------------
 
-async function pairRoom(options = {}, limit = 3) {
-  const r = room(limit, options, { withGemini: true });
+async function pairRoom(options = {}, limit = 3, { liveGemini = false } = {}) {
+  const r = room(limit, options, { withGemini: true, liveGemini });
   await r.k.fromHuman("подобрать порог классификатора", "review");
   turn(r.k, "claude", "порог 0.4, F1 на валидации 0.71");
   await waitFor(() => r.codex.received.length === 1 && r.gemini.received.length === 1, "проверка у обоих");
   return r;
 }
+
+/** Конец хода Gemini, как у адаптера: занятость снимается раньше turn_completed. */
+function geminiTurn(k, gemini, text, extra = {}) {
+  gemini.busy = false;
+  turn(k, "gemini", text, extra);
+}
+
+/** Строки панели, подходящие под образец. */
+const said = (events, pattern) => systemEvents(events).filter((e) => pattern.test(e.text ?? ""));
 
 test("проверка пары: один материал и версия у обоих, счётчик +1 за пару", async () => {
   const { k, codex, gemini, journal } = await pairRoom();
@@ -1539,16 +1583,35 @@ test("M7: прямой вопрос Gemini, закончившийся пуст�
   journal.close();
 });
 
-test("Gemini не успел за срок после Codex — итог по Codex, поздний ответ не входит в следующую проверку", async () => {
-  const { k, claude, events, journal } = await pairRoom({ geminiWaitMs: 40 });
+test("Gemini не уложился в срок после замечаний Codex — Claude получает замечания Codex, Gemini не прерван, его поздние замечания — в ленте", async () => {
+  // Срок geminiWaitMs — только когда Codex нашёл замечания: Claude простаивает.
+  // Gemini при этом не останавливается: его отзыв ещё может пригодиться
+  // (R1, R7 — дизайн срока Gemini 03.10).
+  const { k, claude, gemini, events, journal } = await pairRoom({ geminiWaitMs: 40 }, 3, { liveGemini: true });
   turn(k, "codex", "Дефект в пороге.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
   await waitFor(() => claude.received.length === 2, "замечания Claude без Gemini");
   assert.match(claude.received[1].text, /— Gemini — методология и факты — не проверял \(это не замечание, исправлять нечего\)/);
-  turn(k, "gemini", "Поздно.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
-  await sleep(30);
-  assert.ok(systemEvents(events).some((e) => /Поздний ответ Gemini \(проверка 1\)/.test(e.text)));
-  assert.equal(claude.received.length, 2, "поздний ответ не пересылается");
+  assert.match(k.state.pair.sides.gemini.reason, /^не уложился в .+ после ответа Codex — ещё проверяет$/);
+  assert.equal(gemini.interrupted, 0, "Gemini не прерывается");
+  assert.equal(gemini.busy, true);
+  assert.equal(
+    said(events, /^Gemini не уложился в .+ и ещё проверяет: Claude получил замечания одного Codex\. Если Gemini закончит до проверки 2, его ответ появится в ленте\.$/).length,
+    1,
+  );
+  assert.equal(said(events, /^Gemini не проверял: /).length, 0, "общая строка заменена пояснением");
+  assert.equal(said(events, /^Итог проверки 1: Codex — есть замечания, Gemini — не проверял \(не уложился/).length, 1);
+
+  geminiTurn(k, gemini, "Поздно: утечка id.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => said(events, /Gemini опоздал/).length === 1, "поздний отзыв назван в ленте");
+  assert.equal(
+    said(events, /^Gemini опоздал к проверке 1: есть замечания \(текст выше\)\. Claude их не получил — он уже работает по замечаниям Codex; проверку 2 Gemini получит вместе с Codex\.$/).length,
+    1,
+  );
+  assert.equal(said(events, /Поздний ответ Gemini/).length, 0);
+  assert.equal(claude.received.length, 2, "поздний ответ Claude не пересылается");
   assert.equal(k.state.stage, "working");
+  assert.deepEqual(k.state.pair.sides.gemini, { state: "done", verdict: "remarks" });
+  assert.deepEqual(k.state.trail.find((sh) => sh.who === "gemini" && sh.round === 1), { who: "gemini", round: 1, mark: "!" });
   journal.close();
 });
 
@@ -1637,8 +1700,9 @@ test("устаревшая проверка Gemini в очереди не ухо
   // Codex принимает, срок ожидания истекает, пара сведена по Codex одному.
   // Когда Gemini освобождается, выгрузка очереди не должна доставить ему
   // проверку устаревшей пары — иначе её ответ придёт «поздним ответом» и
-  // потратит квоту Gemini впустую.
-  const { k, codex, gemini, journal } = room(3, { geminiWaitMs: 40 }, { withGemini: true });
+  // потратит квоту Gemini впустую. Codex принял — срок здесь geminiSafetyMs
+  // (R1, дизайн срока Gemini 03.10).
+  const { k, codex, gemini, journal } = room(3, { geminiWaitMs: 40, geminiSafetyMs: 40 }, { withGemini: true });
   gemini.busy = true;
   await k.fromHuman("задача", "review");
   turn(k, "claude", "сделал");
@@ -1646,6 +1710,7 @@ test("устаревшая проверка Gemini в очереди не ухо
   assert.equal(k.state.queued, 1, "проверка Gemini ждёт в очереди, пока он занят");
   turn(k, "codex", "Хорошо.\nВЕРДИКТ: ПРИНЯТО");
   await waitFor(() => k.state.stage === "accepted", "принятие по сроку ожидания Gemini");
+  assert.equal(k.state.queued, 0, "по сроку устаревшая проверка снята из очереди сразу");
   gemini.busy = false;
   k.handle(event("gemini", "turn_completed"));
   await sleep(30);
@@ -1659,8 +1724,9 @@ test("устаревшая проверка Gemini в очереди не ухо
   // вытесняет прежнюю (это было и раньше — дедупликация в #send), так что
   // в очереди остаётся одна запись — на самую свежую проверку. Если срок
   // ожидания истёк и для неё (она сведена без Gemini), освободившийся
-  // Gemini всё равно не должен получить её из очереди.
-  const { k, claude, codex, gemini, journal } = room(3, { geminiWaitMs: 40 }, { withGemini: true });
+  // Gemini всё равно не должен получить её из очереди. С 03.10 по сроку она
+  // снимается из очереди сразу, не дожидаясь, пока Gemini освободится.
+  const { k, claude, codex, gemini, journal } = room(3, { geminiWaitMs: 40, geminiSafetyMs: 40 }, { withGemini: true });
   gemini.busy = true;
   await k.fromHuman("задача", "review");
   turn(k, "claude", "сделал");
@@ -1671,7 +1737,7 @@ test("устаревшая проверка Gemini в очереди не ухо
   await waitFor(() => codex.received.length === 2, "проверка 2 у Codex");
   turn(k, "codex", "Хорошо.\nВЕРДИКТ: ПРИНЯТО");
   await waitFor(() => k.state.stage === "accepted", "проверка 2 сведена без Gemini");
-  assert.equal(k.state.queued, 1, "в очереди — только самая свежая проверка для Gemini, она устарела");
+  assert.equal(k.state.queued, 0, "устаревшая проверка снята из очереди по сроку, а не ждёт Gemini");
   gemini.busy = false;
   k.handle(event("gemini", "turn_completed"));
   await sleep(30);
@@ -1769,19 +1835,377 @@ test("замечания пары подписаны версией каждог
   journal.close();
 });
 
-test("поздний ответ Gemini за прошлый раунд не портит сведение следующего раунда", async () => {
-  const { k, claude, codex, gemini, events, journal } = await pairRoom({ geminiWaitMs: 40 });
+test("поздняя проверка Gemini за прошлый раунд снимается с началом следующего — новая уходит сразу и сводится из своих ответов", async () => {
+  // Прежде поздний ход раунда 1 держал Gemini, а материал раунда 2 ждал в
+  // очереди — опоздание переходило из проверки в проверку (R6, дизайн
+  // срока Gemini 03.10).
+  const { k, claude, codex, gemini, events, journal } = await pairRoom({ geminiWaitMs: 40 }, 3, { liveGemini: true });
   turn(k, "codex", "Дефект в пороге.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
   await waitFor(() => claude.received.length === 2, "замечания без Gemini (срок истёк)");
+  assert.equal(gemini.busy, true, "Gemini всё ещё проверяет раунд 1");
   turn(k, "claude", "исправил");
-  await waitFor(() => codex.received.length === 2 && gemini.received.length === 2, "проверка 2 у обоих");
-  // Поздний ответ за раунд 1 приходит, пока раунд 2 ещё идёт.
-  turn(k, "gemini", "Поздно про раунд 1.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
-  await sleep(30);
-  assert.ok(systemEvents(events).some((e) => /Поздний ответ Gemini \(проверка 1\)/.test(e.text)));
-  assert.equal(k.state.stage, "reviewing", "раунд 2 не должен закрыться поздним ответом раунда 1");
+  await waitFor(() => codex.received.length === 2 && gemini.received.length === 2, "проверка 2 у обоих сразу");
+  assert.equal(gemini.interrupted, 1, "поздний ход раунда 1 снят один раз");
+  assert.equal(k.state.queued, 0, "материал раунда 2 не ждал в очереди");
+  assert.equal(said(events, /^Поздняя проверка Gemini \(проверка 1\) снята: началась проверка 2\.$/).length, 1);
   turn(k, "codex", "Хорошо.\nВЕРДИКТ: ПРИНЯТО");
-  turn(k, "gemini", "Хорошо.\nВЕРДИКТ: ПРИНЯТО");
+  geminiTurn(k, gemini, "Хорошо.\nВЕРДИКТ: ПРИНЯТО");
   await waitFor(() => k.state.stage === "accepted", "раунд 2 сведён из собственных ответов");
+  assert.equal(said(events, /^Итог проверки 2: Codex — принято, Gemini — принято\.$/).length, 1);
+  assert.equal(gemini.interrupted, 1);
+  journal.close();
+});
+
+// --- Срок Gemini: по вердикту Codex и по признакам жизни (дизайн 03.10) -----
+//
+// Живой прогон 03.10: Gemini (Flash high) проверял 8,7 мин, ~7 из них — веб.
+// Один срок «10 мин после Codex, что бы тот ни сказал» сводил пару без него,
+// оставлял процесс работать, а материал следующей проверки ждал в очереди.
+
+test("Codex принял, Gemini работает дольше срока — пару не сводим, его замечания уходят Claude вместе с принятием Codex", async () => {
+  // R1: принятие Codex не даёт ложного «Цикл завершён»: срок geminiWaitMs
+  // здесь не действует, Gemini ждут, пока он работает.
+  const { k, claude, gemini, events, journal } = await pairRoom({ geminiWaitMs: 40 }, 3, { liveGemini: true });
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  await sleep(200);
+  assert.equal(k.state.stage, "reviewing", "срок после принятия Codex пару не сводит");
+  assert.equal(said(events, /Итог проверки/).length, 0);
+  assert.equal(gemini.interrupted, 0);
+  geminiTurn(k, gemini, "Пробел: сиды не зафиксированы.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => claude.received.length === 2, "замечания Gemini у Claude");
+  assert.match(claude.received[1].text, /— Codex — код — принято/);
+  assert.match(claude.received[1].text, /— Gemini — методология и факты —\nПробел: сиды/);
+  assert.equal(k.state.stage, "working");
+  assert.equal(said(events, /^Итог проверки 1: Codex — принято, Gemini — есть замечания\.$/).length, 1);
+  journal.close();
+});
+
+test("Codex принял, автопересылка выключена — поздний Gemini даёт удержание с обоими отзывами, «принято» не наступает", async () => {
+  const stages = [];
+  const { k, claude, gemini, journal } = await pairRoom({ geminiWaitMs: 40, onState: (s) => stages.push(s.stage) }, 3, { liveGemini: true });
+  k.setAuto(false);
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  await sleep(200);
+  assert.equal(k.state.stage, "reviewing");
+  geminiTurn(k, gemini, "Пробел: сиды не зафиксированы.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => k.state.stage === "held", "удержание");
+  assert.match(k.state.held.reason, /^Автопересылка выключена/);
+  assert.ok(!stages.includes("accepted"), "принятия одним Codex не было ни на миг");
+  await k.releaseHeld();
+  assert.equal(claude.received.length, 2);
+  assert.match(claude.received[1].text, /— Codex — код — принято/);
+  assert.match(claude.received[1].text, /— Gemini — методология и факты —\nПробел: сиды/);
+  journal.close();
+});
+
+test("Gemini опоздал, пока замечания Codex удержаны, — его отзыв добавлен к ним и уходит Claude по кнопке", async () => {
+  // R7: удержанное сообщение ещё не ушло — поздний отзыв в него входит.
+  const { k, claude, gemini, events, journal } = await pairRoom({ geminiWaitMs: 40 }, 3, { liveGemini: true });
+  k.setAuto(false);
+  turn(k, "codex", "Дефект в пороге.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => k.state.stage === "held", "замечания Codex удержаны");
+  assert.equal(
+    said(events, /^Gemini не уложился в .+ и ещё проверяет: если он закончит, пока замечания ждут вашего решения, его отзыв будет добавлен к ним\.$/).length,
+    1,
+  );
+  geminiTurn(k, gemini, "Пробел: утечка id.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(
+    () => said(events, /^Gemini опоздал к проверке 1, но успел до отправки: его отзыв добавлен к удержанным замечаниям\.$/).length === 1,
+    "отзыв добавлен к удержанному",
+  );
+  assert.equal(k.state.stage, "held");
+  assert.match(k.state.held.reason, /^Автопересылка выключена/);
+  assert.deepEqual(k.state.pair.sides.gemini, { state: "done", verdict: "remarks" });
+  await k.releaseHeld();
+  assert.equal(claude.received.length, 2);
+  assert.match(claude.received[1].text, /— Codex — код —\nДефект в пороге/);
+  assert.match(claude.received[1].text, /— Gemini — методология и факты —\nПробел: утечка id/);
+  assert.doesNotMatch(claude.received[1].text, /не проверял \(это не замечание/);
+  journal.close();
+});
+
+test("Gemini опоздал и просит решения, пока замечания удержаны, — причина удержания и вердикт — его", async () => {
+  const { k, gemini, events, journal } = await pairRoom({ geminiWaitMs: 40 }, 3, { liveGemini: true });
+  k.setAuto(false);
+  turn(k, "codex", "Дефект в пороге.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => k.state.stage === "held", "замечания Codex удержаны");
+  geminiTurn(k, gemini, "Нужен доступ к данным.\nВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА");
+  await waitFor(() => said(events, /^Gemini опоздал к проверке 1, но успел до отправки/).length === 1, "отзыв добавлен");
+  assert.match(k.state.held.reason, /^Gemini просит вашего решения/);
+  assert.equal(k.state.verdict, "human");
+  journal.close();
+});
+
+test("Gemini опоздал с принятием, пока замечания удержаны, — удержанное не меняется, «принято» в ленте", async () => {
+  const { k, claude, gemini, events, journal } = await pairRoom({ geminiWaitMs: 40 }, 3, { liveGemini: true });
+  k.setAuto(false);
+  turn(k, "codex", "Дефект в пороге.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => k.state.stage === "held", "замечания Codex удержаны");
+  geminiTurn(k, gemini, "Всё в порядке.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => said(events, /^Gemini опоздал к проверке 1: принято\.$/).length === 1, "строка о позднем принятии");
+  assert.equal(k.state.verdict, "remarks");
+  await k.releaseHeld();
+  assert.match(claude.received[1].text, /— Codex — код —\nДефект в пороге/);
+  journal.close();
+});
+
+test("Gemini замолчал после ответа Codex — процесс остановлен, итог по Codex, поздний конец хода не засчитан", async () => {
+  const { k, claude, gemini, events, journal } = await pairRoom({ geminiSilenceMs: 60 }, 3, { liveGemini: true });
+  turn(k, "codex", "Дефект.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => claude.received.length === 2, "замечания Codex у Claude после молчания Gemini");
+  assert.equal(gemini.interrupted, 1);
+  assert.match(k.state.pair.sides.gemini.reason, /^замолчал на .+ — остановлен$/);
+  assert.equal(
+    said(events, /^Gemini .+ не подавал признаков жизни \(последнее действие в \d\d:\d\d\) — процесс остановлен\. Итог проверки 1 — по Codex\.$/).length,
+    1,
+  );
+  assert.equal(said(events, /^Gemini не проверял: /).length, 0);
+  // Конец снятого хода не приходит у настоящего адаптера; и если придёт —
+  // это не проверка 1.
+  turn(k, "gemini", "Поздно.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await sleep(30);
+  assert.equal(said(events, /Поздний ответ Gemini|Gemini опоздал/).length, 0);
+  assert.equal(claude.received.length, 2);
+  journal.close();
+});
+
+test("признаки жизни Gemini — вывод процесса или его события — держат ожидание дольше срока молчания", async () => {
+  for (const via of ["вывод процесса", "события"]) {
+    const { k, claude, gemini, journal } = await pairRoom({ geminiSilenceMs: 80 }, 3, { liveGemini: true });
+    turn(k, "codex", "Дефект.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+    const timer = setInterval(() => {
+      if (via === "вывод процесса") gemini.lastOutputAt = Date.now();
+      else k.handle(event("gemini", "tool_running", { tool: "read_url_content", callId: "c1" }));
+    }, 15);
+    await sleep(400);
+    clearInterval(timer);
+    assert.equal(gemini.interrupted, 0, `${via}: живой Gemini не останавливается`);
+    assert.equal(k.state.stage, "reviewing", via);
+    geminiTurn(k, gemini, "Пробел.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+    await waitFor(() => claude.received.length === 2, `${via}: сведение с Gemini`);
+    assert.match(claude.received[1].text, /— Gemini — методология и факты —\nПробел\./);
+    journal.close();
+  }
+});
+
+test("молчание Gemini считается от ответа Codex, а не от его последнего действия до него", async () => {
+  const { k, gemini, journal } = await pairRoom({ geminiSilenceMs: 100 }, 3, { liveGemini: true });
+  gemini.lastOutputAt = Date.now();
+  k.handle(event("gemini", "tool_running", { tool: "search_web", callId: "c1" }));
+  await sleep(300);
+  const answered = Date.now();
+  turn(k, "codex", "Дефект.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await sleep(40);
+  assert.equal(gemini.interrupted, 0, "молчание до ответа Codex не в счёт");
+  await waitFor(() => gemini.interrupted === 1, "срок молчания от ответа Codex");
+  assert.ok(Date.now() - answered >= 90, "не раньше срока молчания после ответа Codex");
+  journal.close();
+});
+
+test("Codex принял, Gemini жив, но не кончает — предел безопасности останавливает его, итог по Codex", async () => {
+  const { k, gemini, events, journal } = await pairRoom({ geminiWaitMs: 40, geminiSilenceMs: 80, geminiSafetyMs: 250 }, 3, { liveGemini: true });
+  const timer = setInterval(() => (gemini.lastOutputAt = Date.now()), 15);
+  try {
+    turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+    await sleep(120);
+    assert.equal(k.state.stage, "reviewing", "срок geminiWaitMs при принятии Codex не действует");
+    await waitFor(() => k.state.stage === "accepted", "принятие по Codex после предела");
+  } finally {
+    clearInterval(timer);
+  }
+  assert.equal(gemini.interrupted, 1);
+  assert.match(k.state.pair.sides.gemini.reason, /^не закончил за .+ после ответа Codex — остановлен$/);
+  assert.equal(said(events, /^Gemini не закончил за .+ после ответа Codex — процесс остановлен\. Итог проверки 1 — по Codex\.$/).length, 1);
+  assert.equal(said(events, /^Codex принял работу \(Gemini не проверял\)\. Цикл завершён\./).length, 1);
+  journal.close();
+});
+
+test("Gemini занят прямым вопросом — не прерывается; по сроку «был занят другим ходом», материал проверки снят из очереди", async () => {
+  const { k, codex, gemini, events, journal } = room(3, { geminiSafetyMs: 80, geminiSilenceMs: 30 }, { withGemini: true, liveGemini: true });
+  await k.fromHuman("какой бейзлайн взять?", "gemini");
+  assert.equal(gemini.received.length, 1);
+  await k.fromHuman("подобрать порог", "review");
+  turn(k, "claude", "порог 0.4");
+  await waitFor(() => codex.received.length === 1, "проверка у Codex");
+  assert.equal(k.state.queued, 1, "проверка Gemini ждёт конца прямого вопроса");
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => k.state.stage === "accepted", "итог по Codex после срока");
+  assert.equal(gemini.interrupted, 0, "прямой вопрос человека панель не снимает, молчание чужого хода не в счёт");
+  assert.equal(k.state.queued, 0, "устаревшая проверка снята из очереди сразу");
+  assert.equal(k.state.pair.sides.gemini.reason, "был занят другим ходом — материал проверки 1 не дошёл");
+  assert.equal(said(events, /^Gemini был занят другим ходом и проверку 1 не начал\. Итог — по Codex\.$/).length, 1);
+  geminiTurn(k, gemini, "логистическая регрессия");
+  await sleep(30);
+  assert.equal(gemini.received.length, 1, "проверка ему уже не уходит");
+  assert.equal(said(events, /Поздний ответ|опоздал/).length, 0, "ответ на прямой вопрос — прямой");
+  journal.close();
+});
+
+test("срок Gemini считается с момента, когда он действительно получил материал, а не с ответа Codex", async () => {
+  const { k, codex, gemini, journal } = room(3, { geminiSafetyMs: 60_000 }, { withGemini: true, liveGemini: true });
+  await k.fromHuman("какой бейзлайн взять?", "gemini");
+  await k.fromHuman("подобрать порог", "review");
+  turn(k, "claude", "порог 0.4");
+  await waitFor(() => codex.received.length === 1, "проверка у Codex");
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  const first = k.state.pair.waitUntil;
+  assert.equal(typeof first, "number");
+  await sleep(60);
+  geminiTurn(k, gemini, "логистическая регрессия");
+  await waitFor(() => gemini.received.length === 2, "материал проверки ушёл освободившемуся Gemini");
+  assert.ok(k.state.pair.waitUntil >= first + 50, "срок сдвинут на момент передачи материала");
+  journal.close();
+});
+
+test("новая задача снимает идущую проверку Gemini, а прямой вопрос человека не снимается никогда", async () => {
+  {
+    const { k, gemini, events, journal } = await pairRoom({}, 3, { liveGemini: true });
+    await k.fromHuman("новая задача", "review");
+    assert.equal(gemini.interrupted, 1);
+    assert.equal(said(events, /^Поздняя проверка Gemini \(проверка 1\) снята: новая задача\.$/).length, 1);
+    journal.close();
+  }
+  {
+    const { k, claude, codex, gemini, events, journal } = room(3, {}, { withGemini: true, liveGemini: true });
+    await k.fromHuman("какой бейзлайн взять?", "gemini");
+    await k.fromHuman("задача", "review");
+    turn(k, "claude", "сделал");
+    await waitFor(() => codex.received.length === 1, "проверка у Codex");
+    assert.equal(k.state.queued, 1, "проверка Gemini ждёт конца прямого вопроса");
+    await k.fromHuman("ещё задача", "review");
+    await waitFor(() => claude.received.length === 2, "новая задача у Claude");
+    assert.equal(gemini.interrupted, 0, "прямой вопрос не снимают ни проверка, ни новая задача");
+    assert.equal(said(events, /Поздняя проверка Gemini/).length, 0);
+    journal.close();
+  }
+});
+
+test("после того как панель сняла ход Gemini, следующее его сообщение говорит, что прошлый ход прерван, — и только оно", async () => {
+  const { k, gemini, journal } = await pairRoom({ geminiSilenceMs: 40 }, 3, { liveGemini: true });
+  turn(k, "codex", "Дефект.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => gemini.interrupted === 1, "снят по молчанию");
+  await k.fromHuman("что с утечкой?", "gemini");
+  assert.equal(gemini.received[1].text, "[прошлый ход прерван панелью — его материал устарел, проверяй только этот]\nчто с утечкой?");
+  geminiTurn(k, gemini, "ответ");
+  await k.fromHuman("ещё вопрос", "gemini");
+  assert.equal(gemini.received[2].text, "ещё вопрос");
+  journal.close();
+});
+
+test("«Прервать» при занятом Gemini — следующее сообщение с пометкой; новая сессия пометку снимает", async () => {
+  {
+    const { k, gemini, journal } = room(3, {}, { withGemini: true, liveGemini: true });
+    await k.fromHuman("первый вопрос", "gemini");
+    await k.interruptAll();
+    await k.fromHuman("второй вопрос", "gemini");
+    assert.match(gemini.received[1].text, /^\[прошлый ход прерван панелью/);
+    journal.close();
+  }
+  {
+    const { k, gemini, journal } = room(3, {}, { withGemini: true, liveGemini: true });
+    await k.fromHuman("первый вопрос", "gemini");
+    await k.interruptAll();
+    await k.newSession("gemini");
+    await k.fromHuman("с чистого листа", "gemini");
+    assert.equal(gemini.received[1].text, "с чистого листа");
+    journal.close();
+  }
+});
+
+test("расход снятого панелью хода Gemini входит в расход задачи", async () => {
+  const { k, gemini, journal } = await pairRoom({ geminiSilenceMs: 40 }, 3, { liveGemini: true });
+  gemini.partial = { input: 500, cached: 100, output: 7 };
+  turn(k, "codex", "Дефект.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => gemini.interrupted === 1, "снят по молчанию");
+  assert.deepEqual(k.state.usage.task.gemini, { input: 500, cached: 100, output: 7 });
+  journal.close();
+});
+
+test("часы Gemini не переживают сведения, «Остановить», «Прервать» и новую задачу", async () => {
+  const fast = { geminiWaitMs: 60, geminiSilenceMs: 40, geminiSafetyMs: 60 };
+  {
+    const { k, gemini, events, journal } = await pairRoom(fast, 3, { liveGemini: true });
+    turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+    geminiTurn(k, gemini, "Всё в порядке.\nВЕРДИКТ: ПРИНЯТО");
+    await waitFor(() => k.state.stage === "accepted", "сведение");
+    const lines = systemEvents(events).length;
+    await sleep(200);
+    assert.equal(gemini.interrupted, 0, "после сведения часы не останавливают Gemini");
+    assert.equal(systemEvents(events).length, lines, "после сведения новых строк нет");
+    journal.close();
+  }
+  for (const action of ["stopAll", "interruptAll", "новая задача"]) {
+    const { k, gemini, events, journal } = await pairRoom(fast, 3, { liveGemini: true });
+    turn(k, "codex", "Дефект.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+    if (action === "новая задача") await k.fromHuman("новая задача", "review");
+    else await k[action]();
+    const interrupted = gemini.interrupted;
+    const lines = systemEvents(events).length;
+    await sleep(200);
+    assert.equal(gemini.interrupted, interrupted, `${action}: часы прежней пары не останавливают Gemini`);
+    assert.equal(systemEvents(events).length, lines, `${action}: новых строк нет`);
+    assert.equal(said(events, /Итог проверки 1|замолчал|не уложился/).length, 0, action);
+    journal.close();
+  }
+});
+
+test("поздний ответ Gemini присоединяется один раз; после новой сессии — нет", async () => {
+  {
+    const { k, claude, gemini, events, journal } = await pairRoom({ geminiWaitMs: 40 }, 3, { liveGemini: true });
+    turn(k, "codex", "Дефект.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+    await waitFor(() => claude.received.length === 2, "замечания Codex");
+    geminiTurn(k, gemini, "Пробел.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+    await waitFor(() => said(events, /Gemini опоздал к проверке 1/).length === 1, "первый поздний ответ");
+    geminiTurn(k, gemini, "Ещё раз.\nВЕРДИКТ: ПРИНЯТО");
+    await sleep(30);
+    assert.equal(said(events, /Gemini опоздал/).length, 1, "второй раз не присоединяется");
+    assert.deepEqual(k.state.pair.sides.gemini, { state: "done", verdict: "remarks" });
+    journal.close();
+  }
+  {
+    const { k, claude, gemini, events, journal } = await pairRoom({ geminiWaitMs: 40 }, 3, { liveGemini: true });
+    turn(k, "codex", "Дефект.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+    await waitFor(() => claude.received.length === 2, "замечания Codex");
+    await k.newSession("gemini");
+    assert.equal(gemini.forgotten, 1);
+    geminiTurn(k, gemini, "Пробел.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+    await sleep(30);
+    assert.equal(said(events, /Gemini опоздал|Поздний ответ Gemini/).length, 0);
+    journal.close();
+  }
+});
+
+test("M6: после новой сессии Gemini его прямой ответ — прямой, не «поздний ответ» проверки; следующая проверка засчитана своему номеру", async () => {
+  const { k, claude, codex, gemini, events, journal } = await pairRoom({}, 3, { liveGemini: true });
+  await k.newSession("gemini");
+  assert.equal(gemini.forgotten, 1);
+  await k.fromHuman("что думаешь про порог?", "gemini");
+  assert.equal(gemini.received.length, 2, "новая сессия свободна — прямой вопрос ушёл сразу");
+  gemini.busy = false;
+  k.handle(event("gemini", "turn_completed", { incomplete: "пустой ответ" }));
+  await waitFor(() => said(events, /^Gemini не ответил: пустой ответ\.$/).length === 1, "пустой прямой ответ назван");
+  assert.equal(said(events, /Поздний ответ Gemini/).length, 0);
+  turn(k, "codex", "Дефект.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => claude.received.length === 2, "замечания Codex");
+  turn(k, "claude", "исправил");
+  await waitFor(() => codex.received.length === 2 && gemini.received.length === 3, "проверка 2 у обоих");
+  geminiTurn(k, gemini, "Пробел.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  turn(k, "codex", "Хорошо.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => claude.received.length === 3, "замечания проверки 2");
+  assert.equal(said(events, /^Итог проверки 2: Codex — принято, Gemini — есть замечания\.$/).length, 1);
+  journal.close();
+});
+
+test("состояние пары: срок ожидания Gemini есть, только пока Codex ответил, а Gemini ещё проверяет", async () => {
+  const { k, gemini, journal } = await pairRoom({ geminiWaitMs: 60_000 }, 3, { liveGemini: true });
+  assert.ok(!("waitUntil" in k.state.pair), "оба проверяют — срока нет");
+  const before = Date.now();
+  turn(k, "codex", "Дефект.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  const after = Date.now();
+  const until = k.state.pair.waitUntil;
+  assert.ok(until >= before + 60_000 && until <= after + 60_000, `срок — ответ Codex + geminiWaitMs: ${until - before}`);
+  geminiTurn(k, gemini, "Всё в порядке.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => k.state.stage === "working", "сведение");
+  assert.ok(!("waitUntil" in k.state.pair), "Gemini ответил — срока нет");
   journal.close();
 });

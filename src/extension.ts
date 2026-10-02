@@ -213,7 +213,7 @@ class Room {
       ...(gemini && geminiLaunch
         ? {
             gemini,
-            geminiWaitMs: settings.get<number>("geminiWaitMinutes", 10) * 60_000,
+            geminiWaitMs: settings.get<number>("geminiWaitMinutes", 20) * 60_000,
             geminiUsage: () =>
               fetchGeminiUsage({
                 command: geminiLaunch.command,
