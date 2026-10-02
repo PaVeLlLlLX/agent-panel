@@ -28,6 +28,7 @@ export interface RoomBinding {
   readonly cwd: string;
   readonly claudeSessionId: string | undefined;
   readonly codexThreadId: string | undefined;
+  readonly geminiConversationId: string | undefined;
   readonly updatedAt: number;
 }
 
@@ -45,6 +46,7 @@ export class Journal {
         cwd        TEXT NOT NULL,
         claude_session TEXT,
         codex_thread   TEXT,
+        gemini_conversation TEXT,
         updated_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS events (
@@ -75,6 +77,11 @@ export class Journal {
     for (const column of ["tool_call_id", "parent_call_id", "unsolicited", "failed"]) {
       if (!existing.has(column)) this.#db.exec(`ALTER TABLE events ADD COLUMN ${column} TEXT`);
     }
+    // Разговор Gemini (agy --conversation) — колонка комнаты, добавленная позже.
+    const roomColumns = new Set(
+      (this.#db.prepare("PRAGMA table_info(rooms)").all() as Record<string, unknown>[]).map((k) => String(k["name"])),
+    );
+    if (!roomColumns.has("gemini_conversation")) this.#db.exec("ALTER TABLE rooms ADD COLUMN gemini_conversation TEXT");
   }
 
   ensureRoom(room: string, cwd: string): void {
@@ -106,17 +113,24 @@ export class Journal {
     }
   }
 
+  /** Разговор Gemini комнаты: следующий запуск agy продолжит его через --conversation. */
+  bindGeminiConversation(room: string, conversationId: string): void {
+    this.#db
+      .prepare(`UPDATE rooms SET gemini_conversation = ?, updated_at = ? WHERE room = ?`)
+      .run(conversationId, Date.now(), room);
+  }
+
   /** Новая сессия агента: привязка комнаты к прежней забывается. */
-  forgetSession(room: string, agent: "claude" | "codex"): void {
+  forgetSession(room: string, agent: "claude" | "codex" | "gemini"): void {
     if (this.#closed) return;
-    const column = agent === "claude" ? "claude_session" : "codex_thread";
+    const column = agent === "claude" ? "claude_session" : agent === "codex" ? "codex_thread" : "gemini_conversation";
     this.#db.prepare(`UPDATE rooms SET ${column} = NULL, updated_at = ? WHERE room = ?`).run(Date.now(), room);
   }
 
   binding(room: string): RoomBinding | undefined {
     const line = this.#db
       .prepare(
-        `SELECT room, cwd, claude_session, codex_thread, updated_at
+        `SELECT room, cwd, claude_session, codex_thread, gemini_conversation, updated_at
          FROM rooms WHERE room = ?`,
       )
       .get(room) as Record<string, unknown> | undefined;
@@ -126,6 +140,7 @@ export class Journal {
       cwd: String(line["cwd"]),
       claudeSessionId: (line["claude_session"] as string | null) ?? undefined,
       codexThreadId: (line["codex_thread"] as string | null) ?? undefined,
+      geminiConversationId: (line["gemini_conversation"] as string | null) ?? undefined,
       updatedAt: Number(line["updated_at"]),
     };
   }

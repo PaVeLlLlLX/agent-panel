@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { ClaudeAdapter } from "../out/adapters/claude.js";
+import { ClaudeAdapter, formatForClaude } from "../out/adapters/claude.js";
 import { CodexAdapter } from "../out/adapters/codex.js";
 
 const fixturePath = (name) => fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url));
@@ -1176,6 +1176,16 @@ test("Claude: session_id сообщается обратным вызовом", 
   } finally {
     await a.stop();
   }
+});
+
+test("Claude: заголовок сообщения — из prompt.heading, иначе по отправителю", () => {
+  assert.match(formatForClaude({ text: "т", from: "human" }), /^\[от человека\]\nт$/);
+  assert.match(formatForClaude({ text: "т", from: "codex" }), /^\[замечание рецензента Codex\]/);
+  assert.match(formatForClaude({ text: "т", from: "gemini" }), /^\[замечание рецензента Gemini\]/);
+  assert.equal(
+    formatForClaude({ text: "т", from: "codex", heading: "[замечания рецензентов Codex и Gemini]", snapshot: "abc" }),
+    "[замечания рецензентов Codex и Gemini]\n[версия файлов: abc]\nт",
+  );
 });
 
 test("Claude: несуществующая команда — ошибка с отметкой, а не падение панели", async () => {

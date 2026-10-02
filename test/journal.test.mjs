@@ -90,3 +90,34 @@ test("новая сессия: привязка агента комнаты оч
   assert.equal(p.codexThreadId, "codex-1");
   journal.close();
 });
+
+test("разговор Gemini привязан к комнате и забывается новой сессией", () => {
+  const filePath = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const journal = new Journal(filePath);
+  journal.ensureRoom("r", "C:/x");
+  journal.bindSessions("r", "claude-1", "codex-1");
+  journal.bindGeminiConversation("r", "gemini-1");
+  assert.equal(journal.binding("r").geminiConversationId, "gemini-1");
+  journal.forgetSession("r", "gemini");
+  const p = journal.binding("r");
+  assert.equal(p.geminiConversationId, undefined);
+  assert.equal(p.claudeSessionId, "claude-1", "другие привязки на месте");
+  assert.equal(p.codexThreadId, "codex-1");
+  journal.close();
+});
+
+test("журнал прежней версии получает колонку разговора Gemini", () => {
+  const filePath = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const oldDb = new DatabaseSync(filePath);
+  oldDb.exec(`
+    CREATE TABLE rooms (room TEXT PRIMARY KEY, cwd TEXT NOT NULL, claude_session TEXT, codex_thread TEXT, updated_at INTEGER NOT NULL);
+    INSERT INTO rooms VALUES ('r', 'C:/x', 'claude-old', NULL, 1);
+  `);
+  oldDb.close();
+  const journal = new Journal(filePath);
+  journal.bindGeminiConversation("r", "gemini-1");
+  const p = journal.binding("r");
+  assert.equal(p.geminiConversationId, "gemini-1");
+  assert.equal(p.claudeSessionId, "claude-old", "прежняя привязка на месте");
+  journal.close();
+});

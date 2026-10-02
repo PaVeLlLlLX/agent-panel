@@ -819,6 +819,7 @@ export class Coordinator {
 const NAMES: Record<AgentId, string> = {
   claude: "Claude",
   codex: "Codex",
+  gemini: "Gemini",
   human: "человека",
   system: "панели",
 };

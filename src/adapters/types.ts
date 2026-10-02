@@ -17,7 +17,7 @@
  * служебные сообщения панели. Без него «Предел раундов достигнут» в живом
  * прогоне показывался как реплика человека.
  */
-export type AgentId = "claude" | "codex" | "human" | "system";
+export type AgentId = "claude" | "codex" | "gemini" | "human" | "system";
 
 /**
  * Видимость события.
@@ -121,6 +121,12 @@ export interface PanelEvent {
    */
   readonly denials?: readonly string[];
   /**
+   * У turn_completed рецензента Gemini: ход кончился, а проверки не было —
+   * пустой ответ или действие отклонено без запроса (живая проба agy
+   * 02.10.2026). Причина словами; координатор засчитывает «не проверял».
+   */
+  readonly incomplete?: string;
+  /**
    * У approval_requested: правила, которые добавит «разрешить в этой сессии»,
    * в виде «Bash(mkdir x *)». Пусто — такой кнопки нет.
    */
@@ -160,6 +166,8 @@ export interface AgentPrompt {
   readonly from: AgentId;
   /** Снимок версии, на который агент должен смотреть. */
   readonly snapshot?: string;
+  /** Заголовок сообщения вместо выведенного из from — например «[замечания рецензентов Codex и Gemini]». */
+  readonly heading?: string;
 }
 
 /**

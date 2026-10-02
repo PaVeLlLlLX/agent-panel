@@ -127,6 +127,21 @@ function claudeCatalog(models: unknown): ModelOption[] {
 
 const NO_QUESTIONS_NOTE = "разрешено панелью: режим «без вопросов»";
 
+/** Кто прислал реплику — часть сообщения: указание человека и замечание рецензента весят по-разному. */
+export function formatForClaude(prompt: AgentPrompt): string {
+  const heading =
+    prompt.heading ??
+    (prompt.from === "human"
+      ? "[от человека]"
+      : prompt.from === "codex"
+        ? "[замечание рецензента Codex]"
+        : prompt.from === "gemini"
+          ? "[замечание рецензента Gemini]"
+          : "[от панели]");
+  const version = prompt.snapshot ? `\n[версия файлов: ${prompt.snapshot}]` : "";
+  return `${heading}${version}\n${prompt.text}`;
+}
+
 /** Запрос разрешения, на который человек ещё не ответил. */
 interface OpenRequest {
   /** Процесс, задавший вопрос: ответ в перезапущенный процесс не имеет смысла. */
@@ -395,7 +410,7 @@ export class ClaudeAdapter implements Adapter {
     if (!proc) throw new Error("адаптер Claude не запущен");
     const record = {
       type: "user",
-      message: { role: "user", content: [{ type: "text", text: this.#format(prompt) }] },
+      message: { role: "user", content: [{ type: "text", text: formatForClaude(prompt) }] },
     };
     this.#busy = true;
     this.#openRequests = 0;
@@ -510,18 +525,6 @@ export class ClaudeAdapter implements Adapter {
       raw: decision,
     });
     return true;
-  }
-
-  /** Кто прислал реплику — часть сообщения: указание человека и замечание рецензента весят по-разному. */
-  #format(prompt: AgentPrompt): string {
-    const heading =
-      prompt.from === "human"
-        ? "[от человека]"
-        : prompt.from === "codex"
-          ? "[замечание рецензента Codex]"
-          : "[от панели]";
-    const version = prompt.snapshot ? `\n[версия файлов: ${prompt.snapshot}]` : "";
-    return `${heading}${version}\n${prompt.text}`;
   }
 
   /**
