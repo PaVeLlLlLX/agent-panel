@@ -982,7 +982,7 @@ export class Coordinator {
     // Gemini ещё работал) снимается до отправок: иначе материал этой проверки
     // ждал бы её конца в очереди, и опоздание переходило бы дальше (R6).
     const stopping = this.#dropStaleGemini(cycle, round, `началась проверка ${round}`);
-    this.#pair = {
+    const pair: ReviewPair = {
       cycle,
       round,
       waiting: new Set<Reviewer>(geminiOut ? ["codex", "gemini"] : ["codex"]),
@@ -990,6 +990,7 @@ export class Coordinator {
       deadline: undefined,
       overdue: false,
     };
+    this.#pair = pair;
     if (cycle === this.#cycle) {
       this.#trail.push({ who: "codex", round });
       if (geminiOut) this.#trail.push({ who: "gemini", round });
@@ -1003,11 +1004,13 @@ export class Coordinator {
     const sends = [this.#send(codexOut)];
     if (geminiOut && this.#isCurrent(cycle)) {
       // Снятый процесс сначала дорабатывает остановку: два agy на одном
-      // разговоре не нужны. Codex этого не ждёт.
+      // разговоре не нужны. Codex этого не ждёт. За время остановки пару
+      // могли свести или засчитать Gemini «не проверял» (новая сессия) —
+      // тогда материал уже не нужен, как и в #flushQueue (рецензия 03.10).
       sends.push(
         stopping
           ? stopping.then(async () => {
-              if (this.#isCurrent(cycle) && this.#pair?.round === round) await this.#send(geminiOut);
+              if (this.#isCurrent(cycle) && this.#pair === pair && pair.waiting.has("gemini")) await this.#send(geminiOut);
             })
           : this.#send(geminiOut),
       );
@@ -1032,7 +1035,10 @@ export class Coordinator {
       this.#isCurrent(pair.cycle) &&
       !pair.waiting.has("gemini")
     ) {
-      pair.overdue = false; // поздний отзыв принимается один раз
+      // Поздний отзыв принимается один раз. Страховка: цель проверки N уходит
+      // Gemini один раз, первый поздний ответ её забирает, и второй конец хода
+      // приходит прямым — сюда он при настоящей работе не доходит.
+      pair.overdue = false;
       await this.#lateGemini(pair, material, ended);
       return;
     }
@@ -1266,14 +1272,24 @@ export class Coordinator {
         this.#report(`Gemini опоздал к проверке ${n}, но успел до отправки: его отзыв добавлен к удержанным замечаниям.`);
       }
     } else {
+      // Удержана другая передача (проверка N+1 по пределу или без
+      // автопересылки, повтор после отказов): Claude уже закончил работу по
+      // замечаниям Codex и ждёт человека — «Claude работает» было бы
+      // неправдой (рецензия 03.10).
+      const waits = held !== undefined && this.#stage === "held";
+      const next = held?.action === "review" ? `; если отправите проверку ${n + 1}, Gemini получит её вместе с Codex` : "";
       const words: Record<Verdict, string> = {
-        remarks:
-          `Gemini опоздал к проверке ${n}: есть замечания (текст выше). Claude их не получил — он уже работает ` +
-          `по замечаниям Codex; проверку ${n + 1} Gemini получит вместе с Codex.`,
+        remarks: waits
+          ? `Gemini опоздал к проверке ${n}: есть замечания (текст выше). Claude их не получил — он уже закончил ` +
+            `работу по замечаниям Codex, и обмен ждёт вашего решения${next}.`
+          : `Gemini опоздал к проверке ${n}: есть замечания (текст выше). Claude их не получил — он уже работает ` +
+            `по замечаниям Codex; проверку ${n + 1} Gemini получит вместе с Codex.`,
         accepted: `Gemini опоздал к проверке ${n}: принято.`,
-        human:
-          `Gemini опоздал к проверке ${n} и просит вашего решения (текст выше); Claude работает по замечаниям ` +
-          "Codex — при необходимости остановите его.",
+        human: waits
+          ? `Gemini опоздал к проверке ${n} и просит вашего решения (текст выше); Claude уже закончил работу по ` +
+            "замечаниям Codex, и обмен ждёт вашего решения."
+          : `Gemini опоздал к проверке ${n} и просит вашего решения (текст выше); Claude работает по замечаниям ` +
+            "Codex — при необходимости остановите его.",
         missing: `Gemini опоздал к проверке ${n} и не вынес вердикт (ответ выше).`,
       };
       this.#report(words[v]);
@@ -1477,7 +1493,14 @@ export class Coordinator {
     const reviewed = this.#pair;
     if (o.to === "gemini" && o.target.role === "review" && reviewed && reviewed.cycle === o.target.cycle && reviewed.round === o.target.round) {
       reviewed.geminiSentAt = Date.now();
-      if (reviewed.codexAt !== undefined) this.#refresh(); // срок в «Эстафете» сдвинулся
+      if (reviewed.codexAt !== undefined && reviewed.waiting.has("gemini")) {
+        // Часы стояли на прежнем сроке без молчания: при ответе Codex ход
+        // Gemini был чужим. Теперь он наш — переставить их на ближайшее из
+        // молчания и срока, иначе зависший после передачи Gemini снимался бы
+        // только по пределу (рецензия 03.10).
+        this.#geminiTick(reviewed);
+        this.#refresh(); // срок в «Эстафете» сдвинулся
+      }
     }
     // Первое сообщение после хода, снятого панелью, говорит об этом (R11).
     const cutNote = o.to === "gemini" && this.#geminiCut;
