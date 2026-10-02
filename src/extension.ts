@@ -370,13 +370,21 @@ function markup(webview: vscode.Webview, context: vscode.ExtensionContext): stri
 <header id="состояние" class="шапка">
   <div class="шапка-строка">
     <button id="эстафета" class="эстафета" aria-expanded="false" aria-controls="дорожка" title="Кто сейчас работает. Нажмите — история текущего цикла">
-      <span id="нить-статус" class="нить-статус" data-active="idle" data-flow="none" aria-hidden="true">
-        <span class="ст-нить"></span>
-        <span class="ст-поток"><span class="ст-частица"></span><span class="ст-частица"></span><span class="ст-частица"></span><span class="ст-частица"></span><span class="ст-частица"></span></span>
+      <span id="нить-статус" class="нить-статус" data-active="idle" data-flow="none" data-pair="no" aria-hidden="true">
+        <svg class="ст-нити" width="96" height="28" viewBox="0 0 96 28">
+          <path class="ст-ствол" d="M8 14 H54"/>
+          <path class="ст-ветвь одна" d="M54 14 H82"/>
+          <path class="ст-ветвь codex" d="M54 14 C66 14 70 6 82 6"/>
+          <path class="ст-ветвь gemini" d="M54 14 C66 14 70 22 82 22"/>
+        </svg>
+        <span class="ст-поток"><span class="ст-частица"></span><span class="ст-частица"></span><span class="ст-частица"></span><span class="ст-частица"></span><span class="ст-частица"></span><span class="ст-частица"></span></span>
         <span class="ст-огонёк claude"></span>
         <span class="ст-огонёк codex"></span>
+        <span class="ст-огонёк gemini"></span>
         <span class="ст-кольцо"></span>
         <span class="ст-человек"></span>
+        <span id="ст-отметка-codex" class="ст-отметка codex" hidden></span>
+        <span id="ст-отметка-gemini" class="ст-отметка gemini" hidden></span>
         <span class="ст-галочка"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5 6.5 11.5 12.5 4.5"/></svg></span>
       </span>
       <span class="статус-текст">
@@ -386,9 +394,9 @@ function markup(webview: vscode.Webview, context: vscode.ExtensionContext): stri
     </button>
     <span class="распорка"></span>
     <span id="очередь" class="очередь" hidden title="Сообщения, которые ждут, пока агент закончит текущий ход"></span>
-    <span id="раунд" class="раунды" role="img" aria-label="проверок 0 из 0" title="Проверка — один раз, когда Codex посмотрел работу Claude. Предел — сколько проверок разрешено на одну задачу, чтобы агенты не спорили бесконечно"></span>
+    <span id="раунд" class="раунды" role="img" aria-label="проверок 0 из 0" title="Проверка — один раз, когда рецензенты посмотрели работу Claude (Codex и Gemini вместе — одна проверка). Предел — сколько проверок разрешено на одну задачу, чтобы агенты не спорили бесконечно"></span>
     <button id="прервать" class="круглая" aria-label="Прервать ход" title="Прервать текущий ход агентов; сообщения, ждавшие в очереди, не отправляются. Следующее сообщение продолжит те же сессии"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 4v8M10 4v8"/></svg></button>
-    <button id="стоп" class="круглая опасно" aria-label="Остановить агентов" title="Завершить процессы обоих агентов вместе с их командами"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5"/></svg></button>
+    <button id="стоп" class="круглая опасно" aria-label="Остановить агентов" title="Завершить процессы всех агентов вместе с их командами"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5"/></svg></button>
   </div>
   <div id="задача" class="задача" hidden></div>
   <div id="дорожка" class="дорожка" hidden aria-label="Дорожка цикла"></div>

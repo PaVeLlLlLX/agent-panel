@@ -16,14 +16,14 @@
  */
 const vscode = acquireVsCodeApi();
 const { summarizeTools, stickToBottom, toolCategory } = globalThis.PanelFormat;
-const { effortLevels, defaultEffort, threadLayout, relayView, trackSteps, beadFor, actionCounters, verdictLine } =
+const { effortLevels, defaultEffort, threadLayout, relayView, trackSteps, trackGeometry, savedRoute, beadFor, actionCounters, verdictLine } =
   globalThis.PanelThread;
 
 const byId = (id) => document.getElementById(id);
 const conversation = byId("беседа");
 const inputBox = byId("ввод");
 
-const NAMES = { claude: "Claude", codex: "Codex", human: "Вы", system: "Панель" };
+const NAMES = { claude: "Claude", codex: "Codex", gemini: "Gemini", human: "Вы", system: "Панель" };
 const ROUTES = [
   { id: "review", name: "Задача с рецензией", hint: "Claude сделает, Codex проверит — по очереди, до вердикта" },
   { id: "both", name: "Спросить обоих", hint: "Оба ответят независимо, друг другу ничего не передаётся" },
@@ -50,6 +50,13 @@ function icon(markup, size = 14) {
   const template = document.createElement("template");
   template.innerHTML = `<svg xmlns="${SVG}" width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${markup}</svg>`;
   return template.content.firstChild;
+}
+
+/** Элемент SVG с атрибутами: только числа и постоянные строки из этого файла. */
+function svgEl(tag, attrs) {
+  const el = document.createElementNS(SVG, tag);
+  for (const [name, value] of Object.entries(attrs)) el.setAttribute(name, String(value));
+  return el;
 }
 
 const ICONS = {
@@ -486,7 +493,7 @@ function showEvent(e, history = false) {
 
 // --- Шапка: «Эстафета» и «Дорожка цикла» ------------------------------------------
 
-const STEP_LABELS = { task: "Задача", claude: "Claude", codex: "Codex", you: "Вы" };
+const STEP_LABELS = { task: "Задача", claude: "Claude", codex: "Codex", gemini: "Gemini", you: "Вы" };
 let lastState;
 
 function showState(s) {
@@ -495,10 +502,20 @@ function showState(s) {
   const threadEl = byId("нить-статус");
   threadEl.dataset.active = kind.active;
   threadEl.dataset.flow = kind.flow;
+  threadEl.dataset.pair = kind.pair ? "yes" : "no";
+  for (const who of ["claude", "codex", "gemini"]) {
+    threadEl.querySelector(`.ст-огонёк.${who}`).classList.toggle("горит", kind.lit[who]);
+  }
+  for (const who of ["codex", "gemini"]) {
+    const mark = byId(`ст-отметка-${who}`);
+    mark.textContent = kind.marks[who];
+    mark.classList.toggle("принято", kind.marks[who] === "✓");
+    mark.hidden = !kind.marks[who] || kind.active === "accepted";
+  }
   const stage = byId("этап");
   stage.textContent = kind.label;
   stage.dataset.active = kind.active;
-  stage.classList.toggle("перелив", kind.active === "claude" || kind.active === "codex");
+  stage.classList.toggle("перелив", ["claude", "codex", "gemini", "reviewers"].includes(kind.active));
   byId("этап-пояснение").textContent = kind.sub;
 
   const round = byId("раунд");
@@ -559,16 +576,16 @@ function showUsage(isOpen) {
   const line = byId("расход");
   const usage = lastState?.usage;
   const parts = [];
-  for (const agent of ["claude", "codex"]) {
+  for (const agent of ["claude", "codex", "gemini"]) {
     const r = usage?.task?.[agent];
     if (r && r.input + r.output > 0) {
       parts.push(`${NAMES[agent]} ${tokens(r.input + r.output)}${r.cached ? ` (из кеша ${tokens(r.cached)})` : ""}`);
     }
   }
   const limits = [];
-  for (const agent of ["codex", "claude"]) {
+  for (const agent of ["codex", "claude", "gemini"]) {
     const l = usage?.limits?.[agent];
-    const week = agent === "claude" ? usage?.limits?.claudeWeek : undefined;
+    const week = agent === "claude" ? usage?.limits?.claudeWeek : agent === "gemini" ? usage?.limits?.geminiWeek : undefined;
     if (week) {
       // Доля недели из /usage; статус окна из потока — только когда он не «в норме».
       // Сведение старше 10 минут или последний запрос не удался — со временем.
@@ -600,25 +617,34 @@ function showTrack() {
   showUsage(isOpen);
   if (!isOpen) return;
   const s = lastState ?? { stage: "idle", maxRounds: 0 };
-  const steps = trackSteps(s.trail ?? [], s);
-  if (steps.length === 0) {
+  const columns = trackSteps(s.trail ?? [], s);
+  if (columns.length === 0) {
     track.replaceChildren(makeEl("span", "тихо", "Цикла рецензии ещё не было"));
     return;
   }
-  track.replaceChildren(
-    ...steps.map((sh, i) => {
-      const wrapper = makeEl("span", "шаг");
-      if (i > 0) wrapper.append(makeEl("span", `шаг-связь ${sh.state === "ghost" ? "пустая" : ""}`.trim()));
-      const node = makeEl(
-        "span",
-        `шаг-узел ${sh.who} ${sh.state === "current" ? "текущий" : ""} ${sh.state === "ghost" ? "пустой" : ""}`.replace(/ +/g, " ").trim(),
-      );
-      node.title = STEP_LABELS[sh.who] + (sh.state === "ghost" ? " — ещё впереди, если понадобится" : "");
-      if (sh.mark) node.append(makeEl("span", `шаг-отметка ${sh.mark === "✓" ? "принято" : ""}`.trim(), sh.mark));
-      wrapper.append(node);
-      return wrapper;
-    }),
-  );
+  const g = trackGeometry(columns);
+  const svg = svgEl("svg", { width: g.width, height: g.height, viewBox: `0 0 ${g.width} ${g.height}`, class: "дорожка-граф" });
+  for (const l of g.links) svg.append(svgEl("path", { d: l.d, class: l.ghost ? "шаг-связь пустая" : "шаг-связь" }));
+  for (const u of g.nodes) {
+    const classes = ["шаг-узел", u.who, u.state === "current" ? "текущий" : "", u.state === "ghost" ? "пустой" : "", u.unchecked ? "не-проверял" : ""];
+    const circle = svgEl("circle", { cx: u.x, cy: u.y, r: u.r, class: classes.filter(Boolean).join(" ") });
+    const tip = svgEl("title", {});
+    tip.textContent =
+      u.state === "ghost"
+        ? `${STEP_LABELS[u.who]} — ещё впереди, если понадобится`
+        : u.unchecked
+          ? `${STEP_LABELS[u.who]} не проверял: ${u.unchecked}`
+          : STEP_LABELS[u.who];
+    circle.append(tip);
+    svg.append(circle);
+    if (u.mark) {
+      svg.append(svgEl("rect", { x: u.x + 3, y: u.y - 15, width: 12, height: 12, rx: 6, class: "шаг-отметка-фон" }));
+      const mark = svgEl("text", { x: u.x + 9, y: u.y - 6, "text-anchor": "middle", class: u.mark === "✓" ? "шаг-отметка принято" : "шаг-отметка" });
+      mark.textContent = u.mark;
+      svg.append(mark);
+    }
+  }
+  track.replaceChildren(svg);
 }
 
 byId("эстафета").addEventListener("click", () => {

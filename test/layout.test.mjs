@@ -428,7 +428,7 @@ test("эстафета и дорожка цикла: кто работает, с
     result.trackBefore = getById("дорожка").hidden;
     getById("эстафета").click();
     result.trackAfter = getById("дорожка").hidden;
-    result.steps = [...getById("дорожка").querySelectorAll(".шаг-узел")].map((u) => u.className);
+    result.steps = [...getById("дорожка").querySelectorAll(".шаг-узел")].map((u) => u.getAttribute("class"));
     result.marks = [...getById("дорожка").querySelectorAll(".шаг-отметка")].map((o) => o.textContent);
     postToPage({ type: "state", state: state({ stage: "held", verdict: "human",
       held: { to: "claude", reason: "Рецензент просит решения", action: "send" } }) });
@@ -453,6 +453,71 @@ test("эстафета и дорожка цикла: кто работает, с
   assert.equal(r.human, "human");
   assert.equal(r.banner, true);
   assert.equal(r.button, "Отправить Claude");
+});
+
+test("эстафета пары: вилка, горит Gemini, отметка Codex; дорожка — ромб с «не проверял»", { skip: NO_BROWSER }, () => {
+  const r = open(
+    js`
+    const base = { round: 2, maxRounds: 3, approvals: 0, queued: 0, auto: true, claudeBusy: false, codexBusy: false,
+      geminiBusy: false, reviewers: ["codex", "gemini"] };
+    postToPage({ type: "state", state: { ...base, stage: "reviewing", verdict: "remarks",
+      pair: { round: 2, sides: { codex: { state: "done", verdict: "accepted" }, gemini: { state: "waiting" } } },
+      trail: [{ who: "task" }, { who: "claude" }, { who: "codex", round: 1, mark: "!" }, { who: "gemini", round: 1, unchecked: "не успел" },
+        { who: "claude" }, { who: "codex", round: 2, mark: "✓" }, { who: "gemini", round: 2 }] } });
+    const relay = getById("нить-статус");
+    result.active = relay.dataset.active;
+    result.flow = relay.dataset.flow;
+    result.pairMode = relay.dataset.pair;
+    result.geminiLit = relay.querySelector(".ст-огонёк.gemini").classList.contains("горит");
+    result.codexLit = relay.querySelector(".ст-огонёк.codex").classList.contains("горит");
+    result.codexMark = getById("ст-отметка-codex").hidden ? "" : getById("ст-отметка-codex").textContent;
+    result.stage = getById("этап").textContent;
+    result.hint = getById("этап-пояснение").textContent;
+    getById("эстафета").click();
+    const nodes = [...getById("дорожка").querySelectorAll(".шаг-узел")];
+    result.classes = nodes.map((u) => u.getAttribute("class"));
+    result.unchecked = nodes.find((u) => u.classList.contains("не-проверял"))?.querySelector("title")?.textContent;
+    const topNode = nodes.find((u) => u.getAttribute("class") === "шаг-узел codex");
+    const bottom = nodes.find((u) => u.getAttribute("class").startsWith("шаг-узел gemini не-проверял"));
+    result.sameColumn = topNode.getAttribute("cx") === bottom.getAttribute("cx");
+  `,
+    { withUi: true },
+  );
+  assert.equal(r.active, "gemini");
+  assert.equal(r.flow, "to-gemini");
+  assert.equal(r.pairMode, "yes");
+  assert.equal(r.geminiLit, true);
+  assert.equal(r.codexLit, false);
+  assert.equal(r.codexMark, "✓");
+  assert.equal(r.stage, "Gemini проверяет");
+  assert.equal(r.hint, "Codex: принято");
+  assert.ok(r.classes.includes("шаг-узел gemini текущий"), r.classes.join("; "));
+  assert.ok(r.classes.includes("шаг-узел gemini пустой"));
+  assert.equal(r.unchecked, "Gemini не проверял: не успел");
+  assert.equal(r.sameColumn, true, "Codex и Gemini одной проверки — в одном столбце");
+});
+
+test("расход и квота Gemini видны в дорожке цикла", { skip: NO_BROWSER }, () => {
+  const r = open(
+    js`
+    postToPage({ type: "state", state: { stage: "idle", round: 0, maxRounds: 3, approvals: 0, queued: 0, auto: true, trail: [],
+      reviewers: ["codex", "gemini"],
+      usage: { task: { claude: { input: 0, cached: 0, output: 0 }, codex: { input: 0, cached: 0, output: 0 }, gemini: { input: 95000, cached: 0, output: 1200 } },
+               limits: { geminiWeek: { percent: 3, session: 11 } } } } });
+    getById("эстафета").click();
+    result.usage = getById("расход").textContent;
+  `,
+    { withUi: true },
+  );
+  assert.match(r.usage, /Gemini 96,2 тыс\./);
+  assert.match(r.usage, /Gemini: неделя 3%, окно 5 ч 11%/);
+});
+
+test("светлая тема: у Gemini свой цвет, различимый на белом", { skip: NO_BROWSER }, () => {
+  const dark = open(js`result.gemini = getComputedStyle(document.body).getPropertyValue("--gemini").trim();`, { withUi: true });
+  const light = open(js`result.gemini = getComputedStyle(document.body).getPropertyValue("--gemini").trim();`, { withUi: true, theme: "vscode-light" });
+  assert.equal(dark.gemini, "#A78BFA");
+  assert.equal(light.gemini, "#7652D6");
 });
 
 test("режим отправки: переключатель, меню по названию, выбор уходит с сообщением", { skip: NO_BROWSER }, () => {
