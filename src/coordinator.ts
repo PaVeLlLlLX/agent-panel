@@ -255,6 +255,11 @@ interface ReviewPair {
   overdue: boolean;
   /** Строка ленты для сведения вместо общей «Gemini не проверял: …». */
   note?: string;
+  /**
+   * Сведение ждёт снимок версии: поздний отзыв Gemini, пришедший сейчас,
+   * сведение прочтёт само (рецензия 03.10 — иначе он терялся в этом окне).
+   */
+  merging?: boolean;
 }
 
 /** Сторона пары для интерфейса. */
@@ -1105,10 +1110,12 @@ export class Coordinator {
   }
 
   /**
-   * Часы Gemini (R3): срок идёт с позднего из двух моментов — ответа Codex и
-   * передачи материала Gemini (материал мог ждать в очереди за прямым
-   * вопросом). Признаки жизни — вывод процесса и события, но только пока его
-   * ход — эта проверка, и не раньше начала срока.
+   * Часы Gemini (R3). Срок — от ответа Codex: он ограничивает простой Claude
+   * (при замечаниях) или ожидание итога (иначе), и передача материала позже
+   * его не продлевает (рецензия 03.10: иначе 20 минут становились почти 40,
+   * 45 — почти 90). Молчание — от позднего из двух моментов, ответа Codex и
+   * передачи материала (он мог ждать в очереди за прямым вопросом): признаки
+   * жизни — вывод процесса и события, но только пока его ход — эта проверка.
    */
   #geminiClock(pair: ReviewPair): { ours: boolean; capAt: number; alive: number } | undefined {
     if (pair.codexAt === undefined || pair.limit === undefined) return undefined;
@@ -1116,7 +1123,7 @@ export class Coordinator {
     const start = Math.max(pair.codexAt, pair.geminiSentAt ?? pair.codexAt);
     const output = ours ? (this.options.gemini?.lastOutputAt ?? 0) : 0;
     const event = ours ? (pair.lastEventAt ?? 0) : 0;
-    return { ours, capAt: start + pair.limit, alive: Math.max(start, output, event) };
+    return { ours, capAt: pair.codexAt + pair.limit, alive: Math.max(start, output, event) };
   }
 
   /** Срок ожидания Gemini для «Эстафеты»: только пока Codex ответил, а Gemini ещё проверяет. */
@@ -1136,7 +1143,11 @@ export class Coordinator {
   #geminiTick(pair: ReviewPair): void {
     if (pair.deadline) clearTimeout(pair.deadline); // вызов не из часов (#watchGemini) — часов не двое
     pair.deadline = undefined;
-    if (this.#pair !== pair || !this.#isCurrent(pair.cycle) || !pair.waiting.has("gemini")) return;
+    if (this.#pair !== pair || !this.#isCurrent(pair.cycle)) return;
+    if (!pair.waiting.has("gemini")) {
+      if (pair.overdue) this.#overdueTick(pair);
+      return;
+    }
     const clock = this.#geminiClock(pair);
     if (!clock || pair.limit === undefined) return;
     const { ours, capAt, alive } = clock;
@@ -1174,12 +1185,55 @@ export class Coordinator {
     if (codex?.kind === "verdict" && codex.verdict === "remarks") {
       // Claude простаивает — замечания Codex уходят ему, а Gemini работает
       // дальше: его поздний отзыв ещё может пригодиться (R7).
+      // Сторож молчания и предела остаётся и после сведения (#overdueTick):
+      // сведение очищает часы, поэтому они ставятся заново после него.
       pair.overdue = true;
-      void this.#recordOutcome(pair, "gemini", { kind: "unchecked", reason: `не уложился в ${limit} после ответа Codex — ещё проверяет` });
+      void this.#recordOutcome(pair, "gemini", { kind: "unchecked", reason: `не уложился в ${limit} после ответа Codex — ещё проверяет` })
+        .then(() => this.#geminiTick(pair));
       return;
     }
     pair.note = `Gemini не закончил за ${limit} после ответа Codex — процесс остановлен. Итог проверки ${pair.round} — по Codex.`;
     void this.#stopGeminiReview(pair, `не закончил за ${limit} после ответа Codex — остановлен`);
+  }
+
+  /**
+   * Сторож опоздавшего Gemini (рецензия 03.10): пара уже сведена по Codex, а
+   * Gemini ещё проверяет. Молчание и предел безопасности от ответа Codex
+   * действуют и здесь; снятие пару заново не сводит — только освобождает
+   * Gemini для очереди (прямой вопрос человека). Ход Gemini уже не эта
+   * проверка (закончил, снят) — сторож больше не нужен.
+   */
+  #overdueTick(pair: ReviewPair): void {
+    const clock = this.#geminiClock(pair);
+    if (!clock || pair.codexAt === undefined || !clock.ours) {
+      pair.overdue = false;
+      return;
+    }
+    const now = Date.now();
+    const silence = this.options.geminiSilenceMs ?? GEMINI_SILENCE_MS;
+    const safety = this.options.geminiSafetyMs ?? GEMINI_SAFETY_MS;
+    const safetyAt = pair.codexAt + safety;
+    const who = `Gemini, опоздавший к проверке ${pair.round},`;
+    if (now >= clock.alive + silence) {
+      void this.#stopOverdueGemini(
+        pair,
+        `${who} ${waitWords(silence)} не подавал признаков жизни (последнее действие в ${clockTime(clock.alive)}) — процесс остановлен; его отзыва не будет.`,
+      );
+      return;
+    }
+    if (now >= safetyAt) {
+      void this.#stopOverdueGemini(pair, `${who} не закончил за ${waitWords(safety)} после ответа Codex — процесс остановлен; его отзыва не будет.`);
+      return;
+    }
+    this.#armGemini(pair, Math.min(clock.alive + silence, safetyAt) - now);
+  }
+
+  async #stopOverdueGemini(pair: ReviewPair, line: string): Promise<void> {
+    pair.overdue = false;
+    await this.#cutGemini("interrupt");
+    this.#report(line);
+    await this.#flushQueue();
+    this.#refresh();
   }
 
   /** Снять проверку Gemini этой пары (молчание, предел безопасности) и свести пару по Codex. */
@@ -1251,10 +1305,18 @@ export class Coordinator {
     const late: VerdictOutcome = { kind: "verdict", verdict: parseVerdict(text), text, snapshot: this.#snapshots.get("gemini") };
     const v = late.verdict;
     pair.outcomes.set("gemini", late);
+    if (pair.deadline) clearTimeout(pair.deadline); // сторож опоздавшего больше не нужен
+    pair.deadline = undefined;
     const step = [...this.#trail].reverse().find((sh) => sh.who === "gemini" && sh.round === pair.round);
     if (step) {
       step.mark = MARKS[v];
       delete step.unchecked;
+    }
+    // Сведение ещё ждёт снимок версии: отзыв войдёт в итог (#mergePair читает
+    // исход Gemini после снимка) — ни удержанного, ни отправленного ещё нет.
+    if (pair.merging) {
+      this.#refresh();
+      return;
     }
     const codex = pair.outcomes.get("codex");
     const held = this.#held;
@@ -1301,11 +1363,22 @@ export class Coordinator {
   async #mergePair(pair: ReviewPair): Promise<void> {
     const codex = pair.outcomes.get("codex");
     if (!codex || codex.kind !== "verdict") return;
-    const gemini = pair.outcomes.get("gemini");
-    if (!gemini) {
+    if (!pair.outcomes.get("gemini")) {
       await this.#afterReview(codex, pair.cycle);
       return;
     }
+    // Снимок — до чтения исхода Gemini (рецензия 03.10): поздний отзыв,
+    // пришедший, пока снимок снимается, входит в итог, а не остаётся вне
+    // замечаний со строкой «Claude уже работает».
+    pair.merging = true;
+    let current: Snapshot;
+    try {
+      current = await this.#capture(this.options.cwd);
+    } finally {
+      pair.merging = false;
+    }
+    if (!this.#isCurrent(pair.cycle)) return;
+    const gemini = pair.outcomes.get("gemini") as ReviewOutcome;
     const verdicts: Verdict[] = [codex.verdict, ...(gemini.kind === "verdict" ? [gemini.verdict] : [])];
     const combined = strictest(verdicts);
     this.#verdict = combined;
@@ -1316,8 +1389,6 @@ export class Coordinator {
       // (новая сессия, сбой, отказ отправки, пустой ответ) — общей.
       this.#report(pair.overdue ? this.#overdueNote(pair) : (pair.note ?? `Gemini не проверял: ${gemini.reason}. Итог — по вердикту Codex.`));
     }
-    const current = await this.#capture(this.options.cwd);
-    if (!this.#isCurrent(pair.cycle)) return;
     if (combined === "accepted") {
       this.#stage = "accepted";
       // Gemini не проверял — принятие на самом деле вынес один Codex, и
