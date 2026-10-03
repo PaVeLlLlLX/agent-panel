@@ -63,7 +63,7 @@
         },
         "agentPanel.maxAutoRounds": {
           "type": "number",
-          "default": 3,
+          "default": 5,
           "description": "Сколько раз рецензенты могут проверить работу Claude по одной задаче; Codex и Gemini вместе — одна проверка. Когда предел достигнут, непроверенная работа ждёт вашего решения. 0 — каждую передачу подтверждаете вы."
         },
         "agentPanel.reviewEvidenceChars": {

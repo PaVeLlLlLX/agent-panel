@@ -168,8 +168,9 @@ for (const width of [WIDTH, 360]) test(`длинная задача, причи�
   const { scroll, client, button, conversation, overflowed } = open(js`
     const logText = "[2026-09-15, 11:41:05 UTC] {taskinstance.py:1776} ERROR - Task failed with exception ".repeat(30);
     const event = (agent, kind, extra) => ({ id: kind + Math.random(), agent, kind, visibility: "turn", at: Date.now(), ...extra });
-    postToPage({ type: "state", state: { stage: "held", round: 1, maxRounds: 3, approvals: 0, queued: 2, auto: true,
-      task: logText, verdict: "human", trail: [{ who: "task" }, { who: "claude" }, { who: "codex", mark: "?" }, { who: "you" }],
+    // Предел по умолчанию — 5 проверок (04.10), с вилкой пары: самая тесная строка «Эстафеты».
+    postToPage({ type: "state", state: { stage: "held", round: 1, maxRounds: 5, approvals: 0, queued: 2, auto: true,
+      reviewers: ["codex", "gemini"], task: logText, verdict: "human", trail: [{ who: "task" }, { who: "claude" }, { who: "codex", mark: "?" }, { who: "you" }],
       held: { to: "claude", action: "send", reason: "Claude получил отказы в разрешениях (2): Bash: python -c " + "x".repeat(400) } } });
     getById("эстафета").click();
     postToPage({ type: "event", event: event("human", "message", { text: logText }) });

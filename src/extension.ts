@@ -195,7 +195,7 @@ class Room {
     this.#coordinator = new Coordinator(claude, codex, this.#journal, {
       room: this.#name,
       cwd,
-      maxAutoRounds: settings.get<number>("maxAutoRounds", 3),
+      maxAutoRounds: settings.get<number>("maxAutoRounds", 5),
       evidenceBudget: settings.get<number>("reviewEvidenceChars", 240_000),
       taskTokenLimit: settings.get<number>("taskTokenLimit", 0),
       ...(memoryCommand
