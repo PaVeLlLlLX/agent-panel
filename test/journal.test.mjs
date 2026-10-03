@@ -59,6 +59,22 @@ test("история помнит ход, кончившийся ошибкой"
   journal.close();
 });
 
+test("история помнит ошибку, о которой агент сообщил после ответа", () => {
+  // Рецензия 04.10, F1: ход Gemini с ответом и status ERROR не провален, и
+  // лента показывает ошибку по отдельной отметке. Без колонки после
+  // повторного открытия уведомление пропадало бы.
+  const filePath = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const journal = new Journal(filePath);
+  journal.ensureRoom("r", "C:/x");
+  journal.append("r", event({ kind: "turn_completed", text: "ход завершён; agy сообщил…", lateError: "agy сообщил об ошибке после ответа: ERROR — EOF" }));
+  journal.append("r", event({ kind: "turn_completed", text: "ход завершён" }));
+  const history = journal.history("r");
+  assert.equal(history[0].lateError, "agy сообщил об ошибке после ответа: ERROR — EOF");
+  assert.equal(history[0].failed, undefined);
+  assert.equal("lateError" in history[1], false);
+  journal.close();
+});
+
 test("журнал прежней версии получает новые колонки при открытии", () => {
   const filePath = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
   const oldDb = new DatabaseSync(filePath);
@@ -73,9 +89,11 @@ test("журнал прежней версии получает новые ко�
   oldDb.close();
   const journal = new Journal(filePath);
   journal.append("r", event({ kind: "tool_call", callId: "c", parentCallId: "p", text: "x" }));
+  journal.append("r", event({ kind: "turn_completed", lateError: "agy сообщил об ошибке после ответа: ERROR" }));
   const history = journal.history("r");
   assert.equal(history[0].text, "прежнее", "прежние записи на месте");
   assert.equal(history[1].parentCallId, "p");
+  assert.equal(history[2].lateError, "agy сообщил об ошибке после ответа: ERROR");
   journal.close();
 });
 

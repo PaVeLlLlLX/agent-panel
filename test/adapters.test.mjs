@@ -1670,6 +1670,7 @@ test("Codex: при возобновлении ветки роль реценз�
       assert.deepEqual(done.usage, { input: 300, cached: 0, output: 12 });
       assert.equal(done.incomplete, undefined);
       assert.equal(done.failed, undefined);
+      assert.equal(done.lateError, undefined, "SUCCESS — без отметки ошибки после ответа");
       assert.equal(a.sessionId, "fake-agy-conv");
       const call = s.events.find((e) => e.kind === "tool_call");
       assert.equal(call.tool, "view_file");
@@ -1840,6 +1841,7 @@ test("Codex: при возобновлении ветки роль реценз�
       await a.send({ text: "РЕГИОН", from: "human" });
       await waitFor(() => completed(s.events).length === 2 && errors(s.events).length === 1, "отказ по региону и выход");
       assert.match(completed(s.events)[1].text, /Eligibility check failed/);
+      assert.equal(completed(s.events)[1].lateError, undefined, "провал — не ошибка после ответа");
       // exit приходит раньше, чем дочитан stderr, не всегда — причина в тексте ошибки не обязательна.
       assert.match(errors(s.events)[0].text, /завершился неожиданно \(код 1/);
       assert.equal(a.busy, false);
@@ -1862,6 +1864,9 @@ test("Codex: при возобновлении ветки роль реценз�
       assert.equal(done.failed, undefined, "ответ получен — ход не провален");
       assert.equal(done.incomplete, undefined);
       assert.match(done.text, /agy сообщил об ошибке после ответа: ERROR — API error \(attempt 2\): request failed: .*EOF/);
+      // Лента показывает текст конца хода только у провала; ошибку после
+      // ответа она узнаёт по отдельной отметке (рецензия 04.10, F1).
+      assert.match(done.lateError ?? "", /^agy сообщил об ошибке после ответа: ERROR — API error \(attempt 2\): request failed: .*EOF/);
       assert.deepEqual(
         s.events.filter((e) => e.kind === "message").map((e) => e.text),
         ["Правила прочитаны: GEMINI.md, AGENTS.md.\n\nВЕРДИКТ: ПРИНЯТО"],
@@ -1885,6 +1890,7 @@ test("Codex: при возобновлении ветки роль реценз�
       await a.send({ text: "ОШИБКА-ПОСЛЕ-ОТВЕТА БЕЗ-ПОТОКА", from: "human" });
       await waitFor(() => completed(s.events).length === 1, "конец хода");
       assert.equal(completed(s.events)[0].failed, undefined);
+      assert.match(completed(s.events)[0].lateError ?? "", /^agy сообщил об ошибке после ответа: ERROR/);
       assert.deepEqual(s.events.filter((e) => e.kind === "message").map((e) => e.text), ["Правила прочитаны: GEMINI.md, AGENTS.md.\n\nВЕРДИКТ: ПРИНЯТО"]);
     } finally {
       await a.stop();

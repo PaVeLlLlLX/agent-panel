@@ -70,11 +70,12 @@ export class Journal {
     // Без них история после перезапуска теряла связь отказа с вызовом
     // (tool_call_id) и действия субагента (parent_call_id) — рецензия Codex 28.09;
     // unsolicited — ход, начатый агентом без сообщения панели; failed — ход не
-    // удался (иначе после перезапуска пропадало уведомление об этом).
+    // удался (иначе после перезапуска пропадало уведомление об этом); late_error —
+    // ошибка, о которой агент сообщил после ответа (то же уведомление, 04.10).
     const existing = new Set(
       (this.#db.prepare("PRAGMA table_info(events)").all() as Record<string, unknown>[]).map((k) => String(k["name"])),
     );
-    for (const column of ["tool_call_id", "parent_call_id", "unsolicited", "failed"]) {
+    for (const column of ["tool_call_id", "parent_call_id", "unsolicited", "failed", "late_error"]) {
       if (!existing.has(column)) this.#db.exec(`ALTER TABLE events ADD COLUMN ${column} TEXT`);
     }
     // Разговор Gemini (agy --conversation) — колонка комнаты, добавленная позже.
@@ -161,8 +162,8 @@ export class Journal {
       .prepare(
         `INSERT INTO events
            (room, id, agent, kind, visibility, at, text, tool, call_id,
-            turn_id, snapshot, raw, tool_call_id, parent_call_id, unsolicited, failed)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            turn_id, snapshot, raw, tool_call_id, parent_call_id, unsolicited, failed, late_error)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         room,
@@ -181,6 +182,7 @@ export class Journal {
         event.parentCallId ?? null,
         event.unsolicited ? "1" : null,
         event.failed ? "1" : null,
+        event.lateError ?? null,
       );
   }
 
@@ -190,7 +192,7 @@ export class Journal {
     const lines = this.#db
       .prepare(
         `SELECT id, agent, kind, visibility, at, text, tool, call_id, turn_id, snapshot,
-                tool_call_id, parent_call_id, unsolicited, failed
+                tool_call_id, parent_call_id, unsolicited, failed, late_error
          FROM events WHERE room = ? ORDER BY seq DESC LIMIT ?`,
       )
       .all(room, limit) as Record<string, unknown>[];
@@ -209,6 +211,7 @@ export class Journal {
       ...(s["parent_call_id"] != null ? { parentCallId: String(s["parent_call_id"]) } : {}),
       ...(s["unsolicited"] != null ? { unsolicited: true } : {}),
       ...(s["failed"] != null ? { failed: true } : {}),
+      ...(s["late_error"] != null ? { lateError: String(s["late_error"]) } : {}),
     })) as PanelEvent[];
   }
 

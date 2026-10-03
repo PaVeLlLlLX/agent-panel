@@ -441,11 +441,12 @@ export class GeminiAdapter implements Adapter {
     // Провал — статус не SUCCESS и ответа нет (регион, ошибка модели). Ошибка
     // при полном ответе ход не портит: живой прогон 04.10 — ответ с вердиктом,
     // а status ERROR «API error (attempt 2): … EOF»; провал выбросил бы готовый
-    // отзыв в «не проверял». Ошибка тогда — в диагностике и в конце хода.
+    // отзыв в «не проверял». Ошибка тогда — в диагностике, в конце хода и
+    // отметкой lateError: по ней лента показывает уведомление.
     const failed = status !== "SUCCESS" && !response;
-    const lateError = status !== "SUCCESS" && response ? `agy сообщил об ошибке после ответа: ${trouble}` : undefined;
+    const lateError = status !== "SUCCESS" && response ? clamp(`agy сообщил об ошибке после ответа: ${trouble}`) : undefined;
     if (!failed && response && !this.#answered) this.#emit("message", "turn", { text: clamp(response) });
-    if (lateError) this.#emit("diagnostic", "stream", { text: clamp(lateError) });
+    if (lateError) this.#emit("diagnostic", "stream", { text: lateError });
     // Неполная проверка — только когда ответа нет вовсе: прирост denied_actions
     // при непустом ответе сам по себе её не портит (M8, финальная рецензия
     // 02.10) — отказы всё равно видны координатору через denials.
@@ -465,6 +466,7 @@ export class GeminiAdapter implements Adapter {
       ...(fresh.length > 0 ? { denials: fresh } : {}),
       ...(incomplete ? { incomplete } : {}),
       ...(failed ? { failed: true } : {}),
+      ...(lateError ? { lateError } : {}),
       raw: r,
     });
     this.#turnId = undefined;

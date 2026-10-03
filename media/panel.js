@@ -485,6 +485,9 @@ function showEvent(e, history = false) {
       groups.delete(e.agent);
       if (e.unsolicited) autonomous.delete(e.agent);
       if (e.failed) showNotice(`${NAMES[e.agent]}: ${e.text ?? "ход не удался"}`, "ошибка");
+      // Ход состоялся, но агент после ответа сообщил об ошибке (agy, 04.10):
+      // текст конца хода у такого хода иначе не показывается.
+      else if (e.lateError) showNotice(`${NAMES[e.agent]}: ${e.lateError}`, "внимание");
       return;
     case "error": {
       streams.delete(e.agent);

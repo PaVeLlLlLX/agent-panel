@@ -1610,6 +1610,10 @@ test("Gemini: ERROR после полного ответа — отзыв вхо
     assert.deepEqual(k.state.trail.find((sh) => sh.who === "gemini" && sh.round === 1), { who: "gemini", round: 1, mark: "✓" });
     const done = events.find((e) => e.agent === "gemini" && e.kind === "turn_completed");
     assert.match(done.text, /agy сообщил об ошибке после ответа: ERROR — API error/, "ошибка остаётся в конце хода");
+    // Отметка для ленты доходит до панели и до журнала: уведомление переживает перезапуск.
+    assert.match(done.lateError ?? "", /^agy сообщил об ошибке после ответа: ERROR — API error/);
+    const kept = journal.history("r").find((e) => e.agent === "gemini" && e.kind === "turn_completed");
+    assert.equal(kept.lateError, done.lateError);
   } finally {
     await gemini.stop();
     journal.close();

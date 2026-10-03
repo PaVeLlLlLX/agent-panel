@@ -835,6 +835,31 @@ test("реплика Gemini — разметкой, вердикт значко�
   assert.match(r.bead, /ring/);
 });
 
+test("ошибка agy после ответа — уведомлением в ленте, и после перезапуска; обычный конец хода — без уведомления", { skip: NO_BROWSER }, () => {
+  // Рецензия 04.10, F1: ход Gemini с ответом и status ERROR не провален, и
+  // лента, показывающая текст конца хода только у провала, ошибку теряла —
+  // она оставалась в «Диагностике» и журнале.
+  const r = open(
+    js`
+    const e = (kind, extra) => ({ id: kind + Math.random(), agent: "gemini", kind, visibility: "turn", at: Date.now(), ...extra });
+    const late = "agy сообщил об ошибке после ответа: ERROR — API error (attempt 2): EOF";
+    postToPage({ type: "event", event: e("message", { text: "Принято.\\nВЕРДИКТ: ПРИНЯТО" }) });
+    postToPage({ type: "event", event: e("turn_completed", { text: "ход завершён, ходов в разговоре 6; " + late, lateError: late }) });
+    postToPage({ type: "event", event: e("turn_completed", { text: "ход завершён, ходов в разговоре 7" }) });
+    postToPage({ type: "event", history: true, event: e("turn_completed", { text: "ход завершён, ходов в разговоре 5; " + late, lateError: late }) });
+    postToPage({ type: "event", event: e("turn_completed", { text: "ход завершён: ERROR — нет ответа", failed: true }) });
+    result.notices = [...document.querySelectorAll(".уведомление")].map((n) => [n.className, n.textContent]);
+  `,
+    { withUi: true },
+  );
+  const late = "Gemini: agy сообщил об ошибке после ответа: ERROR — API error (attempt 2): EOF";
+  assert.deepEqual(r.notices, [
+    ["уведомление внимание", late],
+    ["уведомление внимание", late],
+    ["уведомление ошибка", "Gemini: ход завершён: ERROR — нет ответа"],
+  ]);
+});
+
 test("плашка правил: причина и кнопка «Добавить правила»; удержанная пара — «Отправить на проверку»", { skip: NO_BROWSER }, () => {
   const r = open(
     js`
