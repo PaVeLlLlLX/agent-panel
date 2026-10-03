@@ -17,8 +17,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { Coordinator } from "../out/coordinator.js";
+import { GeminiAdapter } from "../out/adapters/gemini.js";
+
+const FAKE_AGY = fileURLToPath(new URL("../fixtures/fake-agy.mjs", import.meta.url));
 import { Journal } from "../out/journal.js";
 import { forDisplay } from "../out/adapters/types.js";
 import { takeSnapshot } from "../out/snapshot.js";
@@ -1465,17 +1469,19 @@ test("проверка пары: один материал и версия у о
   assert.match(gemini.received[0].text, /пиши «не проверено: <адрес> — <причина>»/);
   assert.match(gemini.received[0].text, /Непроверенный факт, на котором держится вывод, — это «пробел: …»/);
   // Проверка Trading 02.10: Gemini не открыл правил проекта, а пункты, которых
-  // шаг не касался, закрыл натянутыми «свидетельствами».
+  // шаг не касался, закрыл натянутыми «свидетельствами». Живой прогон 04.10:
+  // файл правил называет строка шапки «[правила проекта: …]» — напоминание
+  // указывает на неё, а не на имена файлов.
   assert.ok(
     gemini.received[0].text.includes(
-      "Правила проекта: если в этом разговоре ты ещё не читал GEMINI.md (или AGENTS.md) папки проекта — прочитай их до проверки.",
+      "Правила проекта: если в этом разговоре ты ещё не открывал файл из строки «[правила проекта: …]» шапки — открой его до проверки.",
     ),
-    "напоминание прочитать правила проекта",
+    "напоминание открыть файл правил из шапки",
   );
   assert.match(gemini.received[0].text, /«пробел: …» или «не относится: <почему>»/);
   assert.match(gemini.received[0].text, /датой проверки из шапки «\[дата: …\]»/);
   assert.doesNotMatch(codex.received[0].text, /методологию эксперимента/, "Codex проверяет как прежде");
-  assert.doesNotMatch(codex.received[0].text, /GEMINI\.md/, "Codex правила Gemini не получает");
+  assert.doesNotMatch(codex.received[0].text, /правила проекта/i, "Codex правила Gemini не получает");
   assert.equal(gemini.received[0].heading, "[материал проверки от панели]");
   assert.equal(codex.received[0].snapshot, gemini.received[0].snapshot);
   assert.equal(k.state.round, 1);
@@ -1574,6 +1580,38 @@ test("Gemini не проверял — пустой ответ, ошибка х�
     assert.ok(systemEvents(events).some((e) => /^Gemini не проверял: /.test(e.text) && reason.test(e.text)));
     assert.equal(k.state.pair.sides.gemini.state, "unchecked");
     assert.ok(k.state.trail.at(-1).unchecked, "причина — в следе для дорожки");
+    journal.close();
+  }
+});
+
+test("Gemini: ERROR после полного ответа — отзыв входит в проверку с его вердиктом (живой прогон 04.10)", async () => {
+  // Живой прогон 04.10: agy вернул status ERROR («API error (attempt 2): …
+  // EOF») вместе с полным ответом, кончавшимся вердиктом. Прежде такой ход
+  // был failed, и проверка засчитала бы Gemini «не проверял». Здесь Gemini —
+  // настоящий адаптер на фальшивом agy: проверяется сама форма его хода.
+  const catalog = mkdtempSync(join(tmpdir(), "panel-"));
+  const journal = new Journal(join(catalog, "j.sqlite"));
+  journal.ensureRoom("r", catalog);
+  const claude = new Stub("claude");
+  const codex = new Stub("codex");
+  const events = [];
+  let k;
+  const gemini = new GeminiAdapter({ command: "node", commandArgs: [FAKE_AGY], cwd: catalog }, (e) => k.handle(e));
+  k = new Coordinator(claude, codex, journal, { room: "r", cwd: catalog, maxAutoRounds: 3, onEvent: (e) => events.push(e), gemini });
+  try {
+    await k.fromHuman("подобрать порог классификатора ОШИБКА-ПОСЛЕ-ОТВЕТА", "review");
+    turn(k, "claude", "порог 0.4, F1 на валидации 0.71");
+    await waitFor(() => codex.received.length === 1, "материал у Codex");
+    turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+    await waitFor(() => k.state.stage === "accepted", "принятие", 10_000);
+    assert.ok(systemEvents(events).some((e) => /Итог проверки 1: Codex — принято, Gemini — принято/.test(e.text)));
+    assert.ok(systemEvents(events).some((e) => /^Рецензенты приняли работу/.test(e.text)));
+    assert.ok(!systemEvents(events).some((e) => /Gemini не проверял/.test(e.text ?? "")));
+    assert.deepEqual(k.state.trail.find((sh) => sh.who === "gemini" && sh.round === 1), { who: "gemini", round: 1, mark: "✓" });
+    const done = events.find((e) => e.agent === "gemini" && e.kind === "turn_completed");
+    assert.match(done.text, /agy сообщил об ошибке после ответа: ERROR — API error/, "ошибка остаётся в конце хода");
+  } finally {
+    await gemini.stop();
     journal.close();
   }
 });

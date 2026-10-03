@@ -20,6 +20,9 @@
  *     failed, ход продолжается и отвечает;
  *   ОШИБКА-ХОДА       — status ERROR с error "model error", строка AGY_ERROR
  *     в stderr раньше result;
+ *   ОШИБКА-ПОСЛЕ-ОТВЕТА — полный ответ с вердиктом, затем result со status
+ *     ERROR, ошибкой API и тем же response (живой прогон 04.10); вместе с
+ *     БЕЗ-ПОТОКА ответ приходит только в response, без text_delta;
  *   РЕГИОН            — отказ по региону (Eligibility check failed) в stderr,
  *     result ERROR и выход с кодом 1;
  *   РАЗРЫВ            — ответ с U+2028/U+2029 внутри строки JSON;
@@ -169,6 +172,18 @@ lines.on("line", (line) => {
       modelCall(80, 0);
       result("ERROR", "", { error: "model error" });
     }, 50);
+    return;
+  }
+  // Живой прогон 04.10: ответ пришёл целиком и кончился вердиктом, а result —
+  // со status ERROR и ошибкой повтора запроса к API.
+  if (text.includes("ОШИБКА-ПОСЛЕ-ОТВЕТА")) {
+    const reply = "Правила прочитаны: GEMINI.md, AGENTS.md.\n\nВЕРДИКТ: ПРИНЯТО";
+    modelCall(100, 2);
+    tool("view_file", { AbsolutePath: "GEMINI.md" }, "DONE", { output: "40 lines" });
+    modelCall(200, 10, text.includes("БЕЗ-ПОТОКА") ? "" : reply);
+    result("ERROR", `${reply}\n`, {
+      error: 'API error (attempt 2): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": EOF',
+    });
     return;
   }
   if (text.includes("ОТКАЗ-БЕЗ-ЗАПРОСА")) {

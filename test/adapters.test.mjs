@@ -1703,6 +1703,30 @@ test("Codex: при возобновлении ветки роль реценз�
     assert.equal(formatForGemini({ text: "т", from: "human" }, "C:/p", at), "[от человека]\n[папка проекта: C:/p — ищи и читай файлы только в ней]\n[дата: 2026-10-02]\nт");
   });
 
+  test("Gemini: шапка называет файл правил проекта — GEMINI.md, иначе AGENTS.md, иначе строки нет (живой прогон 04.10)", () => {
+    // Живой прогон 04.10: в продолженном разговоре Gemini не счёл прямое
+    // сообщение «началом разговора» и GEMINI.md не открыл. Строка шапки
+    // называет файл в каждом сообщении — и в проверке, и в прямом вопросе.
+    const at = new Date(2026, 9, 4, 0, 39);
+    const both = catalog();
+    writeFileSync(join(both, "GEMINI.md"), "правила для Gemini");
+    writeFileSync(join(both, "AGENTS.md"), "правила для агентов");
+    const agentsOnly = catalog();
+    writeFileSync(join(agentsOnly, "AGENTS.md"), "правила для агентов");
+    const none = catalog();
+    const header = (cwd, prompt) => formatForGemini(prompt, cwd, at).split("\n");
+
+    for (const prompt of [{ text: "т", from: "human" }, { text: "т", from: "claude", heading: "[материал проверки от панели]", snapshot: "abc" }]) {
+      const lines = header(both, prompt);
+      assert.equal(lines[1], `[папка проекта: ${both} — ищи и читай файлы только в ней]`);
+      assert.equal(lines[2], "[правила проекта: GEMINI.md]", "строка — сразу после папки проекта");
+      assert.equal(lines[3], "[дата: 2026-10-04]", "дата — после строки правил");
+      assert.equal(header(agentsOnly, prompt)[2], "[правила проекта: AGENTS.md]");
+      assert.equal(header(none, prompt)[2], "[дата: 2026-10-04]");
+      assert.ok(!header(none, prompt).some((line) => line.startsWith("[правила проекта")), "нет ни того, ни другого — строки нет");
+    }
+  });
+
   test("Gemini: дата в шапке — местная, с ведущими нулями; без даты — сегодняшняя", () => {
     // Проверка Trading (20:02 UTC 02.10, по часам машины уже 03.10): Gemini
     // написал «проверено 2026-10-03», а даты в сообщении не было — её назвала
@@ -1819,6 +1843,49 @@ test("Codex: при возобновлении ветки роль реценз�
       // exit приходит раньше, чем дочитан stderr, не всегда — причина в тексте ошибки не обязательна.
       assert.match(errors(s.events)[0].text, /завершился неожиданно \(код 1/);
       assert.equal(a.busy, false);
+    } finally {
+      await a.stop();
+    }
+  });
+
+  test("Gemini: ERROR после полного ответа — ход не провален: реплика одна, ошибка в диагностике и в конце хода (живой прогон 04.10)", async () => {
+    // Живой прогон 04.10 (seq 57682–57683): Gemini ответил целиком и закончил
+    // вердиктом, а result пришёл со status ERROR и «API error (attempt 2): …
+    // EOF». Ход считался проваленным, и в проверке координатор записал бы
+    // Gemini «не проверял», выбросив готовый отзыв.
+    const s = collector();
+    const a = gemini(s);
+    try {
+      await a.send({ text: "ОШИБКА-ПОСЛЕ-ОТВЕТА", from: "human" });
+      await waitFor(() => completed(s.events).length === 1, "конец хода");
+      const done = completed(s.events)[0];
+      assert.equal(done.failed, undefined, "ответ получен — ход не провален");
+      assert.equal(done.incomplete, undefined);
+      assert.match(done.text, /agy сообщил об ошибке после ответа: ERROR — API error \(attempt 2\): request failed: .*EOF/);
+      assert.deepEqual(
+        s.events.filter((e) => e.kind === "message").map((e) => e.text),
+        ["Правила прочитаны: GEMINI.md, AGENTS.md.\n\nВЕРДИКТ: ПРИНЯТО"],
+        "реплика из потока не повторяется ответом из result",
+      );
+      assert.ok(
+        s.events.some((e) => e.kind === "diagnostic" && /^agy сообщил об ошибке после ответа: ERROR — API error \(attempt 2\)/.test(e.text ?? "")),
+        "ошибка — в диагностике",
+      );
+      assert.ok(!errors(s.events).length, "ошибка после ответа — не сбой агента");
+      assert.equal(a.busy, false);
+    } finally {
+      await a.stop();
+    }
+  });
+
+  test("Gemini: ERROR после ответа, пришедшего только в result, — реплика берётся из response", async () => {
+    const s = collector();
+    const a = gemini(s);
+    try {
+      await a.send({ text: "ОШИБКА-ПОСЛЕ-ОТВЕТА БЕЗ-ПОТОКА", from: "human" });
+      await waitFor(() => completed(s.events).length === 1, "конец хода");
+      assert.equal(completed(s.events)[0].failed, undefined);
+      assert.deepEqual(s.events.filter((e) => e.kind === "message").map((e) => e.text), ["Правила прочитаны: GEMINI.md, AGENTS.md.\n\nВЕРДИКТ: ПРИНЯТО"]);
     } finally {
       await a.stop();
     }

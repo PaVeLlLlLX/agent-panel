@@ -41,8 +41,15 @@
  *
  * **stderr — диагностика.** Строка AGY_ERROR и отказ по региону запоминаются
  * причиной хода: без них «ход завершён: ERROR» ничего не объясняет.
+ *
+ * **ERROR при непустом ответе — ход состоялся.** Живой прогон 04.10: ответ
+ * пришёл целиком, с вердиктом, а result — со status ERROR и «API error
+ * (attempt 2): … EOF». Провалом считается только не-SUCCESS без ответа;
+ * ошибка после ответа идёт в диагностику и в текст конца хода.
  */
 import { ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { sameChoice } from "../models.js";
 import { readJsonLines, LineReader } from "./jsonLines.js";
@@ -90,16 +97,27 @@ function localDate(at: Date): string {
   return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
 }
 
+/** Файл правил проекта для рецензента: GEMINI.md, иначе AGENTS.md в корне папки; нет обоих — undefined. */
+function projectRulesFile(cwd: string): string | undefined {
+  return ["GEMINI.md", "AGENTS.md"].find((name) => existsSync(join(cwd, name)));
+}
+
 /**
- * Сообщение ходу agy: кто прислал, где искать файлы, какое сегодня число, к
- * какой версии относится. Дата — для «даты проверки» внешних фактов: без неё
- * дату называет сама модель (проверка Trading в 20:02 UTC 02.10, по часам
- * машины уже 03.10: «проверено 2026-10-03» — без источника в сообщении).
+ * Сообщение ходу agy: кто прислал, где искать файлы, какой файл — правила
+ * проекта, какое сегодня число, к какой версии относится. Дата — для «даты
+ * проверки» внешних фактов: без неё дату называет сама модель (проверка
+ * Trading в 20:02 UTC 02.10, по часам машины уже 03.10: «проверено
+ * 2026-10-03» — без источника в сообщении). Строка правил — в КАЖДОМ
+ * сообщении, и в прямом вопросе: живой прогон 04.10 — в продолженном
+ * разговоре Gemini не счёл прямое сообщение «началом разговора» и GEMINI.md
+ * не открыл, а напоминание GEMINI_FOCUS идёт только с материалом проверки.
  */
 export function formatForGemini(prompt: AgentPrompt, cwd: string, now: Date = new Date()): string {
   const heading = prompt.heading ?? (prompt.from === "human" ? "[от человека]" : "[от панели]");
+  const rulesFile = projectRulesFile(cwd);
+  const rules = rulesFile ? `\n[правила проекта: ${rulesFile}]` : "";
   const version = prompt.snapshot ? `\n[версия файлов: ${prompt.snapshot}]` : "";
-  return `${heading}\n[папка проекта: ${cwd} — ищи и читай файлы только в ней]\n[дата: ${localDate(now)}]${version}\n${prompt.text}`;
+  return `${heading}\n[папка проекта: ${cwd} — ищи и читай файлы только в ней]${rules}\n[дата: ${localDate(now)}]${version}\n${prompt.text}`;
 }
 
 /** Токены одного вызова модели: вход, из него — чтение кеша, выход вместе с рассуждением. */
@@ -418,9 +436,16 @@ export class GeminiAdapter implements Adapter {
     this.#deniedSeen = Math.max(this.#deniedSeen, denied.length);
     const usage = this.#turnUsage;
     this.#turnUsage = NO_USAGE;
-    const failed = status !== "SUCCESS";
-    if (!failed && response && !this.#answered) this.#emit("message", "turn", { text: clamp(response) });
     const error = typeof r["error"] === "string" && r["error"] ? ` — ${r["error"]}` : "";
+    const trouble = `${status || "без статуса"}${error}${this.#lastError ? ` (${this.#lastError})` : ""}`;
+    // Провал — статус не SUCCESS и ответа нет (регион, ошибка модели). Ошибка
+    // при полном ответе ход не портит: живой прогон 04.10 — ответ с вердиктом,
+    // а status ERROR «API error (attempt 2): … EOF»; провал выбросил бы готовый
+    // отзыв в «не проверял». Ошибка тогда — в диагностике и в конце хода.
+    const failed = status !== "SUCCESS" && !response;
+    const lateError = status !== "SUCCESS" && response ? `agy сообщил об ошибке после ответа: ${trouble}` : undefined;
+    if (!failed && response && !this.#answered) this.#emit("message", "turn", { text: clamp(response) });
+    if (lateError) this.#emit("diagnostic", "stream", { text: clamp(lateError) });
     // Неполная проверка — только когда ответа нет вовсе: прирост denied_actions
     // при непустом ответе сам по себе её не портит (M8, финальная рецензия
     // 02.10) — отказы всё равно видны координатору через denials.
@@ -434,8 +459,8 @@ export class GeminiAdapter implements Adapter {
     this.#busy = false;
     this.#emit("turn_completed", "turn", {
       text: failed
-        ? `ход завершён: ${status || "без статуса"}${error}${this.#lastError ? ` (${this.#lastError})` : ""}`
-        : `ход завершён, ходов в разговоре ${String(r["num_turns"] ?? "?")}`,
+        ? `ход завершён: ${trouble}`
+        : `ход завершён, ходов в разговоре ${String(r["num_turns"] ?? "?")}${lateError ? `; ${lateError}` : ""}`,
       ...(usage.input + usage.output > 0 ? { usage } : {}),
       ...(fresh.length > 0 ? { denials: fresh } : {}),
       ...(incomplete ? { incomplete } : {}),
