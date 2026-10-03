@@ -14,12 +14,12 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { Coordinator } from "../out/coordinator.js";
+import { Coordinator, GEMINI_SILENCE_MS } from "../out/coordinator.js";
 import { GeminiAdapter } from "../out/adapters/gemini.js";
 
 const FAKE_AGY = fileURLToPath(new URL("../fixtures/fake-agy.mjs", import.meta.url));
@@ -1465,7 +1465,17 @@ test("проверка пары: один материал и версия у о
   assert.match(gemini.received[0].text, /пробел.*ВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ/s);
   assert.match(gemini.received[0].text, /предписанный самим поручением человека.*ВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА/s);
   // Бюджет веба — та же фраза, что в agent.md (живой прогон 03.10: ~40 обращений к вебу за проверку).
-  assert.match(gemini.received[0].text, /не больше двух попыток на один сайт, всего не больше ~15 обращений к вебу за проверку/);
+  // Повтор проверки Trading 04.10: при «~15» Flash high обратился к вебу 21 раз — бюджет считаемый.
+  assert.match(gemini.received[0].text, /не больше двух попыток на один сайт, всего не больше 15 обращений к вебу за проверку/);
+  assert.match(gemini.received[0].text, /после 15-го к вебу больше не обращайся, а оставшиеся факты помечай «не проверено: бюджет исчерпан»/);
+  // Повтор 04.10: ни Flash high, ни Pro high не потребовали полноты
+  // отрицательного поиска, сочтя строгие ворота кода достаточными (M16).
+  assert.ok(
+    gemini.received[0].text.includes(
+      "Отрицательный результат поиска без показанной полноты — «пробел: …», даже если код ворот строгий.",
+    ),
+    "напоминание о полноте отрицательного поиска",
+  );
   assert.match(gemini.received[0].text, /пиши «не проверено: <адрес> — <причина>»/);
   assert.match(gemini.received[0].text, /Непроверенный факт, на котором держится вывод, — это «пробел: …»/);
   // Проверка Trading 02.10: Gemini не открыл правил проекта, а пункты, которых
@@ -2081,6 +2091,20 @@ test("Gemini опоздал, когда Claude уже доработал и сл
   await k.releaseHeld();
   await waitFor(() => codex.received.length === 2 && gemini.received.length === 2, "проверка 2 у обоих");
   journal.close();
+});
+
+test("срок молчания Gemini — 6 мин, и настройки с документацией говорят то же (замеры 04.10)", () => {
+  // Повтор проверки Trading 04.10: наибольшее молчание вывода — 34,6 с у
+  // Flash high и 23,4 с у Pro high; верхняя оценка по журналу 03.10 — 105,7 с
+  // без событий, втрое — 5,3 мин. Прежние 10 мин брались с запасом на
+  // незамеренное рассуждение Pro high.
+  assert.equal(GEMINI_SILENCE_MS, 6 * 60_000);
+  const manifest = JSON.parse(readFileSync("package.json", "utf8"));
+  const wait = manifest.contributes.configuration.properties["agentPanel.geminiWaitMinutes"].description;
+  assert.match(wait, /: 6 мин молчания или 45 мин/);
+  for (const file of ["package.json", "README.md", "docs/устройство.md"]) {
+    assert.doesNotMatch(readFileSync(file, "utf8"), /10 мин[а-я]* (молчания|не подававший)|молчания Gemini \(10|замолчал на 10/, file);
+  }
 });
 
 test("Gemini замолчал после ответа Codex — процесс остановлен, итог по Codex, поздний конец хода не засчитан", async () => {
