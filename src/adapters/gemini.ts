@@ -84,11 +84,21 @@ export interface GeminiOptions {
   readonly beforeStart?: () => string | undefined;
 }
 
-/** Сообщение ходу agy: кто прислал, где искать файлы, к какой версии относится. */
-export function formatForGemini(prompt: AgentPrompt, cwd: string): string {
+/** Дата по часам машины, ГГГГ-ММ-ДД: полночь по местному времени — уже новый день, не UTC. */
+function localDate(at: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+}
+
+/**
+ * Сообщение ходу agy: кто прислал, где искать файлы, какое сегодня число, к
+ * какой версии относится. Дата — для «даты проверки» внешних фактов: без неё
+ * Gemini брал число из головы (проверка Trading 02.10 — «проверено 2026-10-03»).
+ */
+export function formatForGemini(prompt: AgentPrompt, cwd: string, now: Date = new Date()): string {
   const heading = prompt.heading ?? (prompt.from === "human" ? "[от человека]" : "[от панели]");
   const version = prompt.snapshot ? `\n[версия файлов: ${prompt.snapshot}]` : "";
-  return `${heading}\n[папка проекта: ${cwd} — ищи и читай файлы только в ней]${version}\n${prompt.text}`;
+  return `${heading}\n[папка проекта: ${cwd} — ищи и читай файлы только в ней]\n[дата: ${localDate(now)}]${version}\n${prompt.text}`;
 }
 
 /** Токены одного вызова модели: вход, из него — чтение кеша, выход вместе с рассуждением. */

@@ -1693,10 +1693,28 @@ test("Codex: при возобновлении ветки роль реценз�
     }
   });
 
-  test("Gemini: сообщение несёт заголовок, папку проекта и версию файлов", () => {
-    const text = formatForGemini({ text: "материал", from: "claude", heading: "[материал проверки от панели]", snapshot: "abc" }, "C:/proj");
-    assert.equal(text, "[материал проверки от панели]\n[папка проекта: C:/proj — ищи и читай файлы только в ней]\n[версия файлов: abc]\nматериал");
-    assert.match(formatForGemini({ text: "т", from: "human" }, "C:/p"), /^\[от человека\]\n/);
+  test("Gemini: сообщение несёт заголовок, папку проекта, дату и версию файлов", () => {
+    const at = new Date(2026, 9, 2, 20, 2);
+    const text = formatForGemini({ text: "материал", from: "claude", heading: "[материал проверки от панели]", snapshot: "abc" }, "C:/proj", at);
+    assert.equal(
+      text,
+      "[материал проверки от панели]\n[папка проекта: C:/proj — ищи и читай файлы только в ней]\n[дата: 2026-10-02]\n[версия файлов: abc]\nматериал",
+    );
+    assert.equal(formatForGemini({ text: "т", from: "human" }, "C:/p", at), "[от человека]\n[папка проекта: C:/p — ищи и читай файлы только в ней]\n[дата: 2026-10-02]\nт");
+  });
+
+  test("Gemini: дата в шапке — местная, с ведущими нулями; без даты — сегодняшняя", () => {
+    // Проверка Trading 02.10: Gemini написал «проверено 2026-10-03», хотя ход
+    // шёл 02.10, — даты в шапке не было, и модель взяла её из головы. Дата —
+    // по часам машины, а не UTC: полночь по местному времени — уже новый день.
+    const line = (at) => formatForGemini({ text: "т", from: "human" }, "C:/p", at).split("\n")[2];
+    assert.equal(line(new Date(2026, 0, 5, 0, 30)), "[дата: 2026-01-05]");
+    assert.equal(line(new Date(2026, 9, 3, 0, 30)), "[дата: 2026-10-03]");
+    assert.equal(line(new Date(2026, 11, 31, 23, 59)), "[дата: 2026-12-31]");
+    const today = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const expected = `[дата: ${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}]`;
+    assert.equal(formatForGemini({ text: "т", from: "human" }, "C:/p").split("\n")[2], expected);
   });
 
   test("Gemini: продолжение разговора — --conversation; накопительный итог прежнего процесса в расход не идёт", async () => {

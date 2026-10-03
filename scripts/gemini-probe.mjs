@@ -36,6 +36,32 @@
  * самый долгий промежуток без строк (всего и внутри шага agent_response),
  * приходят ли пустые ACTIVE во время рассуждения и вызовы инструментов.
  *
+ * Тот же прогон — **повтор проверки Trading** с новой ролью (03.10): по
+ * умолчанию шлётся проверка `b758130` (задача seq 54152, материал seq 54587),
+ * которую Gemini 02.10 принял, пропустив то, что поймал Codex. Сообщение
+ * собирается через formatForGemini (шапка с датой) и нынешний GEMINI_FOCUS.
+ * В отчёте (--out) — ответ целиком (`answer`) и `replay`: открытые файлы
+ * (`filesOpened`, пути view_file), поиски по файлам, обращения к вебу
+ * (`webCalls`: запрос или адрес), прочитаны ли GEMINI.md и AGENTS.md из корня
+ * папки, чтения сохранённых страниц agy, файлы вне папки проекта, `.env`.
+ * Чек-лист повтора — по отчёту и ответу:
+ *   1. Прочитал GEMINI.md папки проекта (`replay.readGeminiMd`), не открывал
+ *      `.env` и файлов вне папки, кроме сохранённых страниц agy.
+ *   2. Требует полноты отрицательного поиска: источник покрывает всё окно,
+ *      страницы выдачи пройдены, цитата обосновывает результат (это поймал Codex).
+ *   3. Не пишет «утечек нет» шире свидетельства: участок уже затронут прежними
+ *      обращениями, свидетельство — только этот шаг.
+ *   4. Слабые места, записанные в поправках, — не достоинство: проверяет, что
+ *      вывод участка оговорён условием (полнота реестра); неоговорённое — «пробел».
+ *   5. Пункты, которых шаг не касается (сиды), — «не относится: …».
+ *   6. Нет выдуманных разделов: каждый названный раздел — из файла в
+ *      `filesOpened` или из материала (02.10 — «Эталоны и бейзлайны»).
+ *   7. Факты — первоисточник (реестр ЦБ, moex.com, а не сайт агентства о себе),
+ *      дата проверки — из строки «[дата: …]» шапки, без непрошеных фактов;
+ *      обращений к вебу (`webCalls`) не больше ~15.
+ * Запуск: npm run build && node scripts/gemini-probe.mjs --timing --model
+ * gemini-3.8-flash-high --out <файл> (модель проверки 02.10); Pro high — без --model.
+ *
  * **--kill-resume [--model <slug>] [--cwd <папка>] [--out <файл>]** (пометка
  * CUT_NOTE, 03.10): ход с вебом снимается остановкой дерева процессов (как
  * killTree панели) сразу после начала первого шага инструмента, затем новый
@@ -419,6 +445,68 @@ function timingSummary(turn, sentAt) {
   };
 }
 
+/**
+ * Вызовы инструментов хода с параметрами: параметры — из последнего
+ * обновления шага, где они есть; состояние — последнее; у ERROR — причина.
+ */
+function toolTrace(turn) {
+  const steps = new Map();
+  for (const e of turn) {
+    if (e.info.kind !== "step_update" || e.info.stepType !== "tool") continue;
+    const info = JSON.parse(e.line).step_update?.tool_info ?? {};
+    const call = steps.get(e.info.stepIndex) ?? { step: e.info.stepIndex, t: e.t, tool: e.info.tool, parameters: null, state: null };
+    if (info.parameters && Object.keys(info.parameters).length > 0) call.parameters = info.parameters;
+    call.state = e.info.state;
+    if (e.info.state === "ERROR") call.error = String(info.error?.message ?? "ошибка инструмента");
+    steps.set(e.info.stepIndex, call);
+  }
+  return [...steps.values()];
+}
+
+/** Строковый параметр вызова по одному из имён без учёта регистра (AbsolutePath, Url, query…). */
+function paramOf(parameters, ...names) {
+  for (const [key, value] of Object.entries(parameters ?? {})) {
+    if (names.includes(key.toLowerCase()) && typeof value === "string") return value;
+  }
+  return null;
+}
+
+const slashes = (p) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+
+/**
+ * Что модель открыла и где искала — для чек-листа повтора проверки (заголовок
+ * файла): файлы, поиски по файлам, веб, правила проекта, границы папки.
+ */
+function replayTrace(trace, cwd) {
+  const outcome = (c) => ({ state: c.state, ...(c.error ? { error: c.error } : {}) });
+  const filesOpened = trace
+    .filter((c) => c.tool === "view_file")
+    .map((c) => ({ path: paramOf(c.parameters, "absolutepath", "path", "file_path"), ...outcome(c) }));
+  const fileSearches = trace
+    .filter((c) => ["grep_search", "find_by_name", "list_dir"].includes(c.tool))
+    .map((c) => ({ tool: c.tool, parameters: c.parameters, ...outcome(c) }));
+  const webCalls = trace
+    .filter((c) => c.tool === "search_web" || c.tool === "read_url_content")
+    .map((c) => ({ tool: c.tool, target: paramOf(c.parameters, "url", "query"), ...outcome(c) }));
+  const root = slashes(cwd);
+  const paths = filesOpened.map((f) => f.path).filter((p) => p);
+  const isBrain = (p) => /\/\.gemini\/antigravity-cli\/brain\//.test(slashes(p));
+  return {
+    readGeminiMd: paths.some((p) => slashes(p) === `${root}/gemini.md`),
+    readAgentsMd: paths.some((p) => slashes(p) === `${root}/agents.md`),
+    brainReads: paths.filter(isBrain).length,
+    outsideProject: paths.filter((p) => !slashes(p).startsWith(`${root}/`) && !isBrain(p)),
+    envOpened: paths.filter((p) => /(^|\/)\.env(\.|$)/.test(slashes(p))),
+    webCallCount: webCalls.length,
+    filesOpened,
+    fileSearches,
+    webCalls,
+    otherTools: trace
+      .filter((c) => !["view_file", "grep_search", "find_by_name", "list_dir", "search_web", "read_url_content"].includes(c.tool))
+      .map((c) => ({ tool: c.tool, parameters: c.parameters, ...outcome(c) })),
+  };
+}
+
 function writeReport(report) {
   const out = argValue("--out", undefined);
   const json = JSON.stringify(report, null, 1);
@@ -457,6 +545,7 @@ async function runTiming() {
     const turn = await waitResult(session, 0, 60 * 60_000);
     const summary = timingSummary(turn, sentAt);
     const answer = turnAnswer(turn);
+    const replay = replayTrace(toolTrace(turn), review.cwd);
     const report = {
       mode: "timing",
       at: new Date(session.startedAt).toISOString(),
@@ -472,13 +561,21 @@ async function runTiming() {
       summary,
       verdictLine: answer.split("\n").filter((l) => l.trim()).at(-1) ?? null,
       answer,
+      replay,
       stderr: turn.filter((e) => e.stream === "stderr").map((e) => e.line),
       prompt: review.content,
       lines: turn.map((e) => ({ t: e.t, stream: e.stream, ...e.info, line: e.line })),
     };
     writeReport(report);
     const { responses, tools, ...brief } = summary;
-    console.log(JSON.stringify({ model, conversation: session.conversation, ...brief, verdictLine: report.verdictLine }, null, 1));
+    const { filesOpened, fileSearches, webCalls, otherTools, ...replayBrief } = replay;
+    console.log(
+      JSON.stringify(
+        { model, conversation: session.conversation, ...brief, verdictLine: report.verdictLine, replay: { ...replayBrief, filesOpened: filesOpened.length } },
+        null,
+        1,
+      ),
+    );
   } finally {
     if (session) await killTree(session.proc);
     // Пробный агент — не агент панели: в настройках владельца он не остаётся.

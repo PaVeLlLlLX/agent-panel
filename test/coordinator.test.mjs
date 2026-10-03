@@ -1446,7 +1446,18 @@ test("проверка пары: один материал и версия у о
   assert.match(gemini.received[0].text, /не больше двух попыток на один сайт, всего не больше ~15 обращений к вебу за проверку/);
   assert.match(gemini.received[0].text, /пиши «не проверено: <адрес> — <причина>»/);
   assert.match(gemini.received[0].text, /Непроверенный факт, на котором держится вывод, — это «пробел: …»/);
+  // Проверка Trading 02.10: Gemini не открыл правил проекта, а пункты, которых
+  // шаг не касался, закрыл натянутыми «свидетельствами».
+  assert.ok(
+    gemini.received[0].text.includes(
+      "Правила проекта: если в этом разговоре ты ещё не читал GEMINI.md (или AGENTS.md) папки проекта — прочитай их до проверки.",
+    ),
+    "напоминание прочитать правила проекта",
+  );
+  assert.match(gemini.received[0].text, /«пробел: …» или «не относится: <почему>»/);
+  assert.match(gemini.received[0].text, /датой проверки из шапки «\[дата: …\]»/);
   assert.doesNotMatch(codex.received[0].text, /методологию эксперимента/, "Codex проверяет как прежде");
+  assert.doesNotMatch(codex.received[0].text, /GEMINI\.md/, "Codex правила Gemini не получает");
   assert.equal(gemini.received[0].heading, "[материал проверки от панели]");
   assert.equal(codex.received[0].snapshot, gemini.received[0].snapshot);
   assert.equal(k.state.round, 1);
