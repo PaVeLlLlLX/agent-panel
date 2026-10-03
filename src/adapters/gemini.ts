@@ -93,7 +93,8 @@ function localDate(at: Date): string {
 /**
  * Сообщение ходу agy: кто прислал, где искать файлы, какое сегодня число, к
  * какой версии относится. Дата — для «даты проверки» внешних фактов: без неё
- * Gemini брал число из головы (проверка Trading 02.10 — «проверено 2026-10-03»).
+ * дату называет сама модель (проверка Trading в 20:02 UTC 02.10, по часам
+ * машины уже 03.10: «проверено 2026-10-03» — без источника в сообщении).
  */
 export function formatForGemini(prompt: AgentPrompt, cwd: string, now: Date = new Date()): string {
   const heading = prompt.heading ?? (prompt.from === "human" ? "[от человека]" : "[от панели]");
