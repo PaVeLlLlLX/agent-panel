@@ -40,13 +40,16 @@
  * умолчанию шлётся проверка `b758130` (задача seq 54152, материал seq 54587),
  * которую Gemini 02.10 принял, пропустив то, что поймал Codex. Сообщение
  * собирается через formatForGemini (шапка с датой) и нынешний GEMINI_FOCUS.
- * В отчёте (--out) — ответ целиком (`answer`) и `replay`: открытые файлы
- * (`filesOpened`, пути view_file), поиски по файлам, обращения к вебу
- * (`webCalls`: запрос или адрес), прочитаны ли GEMINI.md и AGENTS.md из корня
- * папки, чтения сохранённых страниц agy, файлы вне папки проекта, `.env`.
+ * В отчёте (--out) — ответ целиком (`answer`) и `replay` (scripts/gemini-replay.mjs):
+ * открытые файлы (`filesOpened`, пути view_file), поиски по файлам
+ * (`fileSearches`: где искал), обращения к вебу (`webCalls`: запрос или адрес),
+ * прочитаны ли GEMINI.md и AGENTS.md из корня папки, обращения к сохранённым
+ * страницам agy, файлы и места поиска вне папки проекта, `.env`.
  * Чек-лист повтора — по отчёту и ответу:
  *   1. Прочитал GEMINI.md папки проекта (`replay.readGeminiMd`), не открывал
- *      `.env` и файлов вне папки, кроме сохранённых страниц agy.
+ *      и не искал `.env` и вне папки, кроме сохранённых страниц agy
+ *      (`replay.envOpened` и `replay.outsideProject` пусты; в них и view_file,
+ *      и места поиска grep_search, find_by_name, list_dir).
  *   2. Требует полноты отрицательного поиска: источник покрывает всё окно,
  *      страницы выдачи пройдены, цитата обосновывает результат (это поймал Codex).
  *   3. Не пишет «утечек нет» шире свидетельства: участок уже затронут прежними
@@ -75,6 +78,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { replayTrace } from "./gemini-replay.mjs";
 
 const require = createRequire(import.meta.url);
 const { GeminiAdapter, formatForGemini } = require("../out/adapters/gemini.js");
@@ -461,50 +465,6 @@ function toolTrace(turn) {
     steps.set(e.info.stepIndex, call);
   }
   return [...steps.values()];
-}
-
-/** Строковый параметр вызова по одному из имён без учёта регистра (AbsolutePath, Url, query…). */
-function paramOf(parameters, ...names) {
-  for (const [key, value] of Object.entries(parameters ?? {})) {
-    if (names.includes(key.toLowerCase()) && typeof value === "string") return value;
-  }
-  return null;
-}
-
-const slashes = (p) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-
-/**
- * Что модель открыла и где искала — для чек-листа повтора проверки (заголовок
- * файла): файлы, поиски по файлам, веб, правила проекта, границы папки.
- */
-function replayTrace(trace, cwd) {
-  const outcome = (c) => ({ state: c.state, ...(c.error ? { error: c.error } : {}) });
-  const filesOpened = trace
-    .filter((c) => c.tool === "view_file")
-    .map((c) => ({ path: paramOf(c.parameters, "absolutepath", "path", "file_path"), ...outcome(c) }));
-  const fileSearches = trace
-    .filter((c) => ["grep_search", "find_by_name", "list_dir"].includes(c.tool))
-    .map((c) => ({ tool: c.tool, parameters: c.parameters, ...outcome(c) }));
-  const webCalls = trace
-    .filter((c) => c.tool === "search_web" || c.tool === "read_url_content")
-    .map((c) => ({ tool: c.tool, target: paramOf(c.parameters, "url", "query"), ...outcome(c) }));
-  const root = slashes(cwd);
-  const paths = filesOpened.map((f) => f.path).filter((p) => p);
-  const isBrain = (p) => /\/\.gemini\/antigravity-cli\/brain\//.test(slashes(p));
-  return {
-    readGeminiMd: paths.some((p) => slashes(p) === `${root}/gemini.md`),
-    readAgentsMd: paths.some((p) => slashes(p) === `${root}/agents.md`),
-    brainReads: paths.filter(isBrain).length,
-    outsideProject: paths.filter((p) => !slashes(p).startsWith(`${root}/`) && !isBrain(p)),
-    envOpened: paths.filter((p) => /(^|\/)\.env(\.|$)/.test(slashes(p))),
-    webCallCount: webCalls.length,
-    filesOpened,
-    fileSearches,
-    webCalls,
-    otherTools: trace
-      .filter((c) => !["view_file", "grep_search", "find_by_name", "list_dir", "search_web", "read_url_content"].includes(c.tool))
-      .map((c) => ({ tool: c.tool, parameters: c.parameters, ...outcome(c) })),
-  };
 }
 
 function writeReport(report) {
