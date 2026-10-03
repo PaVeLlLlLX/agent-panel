@@ -1718,6 +1718,29 @@ test("Codex: при возобновлении ветки роль реценз�
     assert.equal(formatForGemini({ text: "т", from: "human" }, "C:/p").split("\n")[2], expected);
   });
 
+  test("Gemini: дата в шапке — местная и там, где местный день не совпадает с UTC", () => {
+    // Проверка выше строит моменты из местных полей: на машине в поясе UTC
+    // местные и UTC-геттеры совпадают, и дата UTC прошла бы её. Здесь пояс
+    // задан явно (Node перечитывает TZ на ходу), а смещение проверено.
+    const original = process.env.TZ;
+    const system = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const line = (at) => formatForGemini({ text: "т", from: "human" }, "C:/p", at).split("\n")[2];
+    try {
+      process.env.TZ = "Asia/Novosibirsk";
+      const review = new Date(Date.UTC(2026, 9, 2, 20, 2));
+      assert.equal(review.getTimezoneOffset(), -420, "пояс не сменился: проверка ничего бы не проверила");
+      assert.equal(line(review), "[дата: 2026-10-03]", "20:02 UTC 02.10 в UTC+7 — уже 03.10");
+      process.env.TZ = "America/Los_Angeles";
+      const evening = new Date(Date.UTC(2026, 0, 5, 3, 0));
+      assert.equal(evening.getTimezoneOffset(), 480, "пояс не сменился: проверка ничего бы не проверила");
+      assert.equal(line(evening), "[дата: 2026-01-04]", "03:00 UTC 05.01 в UTC−8 — ещё 04.01");
+    } finally {
+      // Без TZ Node берёт пояс системы не всегда: удаление переменной на
+      // Windows оставляет UTC, поэтому возвращается пояс, что был до теста.
+      process.env.TZ = original ?? system;
+    }
+  });
+
   test("Gemini: продолжение разговора — --conversation; накопительный итог прежнего процесса в расход не идёт", async () => {
     const s = collector();
     const ids = [];
