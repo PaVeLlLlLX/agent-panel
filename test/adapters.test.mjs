@@ -1452,14 +1452,40 @@ test("Claude: session_id сообщается обратным вызовом", 
   }
 });
 
-test("Claude: заголовок сообщения — из prompt.heading, иначе по отправителю", () => {
-  assert.match(formatForClaude({ text: "т", from: "human" }), /^\[от человека\]\nт$/);
-  assert.match(formatForClaude({ text: "т", from: "codex" }), /^\[замечание рецензента Codex\]/);
-  assert.match(formatForClaude({ text: "т", from: "gemini" }), /^\[замечание рецензента Gemini\]/);
+test("Claude: заголовок сообщения — из prompt.heading, иначе по отправителю; в шапке — строка честности", () => {
+  assert.match(formatForClaude({ text: "т", from: "human" }), /^\[от человека\]\n\[Будь честен в своём ответе\.\]\nт$/);
+  assert.match(formatForClaude({ text: "т", from: "codex" }), /^\[замечание рецензента Codex\]\n\[Будь честен в своём ответе\.\]\n/);
+  assert.match(formatForClaude({ text: "т", from: "gemini" }), /^\[замечание рецензента Gemini\]\n\[Будь честен в своём ответе\.\]\n/);
+  assert.match(formatForClaude({ text: "т", from: "system" }), /^\[от панели\]\n\[Будь честен в своём ответе\.\]\n/);
   assert.equal(
     formatForClaude({ text: "т", from: "codex", heading: "[замечания рецензентов Codex и Gemini]", snapshot: "abc" }),
-    "[замечания рецензентов Codex и Gemini]\n[версия файлов: abc]\nт",
+    "[замечания рецензентов Codex и Gemini]\n[версия файлов: abc]\n[Будь честен в своём ответе.]\nт",
   );
+});
+
+test("Claude: строка честности доходит и до возобновлённой сессии — в шапке каждого сообщения, а не только флагом запуска (рецензия цикла 05.10)", async () => {
+  // Claude Code 2.1.287 записывает системный промпт на первом запросе
+  // разговора и повторяет запись при каждом --resume до сжатия контекста
+  // (--system-prompt-snapshot, по умолчанию on): --append-system-prompt,
+  // добавленный позже, сессии комнат не видели.
+  const s = collector();
+  const a = claude(s, { resumeSessionId: "сессия-комнаты", commandArgs: [FAKE_CLAUDE, "--show-input"] });
+  try {
+    await a.send({ text: "здравствуй", from: "human" });
+    await waitFor(() => ends(s.events) === 1, "ход 1");
+    await a.send({ text: "замечание", from: "codex", heading: "[замечания рецензентов Codex и Gemini]" });
+    await waitFor(() => ends(s.events) === 2, "ход 2");
+    assert.equal(flag(launches(s.events)[0], "--resume"), "сессия-комнаты");
+    const inputs = s.events
+      .filter((e) => e.kind === "diagnostic" && (e.text ?? "").startsWith("ВВОД "))
+      .map((e) => JSON.parse(e.text.slice("ВВОД ".length)));
+    assert.deepEqual(inputs, [
+      "[от человека]\n[Будь честен в своём ответе.]\nздравствуй",
+      "[замечания рецензентов Codex и Gemini]\n[Будь честен в своём ответе.]\nзамечание",
+    ]);
+  } finally {
+    await a.stop();
+  }
 });
 
 test("Claude: несуществующая команда — ошибка с отметкой, а не падение панели", async () => {

@@ -131,7 +131,15 @@ function claudeCatalog(models: unknown): ModelOption[] {
 
 const NO_QUESTIONS_NOTE = "разрешено панелью: режим «без вопросов»";
 
-/** Кто прислал реплику — часть сообщения: указание человека и замечание рецензента весят по-разному. */
+/**
+ * Кто прислал реплику — часть сообщения: указание человека и замечание
+ * рецензента весят по-разному. Последняя строка шапки — просьба владельца
+ * «Будь честен в своём ответе.» (05.10). Флага --append-system-prompt мало:
+ * Claude Code 2.1.287 записывает системный промпт на первом запросе
+ * разговора и при каждом --resume повторяет запись до сжатия контекста
+ * (--system-prompt-snapshot, по умолчанию on) — сессия комнаты, начатая до
+ * флага, его не видит (рецензия цикла 05.10).
+ */
 export function formatForClaude(prompt: AgentPrompt): string {
   const heading =
     prompt.heading ??
@@ -143,7 +151,7 @@ export function formatForClaude(prompt: AgentPrompt): string {
           ? "[замечание рецензента Gemini]"
           : "[от панели]");
   const version = prompt.snapshot ? `\n[версия файлов: ${prompt.snapshot}]` : "";
-  return `${heading}${version}\n${prompt.text}`;
+  return `${heading}${version}\n[${HONESTY_LINE}]\n${prompt.text}`;
 }
 
 /** Запрос разрешения, на который человек ещё не ответил. */
@@ -407,8 +415,10 @@ export class ClaudeAdapter implements Adapter {
       "--replay-user-messages",
       "--permission-prompt-tool",
       "stdio",
-      // Просьба владельца 05.10 — всем агентам. В кавычках через cmd.exe:
-      // пробелы иначе разбили бы строку на слова.
+      // Просьба владельца 05.10 — всем агентам. Новой сессии — флагом;
+      // возобновлённая видит записанный прежде системный промпт, ей строка
+      // идёт в шапке каждого сообщения (formatForClaude). В кавычках через
+      // cmd.exe: пробелы иначе разбили бы строку на слова.
       "--append-system-prompt",
       argumentForLaunch(HONESTY_LINE, this.options.shell),
       ...(settingSources ? ["--setting-sources", settingSources] : []),

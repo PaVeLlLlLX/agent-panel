@@ -107,6 +107,9 @@ lines.on("line", (line) => {
   }
   if (record.type !== "user") return;
   const text = (record.message?.content ?? []).map((b) => b.text ?? "").join("");
+  // --show-input: текст сообщения — в stderr строкой «ВВОД "…"»: тест видит,
+  // что именно ушло агенту.
+  if (argv.includes("--show-input")) process.stderr.write(`ВВОД ${JSON.stringify(text)}\n`);
   // --replay-user-messages: настоящий CLI повторяет сообщение с isReplay,
   // когда начинает его обрабатывать — внутри своего запроса, после init
   // (живая проба 28.09: второе сообщение, посланное во время первого хода,
