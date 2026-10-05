@@ -1557,6 +1557,46 @@ test("новая сессия: удержанная передача этому 
   journal.close();
 });
 
+test("новая сессия Gemini без прежней не пишет «сохранена в истории»", async () => {
+  // Журнал 04–05.10: новая сессия Gemini без прежней сообщала, что прежняя
+  // «сохранена в истории», — сохранять было нечего.
+  const { k, gemini, journal, events } = room(3, {}, { withGemini: true });
+  gemini.sessionId = undefined;
+  await k.newSession("gemini");
+  const lines = systemEvents(events).filter((e) => /^Новая сессия Gemini/.test(e.text ?? ""));
+  assert.deepEqual(
+    lines.map((e) => e.text),
+    ["Новая сессия Gemini: прежней не было — следующий ход начнёт новую."],
+  );
+  journal.close();
+});
+
+test("новая сессия Gemini с прежней называет её и говорит, что она сохранена", async () => {
+  const { k, gemini, journal, events } = room(3, {}, { withGemini: true });
+  gemini.sessionId = "g-1234567890";
+  journal.bindGeminiConversation("r", "g-1234567890");
+  await k.newSession("gemini");
+  const lines = systemEvents(events).filter((e) => /^Новая сессия Gemini/.test(e.text ?? ""));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0].text, /^Новая сессия Gemini: прежняя \(g-123456\) сохранена в истории Gemini, но следующий ход её не продолжит/);
+  journal.close();
+});
+
+test("новая сессия Codex до его первого хода: прежняя ветка комнаты названа, а не «не было»", async () => {
+  // Codex поднимает ветку лениво, при первой отправке: до неё sessionId
+  // адаптера пуст, хотя комната привязана к ветке и следующий ход её бы
+  // продолжил. Прежняя — по журналу.
+  const { k, codex, journal, events } = room();
+  journal.bindSessions("r", undefined, "codex-ветка-1");
+  codex.sessionId = undefined;
+  await k.newSession("codex");
+  const lines = systemEvents(events).filter((e) => /^Новая сессия Codex/.test(e.text ?? ""));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0].text, /^Новая сессия Codex: прежняя \(codex-ве\) сохранена в истории Codex/);
+  assert.equal(journal.binding("r").codexThreadId, undefined);
+  journal.close();
+});
+
 // ---------------------------------------------------------------------------
 // Gemini вне цикла рецензии
 // ---------------------------------------------------------------------------
@@ -1897,6 +1937,39 @@ test("сведение: Gemini просит решения человека — 
   assert.match(k.state.held.reason, /^Gemini просит вашего решения/);
   assert.equal(k.state.held.to, "claude");
   assert.equal(claude.received.length, 1);
+  journal.close();
+});
+
+test("сведение: Gemini просит решения, Codex принял — причина удержания называет разногласие", async () => {
+  // Журнал 04–05.10: строка «Gemini просит вашего решения» молчала о том,
+  // что Codex работу принял, — разногласия рецензентов не было видно.
+  const { k, journal } = await pairRoom();
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  turn(k, "gemini", "Нужен доступ к данным.\nВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА");
+  await waitFor(() => k.state.stage === "held", "удержание");
+  assert.ok(k.state.held.reason.includes("Gemini просит вашего решения"), k.state.held.reason);
+  assert.ok(k.state.held.reason.includes("Codex решения не просит (вердикт: принято)"), k.state.held.reason);
+  journal.close();
+});
+
+test("сведение: Gemini просит решения, у Codex замечания — причина удержания называет и их", async () => {
+  const { k, journal } = await pairRoom();
+  turn(k, "codex", "Дефект в пороге.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  turn(k, "gemini", "Нужен доступ к данным.\nВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА");
+  await waitFor(() => k.state.stage === "held", "удержание");
+  assert.ok(k.state.held.reason.includes("Gemini просит вашего решения"), k.state.held.reason);
+  assert.ok(k.state.held.reason.includes("Codex: есть замечания"), k.state.held.reason);
+  assert.ok(!k.state.held.reason.includes("решения не просит (вердикт: принято)"), k.state.held.reason);
+  journal.close();
+});
+
+test("сведение: оба просят решения — одна строка на двоих", async () => {
+  const { k, journal } = await pairRoom();
+  turn(k, "codex", "Нужно решение по данным.\nВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА");
+  turn(k, "gemini", "Нужен доступ к данным.\nВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА");
+  await waitFor(() => k.state.stage === "held", "удержание");
+  assert.match(k.state.held.reason, /^Codex и Gemini просят вашего решения/);
+  assert.ok(!k.state.held.reason.includes("не просит"), k.state.held.reason);
   journal.close();
 });
 
@@ -2651,6 +2724,7 @@ test("Gemini опоздал и просит решения, пока замеч�
   geminiTurn(k, gemini, "Нужен доступ к данным.\nВЕРДИКТ: НУЖНО РЕШЕНИЕ ЧЕЛОВЕКА");
   await waitFor(() => said(events, /^Gemini опоздал к проверке 1, но успел до отправки/).length === 1, "отзыв добавлен");
   assert.match(k.state.held.reason, /^Gemini просит вашего решения/);
+  assert.ok(k.state.held.reason.includes("Codex: есть замечания"), k.state.held.reason);
   assert.equal(k.state.verdict, "human");
   journal.close();
 });

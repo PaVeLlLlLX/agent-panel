@@ -457,9 +457,22 @@ function whoSaid(v: Verdict, codex: ReviewOutcome, gemini: ReviewOutcome): strin
     .join(" и ");
 }
 
+/**
+ * Причина удержания, когда решения просит хотя бы один рецензент. Второй
+ * назван своим исходом: одна строка «Gemini просит вашего решения» не
+ * говорила, что Codex работу принял, — разногласия рецензентов не было
+ * видно (журнал 04–05.10).
+ */
 function humanHoldReason(codex: ReviewOutcome, gemini: ReviewOutcome): string {
   const asking = whoSaid("human", codex, gemini);
-  return `${asking} ${asking.includes(" и ") ? "просят" : "просит"} вашего решения: обмен остановлен. Отзывы можно отправить Claude.`;
+  if (asking.includes(" и ")) return `${asking} просят вашего решения: обмен остановлен. Отзывы можно отправить Claude.`;
+  const otherName = asking === "Codex" ? "Gemini" : "Codex";
+  const other = asking === "Codex" ? gemini : codex;
+  const stance =
+    other.kind === "verdict" && other.verdict === "accepted"
+      ? `${otherName} решения не просит (вердикт: ${VERDICT_WORDS.accepted})`
+      : `${otherName}: ${outcomeWords(other)}`;
+  return `${asking} просит вашего решения; ${stance}. Обмен остановлен. Отзывы можно отправить Claude.`;
 }
 
 /** Местное время ЧЧ:ММ — для строк ленты о сроках Gemini. */
@@ -902,7 +915,13 @@ export class Coordinator {
   async newSession(agent: Worker): Promise<void> {
     const adapter = this.#adapter(agent);
     if (!adapter) return;
-    const previousSession = adapter.sessionId;
+    // Прежняя — у адаптера, а пока Codex не поднял ветку (он поднимает её
+    // при первой отправке) — в привязке комнаты: иначе строка ниже сказала
+    // бы «прежней не было» о ветке, которую следующий ход продолжил бы.
+    const bound = this.journal.closed ? undefined : this.journal.binding(this.options.room);
+    const previousSession =
+      adapter.sessionId ??
+      (agent === "claude" ? bound?.claudeSessionId : agent === "codex" ? bound?.codexThreadId : bound?.geminiConversationId);
     // Журнал — раньше остановки: закрытие панели во время неё не вернёт
     // прежнюю привязку (рецензия Codex 28.09).
     this.journal.forgetSession(this.options.room, agent);
@@ -935,9 +954,13 @@ export class Coordinator {
       this.#report(`Удержанная передача ${NAMES[agent]} снята: новая сессия не знает прежнего разговора. Поставьте задачу заново.`);
     }
     await (forgetting ?? adapter.forgetSession?.());
+    // Без прежней сессии «сохранена в истории» было бы неправдой: сохранять
+    // нечего (журнал 04–05.10, новая сессия Gemini).
     this.#report(
-      `Новая сессия ${NAMES[agent]}: прежняя${previousSession ? ` (${previousSession.slice(0, 8)})` : ""} сохранена в истории ` +
-        `${NAMES[agent]}, но следующий ход её не продолжит — агент не будет помнить прежних разговоров.`,
+      previousSession
+        ? `Новая сессия ${NAMES[agent]}: прежняя (${previousSession.slice(0, 8)}) сохранена в истории ` +
+            `${NAMES[agent]}, но следующий ход её не продолжит — агент не будет помнить прежних разговоров.`
+        : `Новая сессия ${NAMES[agent]}: прежней не было — следующий ход начнёт новую.`,
     );
     // Сообщения, ждавшие занятого агента, уходят в новую сессию.
     await this.#flushQueue();
