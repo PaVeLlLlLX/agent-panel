@@ -42,7 +42,9 @@
  * GPT-6.1-Sol xhigh — двух). Их turn/*, item/* и расход идут по тому же
  * соединению с их threadId. Ход Codex ведёт только своя ветка: конец хода
  * субагента — не отзыв Codex, его реплика — не реплика Codex; его команды —
- * инструменты хода (#childNotification).
+ * инструменты хода (#childNotification). Прерывание хода (человек,
+ * стоп-сигнал) прерывает и идущие ходы субагентов — каждый своим
+ * turn/interrupt; не принят или номера хода нет — процесс снимается.
  *
  * # Жизненный цикл процесса
  *
@@ -322,6 +324,26 @@ class BranchUsage {
 /** Сколько знаков реплики субагента идёт в строку диагностики; целиком она — в raw журнала. */
 const CHILD_TEXT_CHARS = 2000;
 
+/** Ветка субагента, которого запустил Codex. */
+interface ChildThread {
+  /**
+   * Ход своей ветки, на который субагент работает (шедший при его
+   * turn/started или первом уведомлении). Пока этот ход идёт, команды
+   * субагента — часть хода; кончился или прерван — только лента и журнал.
+   */
+  owner: string | undefined;
+  /**
+   * Его turn/started уже был: следующий — «продолжил». Не «ветка уже
+   * известна»: thread/status/changed ветки (схема 0.159) приходит и раньше
+   * первого turn/started (рецензия цикла 05.10).
+   */
+  started: boolean;
+  /** Ход субагента идёт: turn/started пришёл, turn/completed — ещё нет. */
+  running: boolean;
+  /** Номер идущего хода — для его turn/interrupt; turn/started без номера — undefined. */
+  turn: string | undefined;
+}
+
 /** Короткое имя ветки: у веток одного хода первые 8 знаков UUIDv7 совпадают (это время). */
 const shortThread = (id: string): string => id.slice(0, 13);
 
@@ -379,11 +401,9 @@ export class CodexAdapter implements Adapter {
   #turn: string | undefined;
   /**
    * Ветки субагентов, которых запустил Codex (живой цикл 05.10, вечер): номер
-   * ветки → ход своей ветки, на который субагент работает (шедший при его
-   * turn/started или первом уведомлении). Пока этот ход идёт, команды
-   * субагента — часть хода; кончился или прерван — только лента и журнал.
+   * ветки → её состояние (ChildThread).
    */
-  readonly #children = new Map<string, string | undefined>();
+  readonly #children = new Map<string, ChildThread>();
   /** Ходы, прерванные человеком: их поздний turn/completed не закрывает новый. */
   readonly #interrupted = new Set<string>();
   /** Номер последней отправки: сбой прежней не трогает занятость новой. */
@@ -869,16 +889,44 @@ export class CodexAdapter implements Adapter {
       const turn = this.#turn;
       this.#interrupted.add(turn);
       this.#turn = undefined;
+      // Идущие ходы субагентов прерываются каждый своим turn/interrupt:
+      // снимает ли app-server субагентов вместе с ходом основной ветки, не
+      // проверено, а стоп-сигнал на команде субагента должен остановить именно
+      // его (рецензия цикла 05.10). Прерываются все идущие — и запущенные
+      // прежним ходом: «Прервать» останавливает работу Codex целиком.
+      const children = [...this.#children].filter(([, c]) => c.running);
+      const unnumbered = children.find(([, c]) => c.turn === undefined);
+      if (unnumbered) {
+        // Номера хода нет — прервать адресно нечем; снимается процесс.
+        this.#emit("diagnostic", "stream", {
+          text: `номер хода субагента ${shortThread(unnumbered[0])} неизвестен — процесс Codex остановлен`,
+        });
+        await this.stop();
+        return;
+      }
       let refused: string | undefined;
-      await this.#request(k, "turn/interrupt", { threadId: this.#thread, turnId: turn }).catch((err: Error) => {
-        refused = err.message;
-      });
+      const childRefusals: string[] = [];
+      await Promise.all([
+        this.#request(k, "turn/interrupt", { threadId: this.#thread, turnId: turn }).catch((err: Error) => {
+          refused = err.message;
+        }),
+        ...children.map(([child, c]) => {
+          const childTurn = c.turn;
+          return this.#request(k, "turn/interrupt", { threadId: child, turnId: childTurn }).catch((err: Error) => {
+            // Ход субагента успел кончиться сам (его turn/completed пришёл
+            // раньше отказа) — отказ ничего не значит.
+            if (c.running && c.turn === childTurn) childRefusals.push(`субагента ${shortThread(child)} (${err.message})`);
+          });
+        }),
+      ]);
       // Сервер прерывание не принял: ход может идти дальше, а его элементы
       // адаптер уже отбрасывает (#interrupted) — команды пропали бы из ленты и
-      // журнала (итоговая рецензия 05.10). Процесс снимается, следующая
-      // отправка продолжит ветку. Процесс уже другой или остановлен — не трогать.
-      if (refused !== undefined && this.#ctx === k && !k.stopped) {
-        this.#emit("diagnostic", "stream", { text: `Codex не принял прерывание хода (${refused}) — процесс остановлен` });
+      // журнала (итоговая рецензия 05.10); субагент читал бы дальше. Процесс
+      // снимается, следующая отправка продолжит ветку. Процесс уже другой или
+      // остановлен — не трогать.
+      const what = refused !== undefined ? `хода (${refused})` : childRefusals[0];
+      if (what !== undefined && this.#ctx === k && !k.stopped) {
+        this.#emit("diagnostic", "stream", { text: `Codex не принял прерывание ${what} — процесс остановлен` });
         await this.stop();
         return;
       }
@@ -1091,7 +1139,7 @@ export class CodexAdapter implements Adapter {
 
   /** Ход своей ветки, на который субагент работает, ещё идёт. */
   #working(child: string): boolean {
-    const owner = this.#children.get(child);
+    const owner = this.#children.get(child)?.owner;
     return owner !== undefined && owner === this.#turn;
   }
 
@@ -1109,18 +1157,32 @@ export class CodexAdapter implements Adapter {
    * текста, рассуждений и вывода команд субагента в поток ответа не идут.
    */
   #childNotification(child: string, method: string, p: Record<string, unknown>): void {
-    const known = this.#children.has(child);
-    if (!known) this.#children.set(child, this.#turn);
+    let entry = this.#children.get(child);
+    if (!entry) {
+      entry = { owner: this.#turn, started: false, running: false, turn: undefined };
+      this.#children.set(child, entry);
+    }
     switch (method) {
-      case "turn/started":
+      case "turn/started": {
+        const turn = (p["turn"] as { id?: unknown } | undefined)?.id;
+        const again = entry.started;
         // Субагент работает на ход своей ветки, шедший при его начале.
-        this.#children.set(child, this.#turn);
+        entry.owner = this.#turn;
+        entry.started = true;
+        entry.running = true;
+        entry.turn = typeof turn === "string" ? turn : undefined;
         this.#emit("diagnostic", "stream", {
-          text: known ? `субагент ${shortThread(child)} продолжил` : `Codex запустил субагента ${shortThread(child)}`,
+          text: again ? `субагент ${shortThread(child)} продолжил` : `Codex запустил субагента ${shortThread(child)}`,
         });
         return;
+      }
       case "turn/completed": {
-        const status = ((p["turn"] ?? {}) as { status?: unknown }).status;
+        const turn = (p["turn"] ?? {}) as { id?: unknown; status?: unknown };
+        if (entry.turn === undefined || turn.id === entry.turn) {
+          entry.running = false;
+          entry.turn = undefined;
+        }
+        const status = turn.status;
         const how = status === undefined || status === "completed" ? "" : `: ${String(status)}`;
         this.#emit("diagnostic", "stream", { text: `субагент ${shortThread(child)} закончил${how}` });
         return;
@@ -1151,7 +1213,7 @@ export class CodexAdapter implements Adapter {
     // ленте и журнале (и для стоп-сигнала), но не в материале хода, иначе
     // вошла бы в свидетельство следующей проверки (как поздние элементы
     // прерванного хода, рецензия Codex 28.09).
-    this.#emitFor(this.#children.get(child), completed ? "tool_result" : "tool_call", this.#working(child) ? "turn" : "stream", {
+    this.#emitFor(this.#children.get(child)?.owner, completed ? "tool_result" : "tool_call", this.#working(child) ? "turn" : "stream", {
       tool: kind,
       ...(typeof item["id"] === "string" ? { callId: item["id"] } : {}),
       ...clampKeepingFull(text || JSON.stringify(item)),

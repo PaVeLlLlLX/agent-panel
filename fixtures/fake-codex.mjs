@@ -25,8 +25,14 @@
  *                 субагента в другой ветке: команда, реплика «субагент: всё
  *                 хорошо» с вердиктом ПРИНЯТО, расход и turn/completed;
  *   СУБАГЕНТ-ДОЛЬШЕ — тот же ход субагента, но после конца хода основной.
+ *   СУБАГЕНТ-ДАННЫЕ — ход основной ветки висит до turn/interrupt, а
+ *                 субагент начинает `python -c "open('data/x.parquet')"` и
+ *                 висит до своего turn/interrupt: прерывание основной ветки
+ *                 его не снимает; с БЕЗ-НОМЕРА в его turn/started нет номера.
+ * Перед первым turn/started субагента идёт thread/status/changed его ветки.
  * Уведомления хода идут от ветки из turn/start: адаптер отличает свою ветку
- * от веток субагентов по threadId.
+ * от веток субагентов по threadId. Каждый turn/interrupt пишется в stderr
+ * строкой «ПРЕРЫВАНИЕ {threadId, turnId}».
  * РАЗРЫВ в id возобновляемой ветки — ответ thread/resume с U+2028/U+2029
  * внутри строки JSON.
  *
@@ -45,7 +51,8 @@
  *                      (как продолжение без config на пробе);
  *   --exec-broken    — command/exec пишет куда угодно: «запись в проект
  *                      прошла»;
- *   --reject-interrupt — turn/interrupt отвечает ошибкой, ход идёт дальше.
+ *   --reject-interrupt — turn/interrupt отвечает ошибкой, ход идёт дальше;
+ *   --reject-child-interrupt — так же, но только для ветки субагента.
  *
  * command/exec понимает самопроверку панели — `python -c <код> <путь>`:
  * путь внутри writableRoots политики workspaceWrite — файл пишется на диск
@@ -75,6 +82,7 @@ const REJECT_PROFILE = process.argv.includes("--reject-profile");
 const WEAK_PROFILE = process.argv.includes("--weak-profile");
 const EXEC_BROKEN = process.argv.includes("--exec-broken");
 const REJECT_INTERRUPT = process.argv.includes("--reject-interrupt");
+const REJECT_CHILD_INTERRUPT = process.argv.includes("--reject-child-interrupt");
 const send = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
 const notify = (method, params) => send({ jsonrpc: "2.0", method, params });
 const logThread = (resume, params) =>
@@ -160,6 +168,9 @@ const SUB_TURN = "01a10c7d-a2e0-7c81-8186-b6dd4a1c76b1";
  */
 const subAgentTurn = (parent) => {
   notify("thread/started", { thread: { id: SUB_THREAD, parentThreadId: parent } });
+  // Смена состояния ветки (схема 0.159: ThreadStatusChangedNotification с
+  // threadId) может прийти раньше первого turn/started субагента.
+  notify("thread/status/changed", { threadId: SUB_THREAD, status: { type: "active", activeFlags: [] } });
   notify("turn/started", { threadId: SUB_THREAD, turn: { id: SUB_TURN, status: "inProgress" } });
   const command = { type: "commandExecution", id: "cmd-sub", command: "rg -n порог src", status: "inProgress" };
   notify("item/started", { item: command, threadId: SUB_THREAD, turnId: SUB_TURN });
@@ -192,6 +203,8 @@ process.stderr.write(
 );
 
 const longRunning = new Set();
+/** Идущие ходы субагента (СУБАГЕНТ-ДАННЫЕ): кончаются только своим turn/interrupt. */
+const runningSub = new Set();
 let turnNumber = 0;
 
 // --die-once <файл>: первый запуск умирает на initialize, следующие работают.
@@ -313,6 +326,25 @@ lines.on("line", (line) => {
       if (turnText.includes("УПАСТЬ-ХОД")) {
         reply({ turn: { id: turnId, status: "inProgress" } });
         setTimeout(() => process.exit(3), 20);
+        return;
+      }
+      // СУБАГЕНТ-ДАННЫЕ: ход основной ветки висит, а субагент начинает команду
+      // с путём к данным и висит до СВОЕГО turn/interrupt — прерывание хода
+      // основной ветки его не снимает (снимает ли настоящий, не проверено).
+      // С БЕЗ-НОМЕРА в turn/started субагента нет номера хода.
+      if (turnText.includes("СУБАГЕНТ-ДАННЫЕ")) {
+        reply({ turn: { id: turnId, status: "inProgress" } });
+        notify("turn/started", { threadId: thread, turn: { id: turnId, status: "inProgress" } });
+        longRunning.add(turnId);
+        notify("thread/started", { thread: { id: SUB_THREAD, parentThreadId: thread } });
+        const numbered = !turnText.includes("БЕЗ-НОМЕРА");
+        notify("turn/started", { threadId: SUB_THREAD, turn: { ...(numbered ? { id: SUB_TURN } : {}), status: "inProgress" } });
+        notify("item/started", {
+          item: { type: "commandExecution", id: "cmd-sub-data", command: "python -c \"open('data/x.parquet')\"", status: "inProgress" },
+          threadId: SUB_THREAD,
+          turnId: SUB_TURN,
+        });
+        if (numbered) runningSub.add(SUB_TURN);
         return;
       }
       // ДОЛГИЙ-ХОД: ход идёт, пока его не прервут; ПОЗЖЕ — кончается через 400 мс.
@@ -448,11 +480,18 @@ lines.on("line", (line) => {
     }
     case "turn/interrupt": {
       const thread = typeof z.params.threadId === "string" ? z.params.threadId : THREAD;
-      if (REJECT_INTERRUPT) {
+      process.stderr.write(`ПРЕРЫВАНИЕ ${JSON.stringify({ threadId: z.params.threadId, turnId: z.params.turnId })}\n`);
+      if (REJECT_INTERRUPT || (REJECT_CHILD_INTERRUPT && thread === SUB_THREAD)) {
         send({ jsonrpc: "2.0", id: z.id, error: { code: -32603, message: "ход не найден" } });
         return;
       }
       reply({});
+      if (thread === SUB_THREAD && runningSub.delete(z.params.turnId)) {
+        setTimeout(() => {
+          notify("turn/completed", { threadId: SUB_THREAD, turn: { id: z.params.turnId, status: "interrupted" } });
+        }, 50);
+        return;
+      }
       // Настоящий Codex присылает конец прерванного хода отдельно и позже ответа.
       if (longRunning.delete(z.params.turnId)) {
         // Перед концом — поздний элемент прерванного хода.

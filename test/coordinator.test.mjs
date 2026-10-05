@@ -3411,6 +3411,49 @@ test("стоп-сигнал на адаптере Codex (фальшивка): х
   }
 });
 
+test("стоп-сигнал на команде субагента Codex (адаптер на фальшивке): прерван и ход субагента, а не только ход основной ветки (рецензия цикла 05.10)", async () => {
+  // Команда субагента с запрещённым путём — инструмент хода, стоп-сигнал её
+  // видит. Прерывание только основной ветки оставило бы субагента работать,
+  // если app-server не снимает его сам (не проверено), а панель считала бы
+  // Codex свободным. Фальшивка субагента сама не снимает.
+  const SUB_THREAD = "01a10c7d-a1e1-7360-bdd7-bdc2cb8562fe";
+  const SUB_TURN = "01a10c7d-a2e0-7c81-8186-b6dd4a1c76b1";
+  const catalog = mkdtempSync(join(tmpdir(), "panel-"));
+  const journal = new Journal(join(catalog, "j.sqlite"));
+  journal.ensureRoom("r", catalog);
+  const claude = new Stub("claude");
+  const events = [];
+  let k;
+  const codex = new CodexAdapter({ command: "node", commandArgs: [FAKE_CODEX], cwd: catalog }, (e) => k.handle(e));
+  k = new Coordinator(claude, codex, journal, {
+    room: "r",
+    cwd: catalog,
+    maxAutoRounds: 3,
+    onEvent: (e) => events.push(e),
+    forbidden: ["data/", "data\\", ".env"],
+  });
+  try {
+    await k.fromHuman("подобрать порог классификатора", "review");
+    turn(k, "claude", "порог 0.4, F1 на валидации 0.71 СУБАГЕНТ-ДАННЫЕ");
+    await waitFor(() => k.state.stage === "stopped", "стоп-сигнал", 10_000);
+    assert.equal(said(events, STOP_LINE).length, 1);
+    await waitFor(
+      () => events.some((e) => e.agent === "codex" && e.text === "субагент 01a10c7d-a1e1 закончил: interrupted"),
+      "ход субагента прерван",
+      10_000,
+    );
+    const sent = events
+      .filter((e) => e.agent === "codex" && /^ПРЕРЫВАНИЕ /.test(e.text ?? ""))
+      .map((e) => JSON.parse(e.text.slice("ПРЕРЫВАНИЕ ".length)));
+    assert.ok(sent.some((x) => x.threadId === SUB_THREAD && x.turnId === SUB_TURN), JSON.stringify(sent));
+    assert.equal(codex.busy, false);
+    assert.equal(k.state.stage, "stopped");
+  } finally {
+    await codex.stop();
+    journal.close();
+  }
+});
+
 test("субагенты Codex (адаптер на фальшивке): итог пары — по ответу основной ветки, «принято» субагента цикл не закрывает (живой цикл 05.10)", async () => {
   // Живой цикл 05.10, вечер: Gemini принял, Codex запустил двух субагентов, и
   // конец хода первого («ВЕРДИКТ: ПРИНЯТО») закрыл цикл: «Codex — принято,

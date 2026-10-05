@@ -1766,9 +1766,16 @@ test("Codex: начало команды несёт в raw её строку —
   }
 });
 
-/** Ветка субагента в фальшивом Codex (СУБАГЕНТ) и её короткое имя в диагностике. */
+/** Ветка субагента в фальшивом Codex (СУБАГЕНТ), её короткое имя в диагностике и её ход. */
 const SUB_THREAD = "01a10c7d-a1e1-7360-bdd7-bdc2cb8562fe";
 const SUB_SHORT = "01a10c7d-a1e1";
+const SUB_TURN = "01a10c7d-a2e0-7c81-8186-b6dd4a1c76b1";
+
+/** turn/interrupt, которые получил фальшивый Codex (строки «ПРЕРЫВАНИЕ {…}» его stderr), по порядку. */
+const interrupts = (events) =>
+  events
+    .filter((e) => e.kind === "diagnostic" && /^ПРЕРЫВАНИЕ /.test(e.text ?? ""))
+    .map((e) => JSON.parse(e.text.slice("ПРЕРЫВАНИЕ ".length)));
 
 test("Codex: субагент в своей ветке не кончает ход — один turn_completed, реплика основной ветки, команда субагента — инструмент (живой цикл 05.10)", async () => {
   // Живой цикл 05.10, вечер: GPT-6.1-Sol запустил двух субагентов, их
@@ -1849,6 +1856,96 @@ test("Codex: субагент, закончивший после хода осн
         { input: 17522, cached: 7936, output: 5 },
       ],
     );
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Codex: «Codex запустил субагента» — по первому turn/started его ветки, а не по первому уведомлению; следующий ход субагента — «продолжил» (рецензия цикла 05.10)", async () => {
+  // thread/status/changed ветки субагента (схема 0.159, с threadId) приходит
+  // раньше его первого turn/started: по «ветка уже известна» лента писала
+  // «продолжил» о только что запущенном.
+  const s = collector();
+  const a = codex(s);
+  try {
+    await a.send({ text: "СУБАГЕНТ", from: "claude" });
+    await waitFor(() => ends(s.events) === 1, "ход 1");
+    await a.send({ text: "СУБАГЕНТ", from: "claude" });
+    await waitFor(() => ends(s.events) === 2, "ход 2");
+    assert.deepEqual(
+      s.events.filter((e) => e.kind === "diagnostic" && /запустил субагента|продолжил$/.test(e.text ?? "")).map((e) => e.text),
+      [`Codex запустил субагента ${SUB_SHORT}`, `субагент ${SUB_SHORT} продолжил`],
+    );
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Codex: «Прервать» прерывает и ход субагента — своим turn/interrupt; сервер не обязан снимать его вместе с ходом основной ветки (рецензия цикла 05.10)", async () => {
+  // Стоп-сигнал на команде субагента прерывал только ход основной ветки:
+  // номера хода субагента адаптер не хранил. Если app-server не снимает
+  // субагентов вместе с основной веткой (не проверено), субагент читал бы
+  // данные дальше, а панель считала бы Codex свободным.
+  const s = collector();
+  const a = codex(s);
+  try {
+    await a.send({ text: "СУБАГЕНТ-ДАННЫЕ", from: "claude" });
+    await waitFor(() => s.events.some((e) => e.callId === "cmd-sub-data"), "команда субагента");
+    const call = s.events.find((e) => e.callId === "cmd-sub-data");
+    assert.deepEqual([call.kind, call.visibility, call.raw.threadId], ["tool_call", "turn", SUB_THREAD], "стоп-сигнал видит её в ходе");
+    await a.interrupt();
+    assert.equal(a.busy, false);
+    await waitFor(() => s.events.some((e) => e.text === `субагент ${SUB_SHORT} закончил: interrupted`), "конец прерванного субагента");
+    assert.deepEqual(interrupts(s.events), [
+      { threadId: "fake-thread-1", turnId: "turn-1" },
+      { threadId: SUB_THREAD, turnId: SUB_TURN },
+    ]);
+    assert.equal(s.events.some((e) => e.text === "процесс Codex остановлен"), false, "оба прерывания приняты — процесс не снимается");
+    assert.equal(errors(s.events).length, 0);
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Codex: сервер не принял прерывание субагента — процесс снимается, субагент не идёт дальше втихую; следующая отправка продолжает ветку", async () => {
+  const s = collector();
+  const a = codex(s, { commandArgs: [FAKE_CODEX, "--reject-child-interrupt"] });
+  try {
+    await a.send({ text: "СУБАГЕНТ-ДАННЫЕ", from: "claude" });
+    await waitFor(() => s.events.some((e) => e.callId === "cmd-sub-data"), "команда субагента");
+    await a.interrupt();
+    assert.equal(a.busy, false);
+    assert.deepEqual(interrupts(s.events).map((x) => x.threadId), ["fake-thread-1", SUB_THREAD]);
+    assert.ok(
+      s.events.some((e) => e.text === `Codex не принял прерывание субагента ${SUB_SHORT} (ход не найден) — процесс остановлен`),
+      s.events.map((e) => e.text).join("\n"),
+    );
+    assert.ok(s.events.some((e) => e.text === "процесс Codex остановлен"));
+    assert.equal(errors(s.events).length, 0, "остановка панелью — не сбой");
+    s.events.length = 0;
+    await a.send({ text: "привет", from: "human" });
+    await waitFor(() => s.events.some((e) => e.kind === "turn_completed"), "ход нового процесса");
+    const launch = s.events.find((e) => (e.text ?? "").startsWith("ПАРАМЕТРЫ-ВЕТКИ "));
+    assert.equal(JSON.parse(launch.text.slice("ПАРАМЕТРЫ-ВЕТКИ ".length)).resume, true);
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Codex: ход субагента без номера — прервать его адресно нечем, процесс снимается", async () => {
+  const s = collector();
+  const a = codex(s);
+  try {
+    await a.send({ text: "СУБАГЕНТ-ДАННЫЕ БЕЗ-НОМЕРА", from: "claude" });
+    await waitFor(() => s.events.some((e) => e.callId === "cmd-sub-data"), "команда субагента");
+    await a.interrupt();
+    assert.equal(a.busy, false);
+    assert.ok(
+      s.events.some((e) => e.text === `номер хода субагента ${SUB_SHORT} неизвестен — процесс Codex остановлен`),
+      s.events.map((e) => e.text).join("\n"),
+    );
+    assert.ok(s.events.some((e) => e.text === "процесс Codex остановлен"));
+    assert.equal(errors(s.events).length, 0);
   } finally {
     await a.stop();
   }
