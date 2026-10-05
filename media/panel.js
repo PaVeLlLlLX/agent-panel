@@ -362,7 +362,9 @@ function permissionCard(e, history) {
       "Разрешить этот вызов и дальше не спрашивать в этой папке: до конца хода разрешает панель, " +
         "со следующего хода Claude работает в режиме bypassPermissions. Вернуть — кнопка со щитом у поля ввода",
       () => {
-        close();
+        // Свой запрос — своим ответом: запрос, который Claude отдаёт только
+        // человеку, режим не разрешает, и карточка застыла бы без решения.
+        answer("allow");
         vscode.postMessage({ type: "setPermissionMode", mode: "bypassPermissions" });
       },
     );

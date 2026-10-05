@@ -820,6 +820,16 @@ test("ответы — только на вопрос; «разрешить» н
   assert.deepEqual(claude.decisions, [["q1", "deny"]]);
 });
 
+test("пустой ответ на вопрос адаптеру не уходит, вопрос остаётся открытым", async () => {
+  // Адаптер его не примет и вопрос не закроет; снятый здесь вопрос разошёлся
+  // бы с адаптером, как «разрешить» на вопрос.
+  const { k, claude } = room();
+  k.handle(askEvent());
+  await k.answerQuestion("q1", {});
+  assert.deepEqual(claude.answers, []);
+  assert.equal(k.state.questions, 1);
+});
+
 test("ответ, который адаптер не принял, снимает вопрос: карточка не должна висеть", async () => {
   const { k, claude } = room();
   claude.answerQuestion = async () => false;
@@ -1231,10 +1241,10 @@ test("вопрос Claude доходит до webview с вариантами: f
   assert.deepEqual(light.questions, questions);
 });
 
-test("ответы из webview: только объект строк не длиннее 4000 символов", () => {
+test("ответы из webview: только непустой объект строк не длиннее 4000 символов", () => {
   assert.deepEqual(questionAnswers({ "Какой вариант?": "б", "Ещё?": "а, б" }), { "Какой вариант?": "б", "Ещё?": "а, б" });
-  assert.deepEqual(questionAnswers({}), {});
-  for (const bad of [undefined, null, "б", 1, ["б"], { "Какой вариант?": 1 }, { "Какой вариант?": "x".repeat(4001) }]) {
+  // Пустой объект — «человек не ответил»: ровно то, от чего избавляет карточка.
+  for (const bad of [undefined, null, "б", 1, ["б"], {}, { "Какой вариант?": 1 }, { "Какой вариант?": "x".repeat(4001) }]) {
     assert.equal(questionAnswers(bad), undefined, JSON.stringify(bad)?.slice(0, 40));
   }
   assert.deepEqual(questionAnswers({ q: "x".repeat(4000) }), { q: "x".repeat(4000) });

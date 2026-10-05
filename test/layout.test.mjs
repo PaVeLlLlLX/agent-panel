@@ -345,8 +345,9 @@ test("карточка разрешения: кнопки, ответ уходи
     const cards = document.querySelectorAll(".разрешение");
     const noQuestions = [...cards[cards.length - 1].querySelectorAll("button")]
       .find((k) => k.textContent === "Больше не спрашивать");
+    const sentBefore = window.sentMessages.length;
     noQuestions.click();
-    result.noQuestions = window.sentMessages.filter((m) => m.type === "setPermissionMode");
+    result.noQuestions = window.sentMessages.slice(sentBefore);
   `,
     { withUi: true },
   );
@@ -357,7 +358,12 @@ test("карточка разрешения: кнопки, ответ уходи
   assert.equal(r.buttonsAfter, 0);
   assert.match(r.labelText, /разрешено в этой сессии/);
   assert.equal(r.buttonsFromJournal, 0, "на запрос прошлого запуска ответить нельзя");
-  assert.deepEqual(r.noQuestions, [{ type: "setPermissionMode", mode: "bypassPermissions" }]);
+  // Свой запрос карточка разрешает сама: запрос, требующий человека, режим
+  // не разрешает, и без этого карточка застыла бы с неактивными кнопками.
+  assert.deepEqual(r.noQuestions, [
+    { type: "approval", id: "perm-2", choice: "allow" },
+    { type: "setPermissionMode", mode: "bypassPermissions" },
+  ]);
 });
 
 test("карточка вопроса Claude: варианты, свой ответ, «Ответить» шлёт answers, ширина 360 без переполнения", { skip: NO_BROWSER }, () => {

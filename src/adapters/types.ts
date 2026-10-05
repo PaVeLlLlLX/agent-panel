@@ -164,11 +164,13 @@ const ANSWER_LIMIT = 4_000;
 
 /**
  * Ответы на вопрос из webview — «текст вопроса → ответ». Сообщение webview —
- * ввод извне: всё, кроме объекта строк не длиннее ANSWER_LIMIT, — undefined.
+ * ввод извне: всё, кроме непустого объекта строк не длиннее ANSWER_LIMIT, —
+ * undefined. Пустой объект — «человек не ответил», а не ответ.
  */
 export function questionAnswers(value: unknown): Record<string, string> | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length === 0) return undefined;
   if (entries.some(([, answer]) => typeof answer !== "string" || answer.length > ANSWER_LIMIT)) return undefined;
   return Object.fromEntries(entries) as Record<string, string>;
 }
@@ -244,7 +246,8 @@ export interface Adapter {
   answerApproval?(id: string, choice: ApprovalChoice): Promise<boolean>;
   /**
    * Ответ человека на вопрос агента: текст вопроса → метка варианта, метки
-   * через «, » или свой текст. false — такого открытого вопроса нет.
+   * через «, » или свой текст. false — такого открытого вопроса нет или нет
+   * ни одного ответа на заданный вопрос (тогда вопрос остаётся открытым).
    * Нет метода — агент вопросов человеку не задаёт.
    */
   answerQuestion?(id: string, answers: Readonly<Record<string, string>>): Promise<boolean>;

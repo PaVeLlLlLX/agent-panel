@@ -490,8 +490,10 @@ export class ClaudeAdapter implements Adapter {
    * действует и сразу: открытые и новые запросы текущего процесса разрешает
    * панель. Проба на Claude Code 2.1.220 показала, что setMode
    * bypassPermissions в ответе на запрос повторных запросов не отключает.
-   * Вопросы человеку (AskUserQuestion) режим не закрывает: на них отвечает
-   * человек, а «разрешить» без ответов Claude читает как «не ответил».
+   * Запросы, требующие человека (AskUserQuestion, requires_user_interaction),
+   * режим не закрывает: на них отвечает человек, а «разрешить» без ответов
+   * Claude читает как «не ответил». Свой запрос карточка «Больше не
+   * спрашивать» разрешает отдельным answerApproval.
    */
   setPermissionMode(mode: string): void {
     this.#mode = mode || "default";
@@ -570,7 +572,9 @@ export class ClaudeAdapter implements Adapter {
    * Ответ человека на AskUserQuestion: allow с исходными вопросами и answers
    * «текст вопроса → метка / метки через «, » / свой текст» (документация
    * Agent SDK, user-input, 05.10.2026). Ключи — исходный текст вопроса, даже
-   * если человеку он показан обрезанным.
+   * если человеку он показан обрезанным. Ни одного ответа на заданный вопрос —
+   * не принимается, и вопрос остаётся открытым: allow без ответов Claude
+   * прочёл бы как «человек не ответил».
    */
   async answerQuestion(id: string, answers: Readonly<Record<string, string>>): Promise<boolean> {
     const request = this.#requests.get(id);
@@ -583,7 +587,8 @@ export class ClaudeAdapter implements Adapter {
       chosen[key] = value;
       lines.push(`${shown.question} — ${value}`);
     }
-    return this.#decide(id, "allow", clamp(`ответ человека: ${lines.join("; ") || "без ответов"}`), chosen);
+    if (lines.length === 0) return false;
+    return this.#decide(id, "allow", clamp(`ответ человека: ${lines.join("; ")}`), chosen);
   }
 
   async #decide(
@@ -999,7 +1004,8 @@ export class ClaudeAdapter implements Adapter {
       ...(questions ? { questions } : {}),
     });
 
-    const lines = [questions ? questionLines(questions) : inputGist(input)];
+    // Вопросы не разобрать — человек видит хотя бы сам ввод, а не пустую карточку.
+    const lines = [questions?.length ? questionLines(questions) : inputGist(input)];
     if (typeof request["description"] === "string" && request["description"] !== lines[0]) {
       lines.push(request["description"]);
     }

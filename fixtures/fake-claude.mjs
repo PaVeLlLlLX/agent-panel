@@ -9,7 +9,8 @@
  *
  * Управляется словами в тексте реплики:
  *   ОШИБКА-ХОДА — result с is_error: true;
- *   ВОПРОС-ЧЕЛОВЕКУ — AskUserQuestion: ход ждёт ответа панели;
+ *   ВОПРОС-ЧЕЛОВЕКУ — AskUserQuestion: ход ждёт ответа панели
+ *                     (с ВВОД-БЕЗ-ВОПРОСОВ — ввод без массива questions);
  *   УПАСТЬ      — внезапный выход процесса посреди хода;
  *   РАЗРЫВ      — ответ с U+2028/U+2029 внутри строки JSON.
  *
@@ -271,11 +272,15 @@ lines.on("line", (line) => {
   // правил. CLI присылает его и в режиме bypassPermissions. Ответ — answers
   // в updatedInput (документация Agent SDK, user-input, 05.10.2026).
   if (text.includes("ВОПРОС-ЧЕЛОВЕКУ")) {
-    const input = {
-      questions: [
-        { question: "Какой вариант?", header: "Выбор", options: [{ label: "а" }, { label: "б" }], multiSelect: false },
-      ],
-    };
+    // ВВОД-БЕЗ-ВОПРОСОВ: ввод, из которого вопросы не разобрать (нет массива
+    // questions) — человек должен увидеть хотя бы сам ввод.
+    const input = text.includes("ВВОД-БЕЗ-ВОПРОСОВ")
+      ? { prompt: "Какой вариант: а или б?" }
+      : {
+          questions: [
+            { question: "Какой вариант?", header: "Выбор", options: [{ label: "а" }, { label: "б" }], multiSelect: false },
+          ],
+        };
     writeLine({ type: "stream_event", event: { type: "message_start" }, session_id: SESSION });
     writeLine({
       type: "assistant",

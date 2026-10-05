@@ -755,7 +755,9 @@ export class Coordinator {
   /** Ответ человека на вопрос агента — адаптеру того агента, который спросил. */
   async answerQuestion(id: string, answers: Readonly<Record<string, string>>): Promise<void> {
     const agent = this.#requests.get(id);
-    if (!agent || !this.#questions.has(id)) return;
+    // Пустой ответ адаптер не примет и вопрос не закроет — снимать его здесь
+    // нельзя, как и при «разрешить» на вопрос.
+    if (!agent || !this.#questions.has(id) || Object.keys(answers).length === 0) return;
     const adapter = this.#adapter(agent);
     if (!adapter) return;
     const accepted = (await adapter.answerQuestion?.(id, answers)) ?? false;
