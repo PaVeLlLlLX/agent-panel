@@ -1634,6 +1634,139 @@ test("сведение: оба приняли — задача принята, C
   journal.close();
 });
 
+// Итог приёмки. Журнал 04–05.10: при «принято» Claude ничего не получал,
+// дважды записал ложную «историю приёмки» (seq 66891, 71500) и потерял
+// неблокирующие пометки рецензентов (65693, 72034, 65944). Отдельный ход
+// Claude не нужен — он правил бы файлы мимо рецензии, поэтому итог уходит
+// первым блоком следующего сообщения человека Claude.
+
+/** Пара приняла работу: Codex — с пометкой, Gemini — чек-лист закрыт. */
+async function acceptedPair() {
+  const r = await pairRoom();
+  turn(r.k, "codex", "Код верен. Пометка: проверить даты весов позже.\nВЕРДИКТ: ПРИНЯТО");
+  turn(r.k, "gemini", "Чек-лист закрыт.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => r.k.state.stage === "accepted", "принято");
+  return r;
+}
+
+test("итог приёмки — первым блоком следующего сообщения Claude, один раз", async () => {
+  const { k, claude, journal } = await pairRoom();
+  turn(k, "codex", "Код верен. Пометка: проверить даты весов позже.\nВЕРДИКТ: ПРИНЯТО");
+  turn(k, "gemini", "Чек-лист закрыт.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => k.state.stage === "accepted", "принято");
+  await k.fromHuman("Делайте следующий шаг", "review");
+  await waitFor(() => claude.received.length === 2, "новая задача у Claude");
+  const text = claude.received[1].text;
+  assert.match(text, /^\[итог прошлой проверки\]/);
+  assert.match(text, /Проверка 1 принята: Codex — принято, Gemini — принято/);
+  assert.match(text, /проверить даты весов позже/);
+  assert.match(text, /Делайте следующий шаг/);
+  await k.fromHuman("ещё вопрос", "claude");
+  await waitFor(() => claude.received.length === 3, "следующее");
+  assert.doesNotMatch(claude.received[2].text, /итог прошлой проверки/);
+  journal.close();
+});
+
+test("итог приёмки: форма блока — отзывы обоих рецензентов как пометки, затем пустая строка и слова человека", async () => {
+  const { k, claude, events, journal } = await acceptedPair();
+  await k.fromHuman("Делайте следующий шаг", "review");
+  await waitFor(() => claude.received.length === 2, "новая задача у Claude");
+  assert.equal(
+    claude.received[1].text,
+    "[итог прошлой проверки]\n" +
+      "Проверка 1 принята: Codex — принято, Gemini — принято.\n" +
+      "Отзывы рецензентов — пометки без требования исправлять; учти их в истории приёмки:\n" +
+      "— Codex: Код верен. Пометка: проверить даты весов позже.\nВЕРДИКТ: ПРИНЯТО\n" +
+      "— Gemini: Чек-лист закрыт.\nВЕРДИКТ: ПРИНЯТО\n" +
+      "\n" +
+      "Делайте следующий шаг",
+  );
+  // Задача человека для рецензентов и журнал — его слова, без блока панели.
+  assert.equal(k.state.task, "Делайте следующий шаг");
+  const human = journal.history("r").filter((e) => e.agent === "human").at(-1);
+  assert.equal(human.text, "Делайте следующий шаг");
+  // Человек видит, что Claude получил итог вместе с его сообщением.
+  assert.equal(said(events, /^К сообщению Claude приложен итог проверки 1/).length, 1);
+  journal.close();
+});
+
+test("итог приёмки: Gemini не проверял — в строке итога причина, отзыв только Codex", async () => {
+  const { k, claude, journal } = await pairRoom();
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  k.handle(event("gemini", "turn_completed", { incomplete: "пустой ответ" }));
+  await waitFor(() => k.state.stage === "accepted", "принятие по Codex");
+  await k.fromHuman("дальше", "claude");
+  await waitFor(() => claude.received.length === 2, "сообщение у Claude");
+  const text = claude.received[1].text;
+  assert.match(text, /^\[итог прошлой проверки\]\nПроверка 1 принята: Codex — принято, Gemini — не проверял \(пустой ответ\)\.\n/);
+  assert.match(text, /— Codex: Код верен\./);
+  assert.doesNotMatch(text, /— Gemini:/);
+  journal.close();
+});
+
+test("итог приёмки: комната без Gemini — строка только про Codex; длинный отзыв обрезан с пометкой", async () => {
+  const { k, claude, codex, journal } = room();
+  await k.fromHuman("подобрать порог классификатора", "review");
+  turn(k, "claude", "порог 0.4");
+  await waitFor(() => codex.received.length === 1, "материал у Codex");
+  const long = `Начало отзыва. ${"п".repeat(6000)} Конец отзыва.\nВЕРДИКТ: ПРИНЯТО`;
+  turn(k, "codex", long);
+  await waitFor(() => k.state.stage === "accepted", "принято");
+  await k.fromHuman("Делайте следующий шаг", "review");
+  await waitFor(() => claude.received.length === 2, "новая задача у Claude");
+  const text = claude.received[1].text;
+  assert.match(text, /^\[итог прошлой проверки\]\nПроверка 1 принята: Codex — принято\.\n/);
+  assert.doesNotMatch(text, /Gemini/);
+  const codexLine = text.slice(text.indexOf("— Codex: "), text.indexOf("\n\nДелайте следующий шаг"));
+  assert.match(codexLine, /^— Codex: Начало отзыва\./);
+  assert.match(codexLine, /\[… пропущены символы/);
+  assert.match(codexLine, /ВЕРДИКТ: ПРИНЯТО$/);
+  assert.ok(codexLine.length < 4200, `отзыв обрезан до ~4000 знаков, а не ${codexLine.length}`);
+  assert.match(text, /\n\nДелайте следующий шаг$/);
+  journal.close();
+});
+
+test("итог приёмки: «Остановить» сбрасывает его — следующее сообщение Claude без блока", async () => {
+  const { k, claude, journal } = await acceptedPair();
+  await k.stopAll();
+  await k.fromHuman("Делайте следующий шаг", "review");
+  await waitFor(() => claude.received.length === 2, "новая задача у Claude");
+  assert.equal(claude.received[1].text, "Делайте следующий шаг");
+  journal.close();
+});
+
+test("итог приёмки: новая сессия Claude сбрасывает его — новая сессия не знает прежней задачи", async () => {
+  const { k, claude, journal } = await acceptedPair();
+  await k.newSession("claude");
+  await k.fromHuman("Делайте следующий шаг", "claude");
+  await waitFor(() => claude.received.length === 2, "сообщение у Claude");
+  assert.equal(claude.received[1].text, "Делайте следующий шаг");
+  journal.close();
+});
+
+test("итог приёмки: прямой вопрос Codex блок не забирает — он уходит Claude со следующим сообщением", async () => {
+  const { k, claude, codex, journal } = await acceptedPair();
+  await k.fromHuman("почему принял?", "codex");
+  await waitFor(() => codex.received.length === 2, "вопрос у Codex");
+  assert.equal(codex.received[1].text, "почему принял?");
+  assert.equal(claude.received.length, 1);
+  await k.fromHuman("Делайте следующий шаг", "claude");
+  await waitFor(() => claude.received.length === 2, "сообщение у Claude");
+  assert.match(claude.received[1].text, /^\[итог прошлой проверки\]\nПроверка 1 принята/);
+  assert.match(claude.received[1].text, /\n\nДелайте следующий шаг$/);
+  journal.close();
+});
+
+test("итог приёмки: сообщение всем — блок только у Claude", async () => {
+  const { k, claude, codex, gemini, journal } = await acceptedPair();
+  await k.fromHuman("что дальше?", "all");
+  await waitFor(() => claude.received.length === 2 && codex.received.length === 2 && gemini.received.length === 2, "у всех");
+  assert.match(claude.received[1].text, /^\[итог прошлой проверки\]/);
+  assert.equal(codex.received[1].text, "что дальше?");
+  assert.equal(gemini.received[1].text, "что дальше?");
+  journal.close();
+});
+
 test("сведение: замечания у одного — Claude получает одно сообщение с обоими отзывами", async () => {
   const { k, claude, journal } = await pairRoom();
   turn(k, "gemini", "Пробел: пересечение id train/test не показано.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");

@@ -244,6 +244,13 @@ type ReviewOutcome =
   | { readonly kind: "unchecked"; readonly reason: string };
 type VerdictOutcome = Extract<ReviewOutcome, { kind: "verdict" }>;
 
+/** Принятая проверка, итог которой ещё не ушёл Claude. */
+interface Acceptance {
+  readonly round: number;
+  readonly codex?: VerdictOutcome;
+  readonly gemini?: ReviewOutcome;
+}
+
 /** Проверка пары: кого ждём и что пришло. Остаётся после сведения — её показывает «Эстафета». */
 interface ReviewPair {
   readonly cycle: number;
@@ -365,6 +372,34 @@ function mergedText(round: number, codex: ReviewOutcome, gemini: ReviewOutcome, 
   );
 }
 
+/** Исход рецензента словами ленты: «принято» или «не проверял (причина)». */
+function outcomeWords(outcome: ReviewOutcome): string {
+  return outcome.kind === "verdict" ? VERDICT_WORDS[outcome.verdict] : `не проверял (${outcome.reason})`;
+}
+
+/** Сколько знаков отзыва рецензента входит в итог приёмки; длиннее — начало и конец с пометкой. */
+const ACCEPTANCE_NOTE_CHARS = 4000;
+
+/**
+ * Итог принятой проверки — первый блок следующего сообщения Claude. Отзывы
+ * идут как пометки: при «принято» Claude прежде ничего не получал, записывал
+ * ложную «историю приёмки» и терял неблокирующие пометки (журнал 04–05.10).
+ */
+function acceptanceBlock(acceptance: Acceptance): string {
+  const { round, codex, gemini } = acceptance;
+  const words = [...(codex ? [`Codex — ${outcomeWords(codex)}`] : []), ...(gemini ? [`Gemini — ${outcomeWords(gemini)}`] : [])];
+  const notes = [
+    ...(codex ? [`— Codex: ${excerpt(codex.text.trim(), ACCEPTANCE_NOTE_CHARS)}`] : []),
+    ...(gemini?.kind === "verdict" ? [`— Gemini: ${excerpt(gemini.text.trim(), ACCEPTANCE_NOTE_CHARS)}`] : []),
+  ];
+  return [
+    "[итог прошлой проверки]",
+    `Проверка ${round} принята: ${words.join(", ")}.`,
+    "Отзывы рецензентов — пометки без требования исправлять; учти их в истории приёмки:",
+    ...notes,
+  ].join(NL);
+}
+
 /** Сведение пары: строже побеждает. */
 function strictest(verdicts: readonly Verdict[]): Verdict {
   return verdicts.includes("human")
@@ -427,6 +462,14 @@ export class Coordinator {
   #verdict: Verdict | undefined;
   #held: Held | undefined;
   #pair: ReviewPair | undefined;
+  /**
+   * Итог принятой проверки ждёт следующего сообщения человека Claude и уходит
+   * с ним один раз. Отдельный ход Claude не нужен: он правил бы файлы мимо
+   * рецензии. Хранится отдельно от пары: #startCycle новой задачи пару
+   * сбрасывает раньше, чем её сообщение уходит. Сбрасывают «Остановить» и
+   * новая сессия Claude.
+   */
+  #acceptance: Acceptance | undefined;
   /** Последняя рабочая отправка Claude в цикле — для повтора после отказов. */
   #lastWork: Outgoing | undefined;
   #auto = true;
@@ -650,17 +693,26 @@ export class Coordinator {
     if (cycle !== undefined && !this.#isCurrent(cycle)) return;
     // Заметки называются человеку, только когда сообщение действительно уходит.
     if (memory) this.#report(memory.note);
+    // Итог принятой проверки забирает только сообщение, которое уходит Claude;
+    // прямой вопрос рецензенту его оставляет до следующего.
+    const acceptance = route === "codex" || route === "gemini" ? undefined : this.#acceptance;
+    if (acceptance) {
+      this.#acceptance = undefined;
+      this.#report(`К сообщению Claude приложен итог проверки ${acceptance.round}.`);
+    }
     if (cycle !== undefined) this.#taskMemory = memory?.block;
+    const body = memory ? `${text}${NL}${NL}${memory.block}` : text;
     const prompt: AgentPrompt = {
-      text: memory ? `${text}${NL}${NL}${memory.block}` : text,
+      text: body,
       from: "human",
       snapshot: describeSnapshot(this.#roomSnapshot),
     };
+    const forClaude: AgentPrompt = acceptance ? { ...prompt, text: `${acceptanceBlock(acceptance)}${NL}${NL}${body}` } : prompt;
 
     if (cycle !== undefined) {
       await this.#send({
         to: "claude",
-        prompt,
+        prompt: forClaude,
         target: { role: "work", cycle },
         snapshot: this.#roomSnapshot,
       });
@@ -672,7 +724,12 @@ export class Coordinator {
         const recipients: AgentId[] =
           route === "all" ? ["claude", "codex", ...(this.options.gemini ? (["gemini"] as const) : [])] : [route as AgentId];
         for (const recipient of recipients) {
-          await this.#send({ to: recipient, prompt, target: direct, snapshot: this.#roomSnapshot });
+          await this.#send({
+            to: recipient,
+            prompt: recipient === "claude" ? forClaude : prompt,
+            target: direct,
+            snapshot: this.#roomSnapshot,
+          });
         }
       }
     }
@@ -784,6 +841,7 @@ export class Coordinator {
   async stopAll(): Promise<void> {
     this.#stops += 1;
     if (this.options.gemini?.busy) this.#geminiCut = true;
+    this.#acceptance = undefined;
     this.#resetWait("stopped");
     this.#queue.length = 0;
     await Promise.allSettled(this.#adapters().map((a) => a.stop()));
@@ -802,6 +860,8 @@ export class Coordinator {
     // Журнал — раньше остановки: закрытие панели во время неё не вернёт
     // прежнюю привязку (рецензия Codex 28.09).
     this.journal.forgetSession(this.options.room, agent);
+    // Новая сессия Claude не знает принятой задачи: итог прошлой проверки ей ни к чему.
+    if (agent === "claude") this.#acceptance = undefined;
     let forgetting: Promise<void> | undefined;
     if (agent === "gemini") {
       // Gemini — не арбитр: новая сессия для него не должна рвать весь цикл
@@ -1456,7 +1516,7 @@ export class Coordinator {
     const codex = pair.outcomes.get("codex");
     if (!codex || codex.kind !== "verdict") return;
     if (!pair.outcomes.get("gemini")) {
-      await this.#afterReview(codex, pair.cycle);
+      await this.#afterReview(codex, pair.cycle, pair.round);
       return;
     }
     // Снимок — до чтения исхода Gemini (рецензия 03.10): поздний отзыв,
@@ -1474,8 +1534,7 @@ export class Coordinator {
     const verdicts: Verdict[] = [codex.verdict, ...(gemini.kind === "verdict" ? [gemini.verdict] : [])];
     const combined = strictest(verdicts);
     this.#verdict = combined;
-    const geminiWords = gemini.kind === "verdict" ? VERDICT_WORDS[gemini.verdict] : `не проверял (${gemini.reason})`;
-    this.#report(`Итог проверки ${pair.round}: Codex — ${VERDICT_WORDS[codex.verdict]}, Gemini — ${geminiWords}.`);
+    this.#report(`Итог проверки ${pair.round}: Codex — ${outcomeWords(codex)}, Gemini — ${outcomeWords(gemini)}.`);
     if (gemini.kind === "unchecked") {
       // Сроки Gemini объясняются одной своей строкой (R13); прочие причины
       // (новая сессия, сбой, отказ отправки, пустой ответ) — общей.
@@ -1483,6 +1542,7 @@ export class Coordinator {
     }
     if (combined === "accepted") {
       this.#stage = "accepted";
+      this.#acceptance = { round: pair.round, codex, gemini };
       // Gemini не проверял — принятие на самом деле вынес один Codex, и
       // ленте не следует говорить «рецензенты» во множественном (T7-wording).
       const who = gemini.kind === "unchecked" ? "Codex принял работу (Gemini не проверял)." : "Рецензенты приняли работу.";
@@ -1538,7 +1598,7 @@ export class Coordinator {
   }
 
   /** Комната без Gemini: прежний путь одного Codex. */
-  async #afterReview(codex: VerdictOutcome, cycle: number): Promise<void> {
+  async #afterReview(codex: VerdictOutcome, cycle: number, round: number): Promise<void> {
     const { verdict, text } = codex;
     this.#verdict = verdict;
     // Замечания относятся к версии, которую рецензент проверял. Текущая
@@ -1549,6 +1609,7 @@ export class Coordinator {
     if (!this.#isCurrent(cycle)) return;
     if (verdict === "accepted") {
       this.#stage = "accepted";
+      this.#acceptance = { round, codex };
       this.#report(`Рецензент принял работу. Цикл завершён.${movedNote(reviewed, snapshot)}`);
       return;
     }
