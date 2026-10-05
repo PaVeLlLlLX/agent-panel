@@ -1988,6 +1988,10 @@ test("опции Codex комнаты: закрытая комната ветк�
     assert.deepEqual(clean.forbidden, ["data/", ".env"]);
     const broken = codexRoomOptions(roomSetup(journal, { forbidden: "data/" }));
     assert.deepEqual(broken.forbidden, [".env"], "испорченная настройка — запрет по умолчанию, не пустой");
+    // Явный пустой список — выбор владельца, а не порча: запрета нет
+    // (docs/устройство.md, «Запрещённые пути»).
+    assert.deepEqual(codexRoomOptions(roomSetup(journal, { forbidden: [] })).forbidden, []);
+    assert.deepEqual(codexRoomOptions(roomSetup(journal, { forbidden: ["", " "] })).forbidden, []);
   } finally {
     journal.close();
   }

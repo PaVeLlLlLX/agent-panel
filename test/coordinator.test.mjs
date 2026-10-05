@@ -3492,6 +3492,9 @@ test("стоп-сигнал: путь ловится в начале коман�
     "Get-Content `data\\x.csv`",
     "type C:\\Users\\me\\Trading\\data\\prices.parquet",
     "ls C:/p/secrets/key",
+    // Поиск строки в коде — тоже совпадение: стоп-сигнал видит текст
+    // команды, а не то, что она открывает (README, «Ограничения»).
+    'rg -n "data/" src',
   ]) {
     const before = warned();
     k.handle(codexCommand(command));
