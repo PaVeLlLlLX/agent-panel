@@ -140,19 +140,18 @@ class Room {
       vscode.extensions.getExtension("openai.chatgpt")?.extensionPath,
     );
     // Своя ветка рецензента комнаты, не чат владельца; запрещённые пути —
-    // настройка папки проекта (у Trading — данные).
-    const codex = new CodexAdapter(
-      codexRoomOptions({
-        launch: codexLaunch,
-        cwd,
-        choice: this.#choices.codex,
-        forbidden: vscode.workspace.getConfiguration("agentPanel", vscode.Uri.file(cwd)).get("reviewerForbidden"),
-        journal: this.#journal,
-        room: this.#name,
-        closed: () => this.#closed,
-      }),
-      accept,
-    );
+    // настройка папки проекта (у Trading — данные). Тот же разобранный
+    // список получает координатор для стоп-сигнала на командах Codex.
+    const codexOptions = codexRoomOptions({
+      launch: codexLaunch,
+      cwd,
+      choice: this.#choices.codex,
+      forbidden: vscode.workspace.getConfiguration("agentPanel", vscode.Uri.file(cwd)).get("reviewerForbidden"),
+      journal: this.#journal,
+      room: this.#name,
+      closed: () => this.#closed,
+    });
+    const codex = new CodexAdapter(codexOptions, accept);
 
     // Gemini — второй рецензент: agy из папки установщика или PATH. Нет — проверяет один Codex.
     this.#agySettings = agySettingsPath(homedir());
@@ -199,6 +198,7 @@ class Room {
       maxAutoRounds: settings.get<number>("maxAutoRounds", 5),
       evidenceBudget: settings.get<number>("reviewEvidenceChars", 240_000),
       taskTokenLimit: settings.get<number>("taskTokenLimit", 0),
+      ...(codexOptions.forbidden ? { forbidden: codexOptions.forbidden } : {}),
       ...(memoryCommand
         ? { memory: (text: string, catalog: string) => runMemorySearch(memoryCommand, catalog, text) }
         : {}),

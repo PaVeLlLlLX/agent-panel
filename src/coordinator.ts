@@ -179,6 +179,13 @@ export interface CoordinatorOptions {
   readonly geminiSafetyMs?: number;
   /** Через сколько повторить ход проверки Gemini после сетевого сбоя, мс (GEMINI_RETRY_MS). */
   readonly geminiRetryMs?: number;
+  /**
+   * Запрещённые фрагменты путей (agentPanel.reviewerForbidden папки проекта,
+   * тот же список, что в роли Codex). Команда Codex с таким фрагментом в его
+   * ходе проверки прерывает этот ход — стоп-сигнал. Нет или пусто — команды
+   * не проверяются.
+   */
+  readonly forbidden?: readonly string[];
 }
 
 type Role = "work" | "review" | "direct";
@@ -475,6 +482,30 @@ function humanHoldReason(codex: ReviewOutcome, gemini: ReviewOutcome): string {
   return `${asking} просит вашего решения; ${stance}. Обмен остановлен. Отзывы можно отправить Claude.`;
 }
 
+/**
+ * Строка команды из элемента commandExecution — raw события адаптера Codex
+ * (codex.ts, #item). Схема 0.159 даёт строку; список (argv, как у прежних
+ * событий начала команды) склеивается пробелами.
+ */
+function commandOf(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const command = (raw as Record<string, unknown>)["command"];
+  if (typeof command === "string") return command;
+  if (Array.isArray(command)) return command.map(String).join(" ");
+  return undefined;
+}
+
+/**
+ * Первый запрещённый фрагмент, найденный в команде: без учёта регистра,
+ * «\» и «/» — одно и то же (у Trading запрещены и data/, и data\). Пустой
+ * фрагмент не считается: он совпал бы с любой командой.
+ */
+function forbiddenFragment(command: string, forbidden: readonly string[]): string | undefined {
+  const plain = (s: string): string => s.replace(/\\/g, "/").toLowerCase();
+  const text = plain(command);
+  return forbidden.find((f) => f.trim() !== "" && text.includes(plain(f.trim())));
+}
+
 /** Местное время ЧЧ:ММ — для строк ленты о сроках Gemini. */
 function clockTime(at: number): string {
   const d = new Date(at);
@@ -615,6 +646,11 @@ export class Coordinator {
       const buffer = this.#buffers.get(worker) ?? [];
       buffer.push(marked);
       this.#buffers.set(worker, buffer);
+    }
+
+    // Стоп-сигнал: команда Codex с запрещённым путём (данные, секреты проекта).
+    if (worker === "codex" && marked.kind === "tool_call" && marked.tool === "commandExecution") {
+      this.#guardCommand(marked);
     }
 
     if (worker === "claude" && marked.kind === "turn_completed") void this.refreshClaudeUsage();
@@ -1572,6 +1608,52 @@ export class Coordinator {
     this.#geminiCut = how === "interrupt";
     const stopping = how === "interrupt" ? gemini.interrupt() : (gemini.forgetSession?.() ?? Promise.resolve());
     return stopping.catch(() => undefined);
+  }
+
+  /**
+   * Стоп-сигнал (спецификация 05.10, ступень 2). Команда Codex с фрагментом
+   * из запрещённого списка в его ходе проверки текущей пары прерывает этот
+   * ход; сторона Codex сорвалась — как при сбое его хода, цикл остановлен,
+   * дальше решает человек. Прямой вопрос — не проверка: ход не прерывается,
+   * только строка в ленте.
+   *
+   * Всё до прерывания — синхронно, как в #cutGemini: адаптер глотает поздний
+   * конец прерванного хода (codex.ts, #interrupted), turn_completed не
+   * придёт, и цель, оставшись, досталась бы следующему ходу Codex, а цикл
+   * висел бы в «проверяют».
+   */
+  #guardCommand(event: PanelEvent): void {
+    const command = commandOf(event.raw);
+    const fragment = command === undefined ? undefined : forbiddenFragment(command, this.options.forbidden ?? []);
+    if (fragment === undefined) return;
+    const head = this.#targets.get("codex")?.[0];
+    const pair = this.#pair;
+    const reviewing =
+      head?.role === "review" &&
+      pair !== undefined &&
+      pair.cycle === head.cycle &&
+      pair.round === head.round &&
+      pair.waiting.has("codex") &&
+      this.#isCurrent(pair.cycle);
+    if (!reviewing) {
+      this.#report(`Codex обратился к запрещённому пути «${fragment}» вне проверки — ход не прерван.`);
+      return;
+    }
+    this.#targets.delete("codex");
+    this.#buffers.delete("codex");
+    this.#stage = "stopped";
+    this.#clearPair();
+    this.#report(`Codex обратился к запрещённому пути «${fragment}» — проверка остановлена, решите, как продолжить.`);
+    this.#refresh();
+    void this.codex
+      .interrupt()
+      .catch(() => undefined)
+      .then(async () => {
+        // Конца прерванного хода не будет: ждавшее Codex уходит сейчас,
+        // пересылки остановленного цикла очередь отбросит сама.
+        await this.#flushQueue();
+        this.#refresh();
+      });
   }
 
   /**

@@ -21,8 +21,10 @@ import { fileURLToPath } from "node:url";
 
 import { Coordinator, GEMINI_SILENCE_MS } from "../out/coordinator.js";
 import { GeminiAdapter } from "../out/adapters/gemini.js";
+import { CodexAdapter } from "../out/adapters/codex.js";
 
 const FAKE_AGY = fileURLToPath(new URL("../fixtures/fake-agy.mjs", import.meta.url));
+const FAKE_CODEX = fileURLToPath(new URL("../fixtures/fake-codex.mjs", import.meta.url));
 import { Journal } from "../out/journal.js";
 import { forDisplay, questionAnswers } from "../out/adapters/types.js";
 import { takeSnapshot } from "../out/snapshot.js";
@@ -3294,5 +3296,125 @@ test("состояние пары: срок ожидания Gemini есть, т
   geminiTurn(k, gemini, "Всё в порядке.\nВЕРДИКТ: ПРИНЯТО");
   await waitFor(() => k.state.stage === "working", "сведение");
   assert.ok(!("waitUntil" in k.state.pair), "Gemini ответил — срока нет");
+  journal.close();
+});
+
+// ---------------------------------------------------------------------------
+// Стоп-сигнал на командах Codex (спецификация 05.10, ступень 2): команда
+// рецензента с запрещённым фрагментом пути прерывает его ход проверки.
+// ---------------------------------------------------------------------------
+
+/** Начало команды Codex, как его выдаёт адаптер: raw — сам элемент commandExecution. */
+function codexCommand(command, id = "cmd-1") {
+  return event("codex", "tool_call", {
+    tool: "commandExecution",
+    callId: id,
+    text: JSON.stringify({ type: "commandExecution", id, command }),
+    raw: { type: "commandExecution", id, command, status: "inProgress" },
+  });
+}
+
+const STOP_LINE = /^Codex обратился к запрещённому пути «data\/» — проверка остановлена, решите, как продолжить\.$/;
+
+test("стоп-сигнал: команда Codex с запрещённым путём — ход прерван, проверка остановлена, поздний конец хода ничего не меняет", async () => {
+  const { k, claude, codex, events, journal } = await pairRoom({ forbidden: ["data/", ".env"] });
+  // Обычная команда чтения — не повод.
+  k.handle(codexCommand("rg -n порог src", "cmd-0"));
+  assert.equal(codex.interrupted, 0);
+  assert.equal(k.state.stage, "reviewing");
+  // «\» и «/» — одно и то же: data\x.parquet — это data/.
+  k.handle(codexCommand("python -c \"open('data\\\\x.parquet')\""));
+  assert.equal(codex.interrupted, 1, "ход Codex прерван сразу");
+  assert.equal(k.state.stage, "stopped");
+  assert.equal(k.state.pair, undefined, "пара снята");
+  assert.equal(said(events, STOP_LINE).length, 1);
+  // Заглушка, в отличие от адаптера (codex.ts, #interrupted), поздний конец
+  // прерванного хода пропускает: он не должен ни свести, ни ожить.
+  const lines = systemEvents(events).length;
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  await sleep(30);
+  assert.equal(k.state.stage, "stopped");
+  assert.equal(systemEvents(events).length, lines, "ни «Поздний ответ», ни итога проверки");
+  assert.equal(claude.received.length, 1);
+  journal.close();
+});
+
+test("стоп-сигнал: прерванный ход Codex не оставляет цели — его ответ в следующей задаче засчитан ей", async () => {
+  // Адаптер глотает поздний конец прерванного хода: если цель проверки
+  // осталась бы, следующий ход Codex взял бы её и стал «поздним» (Review Focus 1).
+  const { k, codex, gemini, events, journal } = await pairRoom({ forbidden: ["data/"] });
+  k.handle(event("codex", "message", { text: "Смотрю данные." }));
+  k.handle(codexCommand("Get-Content DATA\\prices.csv"));
+  assert.equal(k.state.stage, "stopped", "регистр не спасает");
+  await k.fromHuman("подобрать порог заново", "review");
+  turn(k, "claude", "порог 0.5, F1 на валидации 0.72");
+  await waitFor(() => codex.received.length === 2 && gemini.received.length === 2, "проверка новой задачи у обоих");
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  geminiTurn(k, gemini, "Всё в порядке.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => k.state.stage === "accepted", "принятие новой задачи");
+  assert.equal(said(events, /Поздний ответ/).length, 0);
+  assert.equal(said(events, /^Итог проверки 1: Codex — принято, Gemini — принято\.$/).length, 1);
+  journal.close();
+});
+
+test("стоп-сигнал: прямой вопрос Codex не прерывается — только предупреждение в ленте", async () => {
+  const { k, codex, events, journal } = room(3, { forbidden: ["data/", ".env"] });
+  await k.fromHuman("что лежит в настройках?", "codex");
+  assert.equal(codex.received.length, 1);
+  k.handle(codexCommand("Get-Content .ENV"));
+  assert.equal(codex.interrupted, 0);
+  assert.equal(said(events, /^Codex обратился к запрещённому пути «\.env» вне проверки — ход не прерван\.$/).length, 1);
+  turn(k, "codex", "Там ключи.");
+  await sleep(30);
+  assert.equal(said(events, /Поздний ответ|проверка остановлена/).length, 0);
+  assert.notEqual(k.state.stage, "stopped");
+  journal.close();
+});
+
+test("стоп-сигнал на адаптере Codex (фальшивка): ход прерван, поздний конец проглочен, цикл не висит в «проверяют», следующая проверка засчитана", async () => {
+  // Review Focus 1: настоящий адаптер конец прерванного хода не выдаёт —
+  // цель, буфер и пару координатор снимает сам.
+  const catalog = mkdtempSync(join(tmpdir(), "panel-"));
+  const journal = new Journal(join(catalog, "j.sqlite"));
+  journal.ensureRoom("r", catalog);
+  const claude = new Stub("claude");
+  const events = [];
+  let k;
+  const codex = new CodexAdapter({ command: "node", commandArgs: [FAKE_CODEX], cwd: catalog }, (e) => k.handle(e));
+  k = new Coordinator(claude, codex, journal, {
+    room: "r",
+    cwd: catalog,
+    maxAutoRounds: 3,
+    onEvent: (e) => events.push(e),
+    forbidden: ["data/", "data\\", ".env"],
+  });
+  try {
+    await k.fromHuman("подобрать порог классификатора", "review");
+    turn(k, "claude", "порог 0.4, F1 на валидации 0.71 КОМАНДА-ДАННЫЕ");
+    await waitFor(() => k.state.stage === "stopped", "стоп-сигнал", 10_000);
+    assert.equal(said(events, STOP_LINE).length, 1);
+    await waitFor(() => events.some((e) => e.agent === "codex" && /поздний конец прерванного/.test(e.text ?? "")), "поздний конец", 10_000);
+    await sleep(50);
+    assert.equal(codex.busy, false);
+    assert.equal(events.some((e) => e.agent === "codex" && e.kind === "turn_completed"), false);
+    assert.equal(k.state.stage, "stopped", "остановлено, а не «проверяют»");
+    assert.equal(said(events, /Поздний ответ/).length, 0);
+    // Следующая задача: обычный ход Codex — конец новой проверки, а не прежней.
+    await k.fromHuman("подобрать порог заново", "review");
+    turn(k, "claude", "порог 0.5, F1 на валидации 0.72");
+    await waitFor(() => k.state.pair?.sides.codex?.state === "done", "отзыв Codex засчитан новой проверке", 10_000);
+    assert.equal(said(events, /Поздний ответ/).length, 0);
+    assert.equal(said(events, /запрещённому пути/).length, 1);
+  } finally {
+    await codex.stop();
+    journal.close();
+  }
+});
+
+test("стоп-сигнал: без запрещённого списка команды Codex не проверяются", async () => {
+  const { k, codex, journal } = await pairRoom();
+  k.handle(codexCommand("python -c \"open('data/x.parquet')\""));
+  assert.equal(codex.interrupted, 0);
+  assert.equal(k.state.stage, "reviewing");
   journal.close();
 });

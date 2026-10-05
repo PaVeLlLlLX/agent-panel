@@ -1722,6 +1722,30 @@ test("Codex: начало и конец одного инструмента св
   }
 });
 
+test("Codex: начало команды несёт в raw её строку — по ней координатор подаёт стоп-сигнал; ход ждёт прерывания", async () => {
+  // Стоп-сигнал (спецификация 05.10) смотрит событие начала команды: raw —
+  // элемент commandExecution, команда — raw.command.
+  const s = collector();
+  const a = codex(s);
+  try {
+    await a.send({ text: "КОМАНДА-ДАННЫЕ", from: "claude" });
+    await waitFor(() => s.events.some((e) => e.kind === "tool_call"), "начало команды");
+    const call = s.events.find((e) => e.kind === "tool_call");
+    assert.equal(call.tool, "commandExecution");
+    assert.equal(call.visibility, "turn");
+    assert.equal(call.raw.type, "commandExecution");
+    assert.equal(call.raw.command, "python -c \"open('data/x.parquet')\"");
+    await delay(100);
+    assert.equal(a.busy, true, "ход идёт, пока его не прервут");
+    assert.equal(s.events.some((e) => e.kind === "tool_result" || e.kind === "turn_completed"), false);
+    await a.interrupt();
+    await waitFor(() => s.events.some((e) => /поздний конец прерванного/.test(e.text ?? "")), "поздний конец");
+    assert.equal(s.events.some((e) => e.kind === "turn_completed"), false, "конец прерванного хода не выдаётся");
+  } finally {
+    await a.stop();
+  }
+});
+
 test("Codex: ветка из thread.id, процесс поднимается сам, ответ и поток доходят", async () => {
   const s = collector();
   const a = codex(s);

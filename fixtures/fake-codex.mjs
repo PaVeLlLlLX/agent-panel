@@ -17,7 +17,9 @@
  * Управляется словами в тексте реплики:
  *   ОШИБКА-ХОДА — ход завершается со статусом failed;
  *   ЗАПИСАТЬ    — сервер запрашивает у клиента одобрение на изменение файла
- *                 и пишет в stderr, что клиент ответил.
+ *                 и пишет в stderr, что клиент ответил;
+ *   КОМАНДА-ДАННЫЕ — начало команды `python -c "open('data/x.parquet')"`,
+ *                 ход висит до turn/interrupt.
  * РАЗРЫВ в id возобновляемой ветки — ответ thread/resume с U+2028/U+2029
  * внутри строки JSON.
  *
@@ -121,10 +123,19 @@ lines.on("line", (line) => {
         return;
       }
       // ДОЛГИЙ-ХОД: ход идёт, пока его не прервут; ПОЗЖЕ — кончается через 400 мс.
-      if (turnText.includes("ДОЛГИЙ-ХОД") || turnText.includes("ПОЗЖЕ")) {
+      // КОМАНДА-ДАННЫЕ: начало команды с путём к данным, затем ход висит до
+      // прерывания — для стоп-сигнала панели (обычный КОМАНДА ниже не срабатывает).
+      if (turnText.includes("ДОЛГИЙ-ХОД") || turnText.includes("ПОЗЖЕ") || turnText.includes("КОМАНДА-ДАННЫЕ")) {
         reply({ turn: { id: turnId, status: "inProgress" } });
         notify("turn/started", { threadId: THREAD, turn: { id: turnId, status: "inProgress" } });
-        if (turnText.includes("ДОЛГИЙ-ХОД")) {
+        if (turnText.includes("КОМАНДА-ДАННЫЕ")) {
+          notify("item/started", {
+            item: { type: "commandExecution", id: "cmd-data", command: "python -c \"open('data/x.parquet')\"", status: "inProgress" },
+            threadId: THREAD,
+            turnId,
+          });
+        }
+        if (turnText.includes("ДОЛГИЙ-ХОД") || turnText.includes("КОМАНДА-ДАННЫЕ")) {
           longRunning.add(turnId);
           return;
         }
