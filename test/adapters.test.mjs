@@ -1143,6 +1143,156 @@ test("Claude: смена режима разрешений — перезапу�
   }
 });
 
+// --- Вопрос человеку: AskUserQuestion ----------------------------------------------
+// Журнал панели 04–05.10 (seq 9408–9412, 66066–66070): в режиме «без вопросов»
+// панель сама отвечала allow с прежним вводом, и Claude получал «The user did
+// not answer the questions» — вопрос до человека не доходил.
+
+const QUESTIONS = [
+  { question: "Какой вариант?", header: "Выбор", options: [{ label: "а" }, { label: "б" }], multiSelect: false },
+];
+
+async function askHuman(s, a) {
+  await a.send({ text: "ВОПРОС-ЧЕЛОВЕКУ", from: "human" });
+  await waitFor(() => find(s.events, "approval_requested"), "карточка вопроса");
+  return find(s.events, "approval_requested");
+}
+
+test("Claude: вопрос человеку в режиме «без вопросов» не одобряется панелью — ждёт ответа, ответ уходит answers", async () => {
+  const s = collector();
+  const a = claude(s, { permissionMode: "bypassPermissions" });
+  try {
+    await a.send({ text: "ВОПРОС-ЧЕЛОВЕКУ", from: "human" });
+    await waitFor(() => s.events.some((e) => e.kind === "approval_requested" && e.tool === "AskUserQuestion"), "карточка вопроса");
+    const asked = s.events.find((e) => e.kind === "approval_requested");
+    assert.equal(asked.questions[0].question, "Какой вариант?");
+    assert.ok(!s.events.some((e) => e.kind === "approval_decided"), "панель не отвечает сама");
+    assert.equal(await a.answerQuestion(asked.callId, { "Какой вариант?": "б" }), true);
+    await waitFor(() => s.events.some((e) => e.kind === "turn_completed"), "конец хода");
+    assert.ok(s.events.some((e) => e.kind === "message" && /"Какой вариант\?":"б"/.test(e.text)));
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Claude: вопрос — событие с вопросами и вариантами; ответ уходит вместе с исходными вопросами", async () => {
+  const s = collector();
+  const a = claude(s);
+  try {
+    const asked = await askHuman(s, a);
+    assert.equal(asked.tool, "AskUserQuestion");
+    assert.equal(asked.callId, "ask-1");
+    assert.equal(asked.toolCallId, "toolu_q");
+    assert.deepEqual(asked.questions, QUESTIONS);
+    assert.match(asked.text, /Какой вариант\?/);
+    assert.deepEqual(asked.sessionRules, [], "у вопроса нет кнопки «В этой сессии»");
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(!find(s.events, "turn_completed"), "ход ждёт ответа человека");
+
+    assert.equal(await a.answerApproval("ask-1", "allow"), false, "«разрешить» без ответов — то самое «did not answer»");
+    assert.equal(await a.answerQuestion("нет-такого", { "Какой вариант?": "а" }), false);
+    assert.equal(await a.answerQuestion("ask-1", { "Какой вариант?": "б" }), true);
+    assert.equal(await a.answerQuestion("ask-1", { "Какой вариант?": "а" }), false, "повторный ответ не отправляется");
+    await waitFor(() => find(s.events, "turn_completed"), "конец хода");
+    const replies = panelReplies(s.events);
+    assert.equal(replies.length, 1);
+    assert.deepEqual(replies[0].response, {
+      behavior: "allow",
+      updatedInput: { questions: QUESTIONS, answers: { "Какой вариант?": "б" } },
+    });
+    const decision = find(s.events, "approval_decided");
+    assert.equal(decision.callId, "ask-1");
+    assert.equal(decision.toolCallId, "toolu_q");
+    assert.equal(decision.text, "ответ человека: Какой вариант? — б");
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Claude: ответ на обычный запрос разрешения через answerQuestion не уходит", async () => {
+  const s = collector();
+  const a = claude(s);
+  try {
+    await requestPermission(s, a);
+    assert.equal(await a.answerQuestion("perm-1", { x: "y" }), false);
+    assert.deepEqual(panelReplies(s.events), []);
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Claude: «не отвечать» — отказ с причиной; это решение человека, а не отказ без спроса", async () => {
+  const s = collector();
+  const a = claude(s);
+  try {
+    await askHuman(s, a);
+    assert.equal(await a.answerApproval("ask-1", "deny"), true);
+    await waitFor(() => find(s.events, "turn_completed"), "конец хода");
+    const [reply] = panelReplies(s.events);
+    assert.equal(reply.response.behavior, "deny");
+    assert.match(reply.response.message, /не стал отвечать/);
+    assert.match(find(s.events, "approval_decided").text, /не стал отвечать/);
+    assert.equal(find(s.events, "turn_completed").denials, undefined);
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Claude: «без вопросов» посреди хода не закрывает открытый вопрос", async () => {
+  const s = collector();
+  const a = claude(s);
+  try {
+    await askHuman(s, a);
+    a.setPermissionMode("bypassPermissions");
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(find(s.events, "approval_decided"), undefined, "вопрос задан человеку, а не режиму");
+    assert.deepEqual(panelReplies(s.events), []);
+    assert.equal(await a.answerQuestion("ask-1", { "Какой вариант?": "а" }), true);
+    await waitFor(() => find(s.events, "turn_completed"), "конец хода");
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Claude: запрос, требующий человека, режим «без вопросов» не разрешает — обычная карточка", async () => {
+  // Ответ answers понятен только AskUserQuestion; прочий такой запрос
+  // решает человек кнопками разрешения.
+  const s = collector();
+  const a = claude(s, { permissionMode: "bypassPermissions" });
+  try {
+    await a.send({ text: "НУЖНО-РАЗРЕШЕНИЕ ТОЛЬКО-ЧЕЛОВЕКОМ", from: "human" });
+    await waitFor(() => find(s.events, "approval_requested"), "запрос разрешения");
+    const asked = find(s.events, "approval_requested");
+    assert.equal(asked.tool, "Bash");
+    assert.equal(asked.questions, undefined);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(find(s.events, "approval_decided"), undefined, "панель не отвечает за человека");
+    a.setPermissionMode("bypassPermissions");
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(find(s.events, "approval_decided"), undefined);
+    assert.equal(await a.answerApproval("perm-1", "allow"), true);
+    await waitFor(() => find(s.events, "turn_completed"), "конец хода");
+    assert.equal(panelReplies(s.events)[0].response.behavior, "allow");
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Claude: остановка закрывает открытый вопрос, поздний ответ не отправляется", async () => {
+  const s = collector();
+  const a = claude(s);
+  try {
+    await askHuman(s, a);
+    await a.stop();
+    const decision = find(s.events, "approval_decided");
+    assert.ok(decision, "карточка вопроса осталась бы открытой навсегда");
+    assert.equal(decision.callId, "ask-1");
+    assert.equal(await a.answerQuestion("ask-1", { "Какой вариант?": "а" }), false);
+  } finally {
+    await a.stop();
+  }
+});
+
 test("Claude: плановая остановка не показывается как ошибка", async () => {
   const s = collector();
   const a = claude(s);

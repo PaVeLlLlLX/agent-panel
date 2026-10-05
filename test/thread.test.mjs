@@ -146,6 +146,14 @@ test("эстафета: ждёт человека при удержании и �
   assert.equal(r.flow, "none", "пока человек не ответил, работа стоит");
 });
 
+test("эстафета: открытый вопрос Claude — «Ждёт ответа на вопрос», а не разрешения", () => {
+  const r = relayView(state({ stage: "working", questions: 1 }));
+  assert.equal(r.active, "human");
+  assert.equal(r.label, "Ждёт ответа на вопрос");
+  assert.equal(r.flow, "none", "пока человек не ответил, работа стоит");
+  assert.equal(relayView(state({ stage: "working", approvals: 1, questions: 1 })).label, "Ждёт разрешения");
+});
+
 test("эстафета: прямой вопрос вне цикла тоже виден", () => {
   assert.equal(relayView(state({ claudeBusy: true })).active, "claude");
   assert.equal(relayView(state({ codexBusy: true })).label, "Codex отвечает");

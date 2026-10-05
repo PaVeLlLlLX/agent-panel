@@ -360,6 +360,113 @@ test("карточка разрешения: кнопки, ответ уходи
   assert.deepEqual(r.noQuestions, [{ type: "setPermissionMode", mode: "bypassPermissions" }]);
 });
 
+test("карточка вопроса Claude: варианты, свой ответ, «Ответить» шлёт answers, ширина 360 без переполнения", { skip: NO_BROWSER }, () => {
+  const r = open(
+    js`
+    const longText = "длинное пояснение варианта ".repeat(12) + "x".repeat(300);
+    const ask = (callId, extra = {}) => ({
+      id: callId, agent: "claude", kind: "approval_requested", visibility: "turn", at: Date.now(),
+      tool: "AskUserQuestion", callId, toolCallId: "toolu_q", text: "Выбор: Какой вариант? (а / б)", sessionRules: [],
+      questions: [
+        { question: "Какой вариант?", header: "Выбор", options: [{ label: "а", description: longText }, { label: "б" }], multiSelect: false },
+        { question: "Что проверить? " + longText, options: [{ label: "тесты" }, { label: "сборку" }, { label: longText }], multiSelect: true },
+      ],
+      ...extra,
+    });
+    const answerButton = (card) => [...card.querySelectorAll("button")].find((k) => k.textContent === "Ответить");
+    const sentAnswers = () => window.sentMessages.filter((m) => m.type === "answerQuestion");
+
+    postToPage({ type: "event", event: ask("ask-1") });
+    postToPage({ type: "state", state: { stage: "working", round: 0, maxRounds: 3, approvals: 0, questions: 1, queued: 0, auto: true } });
+    const card = document.querySelector(".разрешение.вопрос");
+    result.stage = getById("этап").textContent;
+    result.header = card.querySelector(".заголовок").textContent;
+    result.buttons = [...card.querySelectorAll(".кнопки button")].map((k) => k.textContent);
+    result.legends = [...card.querySelectorAll("legend")].map((k) => k.textContent);
+    result.radios = [...card.querySelectorAll("input[type=radio]")].map((k) => k.value);
+    result.boxes = card.querySelectorAll("input[type=checkbox]").length;
+    result.ownFields = card.querySelectorAll(".свой-ответ").length;
+    result.emptyDisabled = answerButton(card).disabled;
+
+    result.client = document.documentElement.clientWidth;
+    result.scroll = document.documentElement.scrollWidth;
+    const overflowed = [...card.querySelectorAll("*")]
+      .filter((el) => el.getClientRects().length && el.getBoundingClientRect().right > result.client + 0.5);
+    result.overflowed = overflowed.slice(0, 5).map((el) => el.tagName.toLowerCase() + "." + String(el.className).split(" ").join("."));
+
+    card.querySelectorAll("input[type=radio]")[1].click();
+    result.halfDisabled = answerButton(card).disabled;
+    const boxes = card.querySelectorAll("input[type=checkbox]");
+    boxes[0].click();
+    boxes[1].click();
+    result.fullDisabled = answerButton(card).disabled;
+    answerButton(card).click();
+    result.sent = sentAnswers();
+    result.locked = [...card.querySelectorAll("button, input")].every((k) => k.disabled);
+
+    postToPage({ type: "event", event: {
+      id: "d1", agent: "claude", kind: "approval_decided", visibility: "turn", at: Date.now(),
+      callId: "ask-1", toolCallId: "toolu_q", text: "ответ человека: Какой вариант? — б",
+    } });
+    result.buttonsAfter = card.querySelectorAll("button").length;
+    result.closedClass = card.className;
+    result.labelText = card.querySelector(".итог").textContent;
+
+    // Свой текст важнее выбранного варианта.
+    postToPage({ type: "event", event: ask("ask-2", { questions: [{ question: "Какой вариант?", options: [{ label: "а" }, { label: "б" }] }] }) });
+    let cards = document.querySelectorAll(".разрешение.вопрос");
+    const second = cards[cards.length - 1];
+    second.querySelector("input[type=radio]").click();
+    const own = second.querySelector(".свой-ответ");
+    own.value = "  свой вариант  ";
+    own.dispatchEvent(new Event("input", { bubbles: true }));
+    answerButton(second).click();
+    result.sentOwn = sentAnswers().slice(1);
+
+    // «Не отвечать» — отказ, а не «разрешить».
+    postToPage({ type: "event", event: ask("ask-3") });
+    cards = document.querySelectorAll(".разрешение.вопрос");
+    [...cards[cards.length - 1].querySelectorAll("button")].find((k) => k.textContent === "Не отвечать").click();
+    result.declined = window.sentMessages.filter((m) => m.type === "approval");
+
+    // Из журнала вопросы не восстанавливаются: текст карточки, без кнопок и полей.
+    postToPage({ type: "event", history: true, event: ask("old-1", { questions: undefined }) });
+    cards = document.querySelectorAll(".разрешение.вопрос");
+    const old = cards[cards.length - 1];
+    result.journalControls = old.querySelectorAll("button, input").length;
+    result.journalText = old.textContent;
+  `,
+    { withUi: true, width: 360 },
+  );
+  assert.equal(r.stage, "Ждёт ответа на вопрос");
+  assert.match(r.header, /Claude спрашивает/);
+  assert.deepEqual(r.buttons, ["Ответить", "Не отвечать"]);
+  assert.equal(r.legends.length, 2);
+  assert.match(r.legends[0], /Выбор/);
+  assert.match(r.legends[0], /Какой вариант\?/);
+  assert.deepEqual(r.radios, ["а", "б"]);
+  assert.equal(r.boxes, 3, "несколько вариантов — флажками");
+  assert.equal(r.ownFields, 2, "у каждого вопроса поле «Свой ответ»");
+  assert.ok(r.client > 0 && r.client <= 360, `ширина окна не измерена: ${r.client}`);
+  assert.ok(r.scroll <= r.client, `документ шире окна: ${r.scroll} > ${r.client}; за краем: ${r.overflowed.join(", ")}`);
+  assert.deepEqual(r.overflowed, []);
+  assert.equal(r.emptyDisabled, true, "без ответа отправлять нечего");
+  assert.equal(r.halfDisabled, true, "ответ нужен на каждый вопрос");
+  assert.equal(r.fullDisabled, false);
+  const longQuestion = r.sent[0]?.answers && Object.keys(r.sent[0].answers)[1];
+  assert.deepEqual(r.sent, [{ type: "answerQuestion", id: "ask-1", answers: { "Какой вариант?": "б", [longQuestion]: "тесты, сборку" } }]);
+  assert.match(longQuestion, /^Что проверить\? /);
+  assert.equal(r.locked, true, "повторное нажатие отправило бы второй ответ");
+  assert.equal(r.buttonsAfter, 0);
+  assert.match(r.closedClass, /решено/);
+  assert.match(r.labelText, /ответ человека: Какой вариант\? — б/);
+  assert.deepEqual(r.sentOwn, [{ type: "answerQuestion", id: "ask-2", answers: { "Какой вариант?": "свой вариант" } }]);
+  assert.deepEqual(r.declined, [{ type: "approval", id: "ask-3", choice: "deny" }]);
+  assert.equal(r.journalControls, 0, "на вопрос прошлого запуска ответить нельзя");
+  assert.match(r.journalText, /Какой вариант\?/);
+  assert.match(r.journalText, /прошлого запуска/);
+});
+
 test("вердикт рецензента: значок и слова, исходная строка видна, текст выше — разметкой", { skip: NO_BROWSER }, () => {
   const r = open(
     js`

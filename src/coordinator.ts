@@ -105,6 +105,11 @@ export interface RoomState {
   /** Запросы разрешений, ждущие ответа человека. Пока они есть, ход агента стоит. */
   readonly approvals: number;
   /**
+   * Вопросы агента человеку (AskUserQuestion), ждущие ответа. Отдельно от
+   * разрешений: этап «Эстафеты» — «Ждёт ответа на вопрос», а не «разрешения».
+   */
+  readonly questions: number;
+  /**
    * След текущего цикла для «Дорожки»: кто получал работу и чем кончилась
    * каждая проверка (✓ принято, ! замечания, ? решение человека, – без вердикта).
    */
@@ -430,8 +435,10 @@ export class Coordinator {
   readonly #buffers = new Map<AgentId, PanelEvent[]>();
   readonly #targets = new Map<AgentId, Target[]>();
   readonly #queue: Outgoing[] = [];
-  /** Открытые запросы разрешений: id запроса → агент, который спросил. */
+  /** Открытые запросы разрешений и вопросы: id запроса → агент, который спросил. */
   readonly #requests = new Map<string, AgentId>();
+  /** Какие из открытых запросов — вопросы человеку: на них отвечают answerQuestion. */
+  readonly #questions = new Set<string>();
   /** Заметки памяти, приложенные к задаче текущего цикла: их видит и рецензент. */
   #taskMemory: string | undefined;
   #trail: Step[] = [];
@@ -472,7 +479,8 @@ export class Coordinator {
         ? { to: this.#held.to, reason: this.#held.reason, action: this.#held.action }
         : undefined,
       queued: this.#queue.length,
-      approvals: this.#requests.size,
+      approvals: this.#requests.size - this.#questions.size,
+      questions: this.#questions.size,
       trail: this.#trail.map((sh) => ({ ...sh })),
       auto: this.#auto,
       claudeBusy: this.claude.busy,
@@ -520,9 +528,11 @@ export class Coordinator {
 
     if (marked.kind === "approval_requested" && marked.callId) {
       this.#requests.set(marked.callId, worker);
+      if (marked.questions) this.#questions.add(marked.callId);
+      else this.#questions.delete(marked.callId);
       this.#refresh();
     } else if (marked.kind === "approval_decided" && marked.callId) {
-      this.#requests.delete(marked.callId);
+      this.#closeRequest(marked.callId);
       this.#refresh();
     } else if (marked.kind === "turn_completed" && marked.unsolicited) {
       if (marked.limit) this.#limits[worker] = marked.limit;
@@ -531,7 +541,7 @@ export class Coordinator {
       if (marked.limit) this.#limits[worker] = marked.limit;
       void this.#turnFinished(worker, marked);
     } else if (marked.kind === "error" && marked.failed) {
-      for (const [id, who] of this.#requests) if (who === worker) this.#requests.delete(id);
+      for (const [id, who] of this.#requests) if (who === worker) this.#closeRequest(id);
       void this.#agentCrashed(worker, marked.text);
     } else if (marked.kind === "turn_started") {
       if (marked.unsolicited) {
@@ -731,12 +741,32 @@ export class Coordinator {
   async answerApproval(id: string, choice: ApprovalChoice): Promise<void> {
     const agent = this.#requests.get(id);
     if (!agent) return;
+    // На вопрос отвечают ответами; «разрешить» без них Claude прочёл бы как
+    // «человек не ответил» (журнал 04–05.10). Принимается только отказ.
+    if (this.#questions.has(id) && choice !== "deny") return;
     const adapter = this.#adapter(agent);
     if (!adapter) return;
     const accepted = (await adapter.answerApproval?.(id, choice)) ?? false;
     // Не принят — запрос уже закрыт на стороне агента; карточка не должна висеть.
-    if (!accepted) this.#requests.delete(id);
+    if (!accepted) this.#closeRequest(id);
     this.#refresh();
+  }
+
+  /** Ответ человека на вопрос агента — адаптеру того агента, который спросил. */
+  async answerQuestion(id: string, answers: Readonly<Record<string, string>>): Promise<void> {
+    const agent = this.#requests.get(id);
+    if (!agent || !this.#questions.has(id)) return;
+    const adapter = this.#adapter(agent);
+    if (!adapter) return;
+    const accepted = (await adapter.answerQuestion?.(id, answers)) ?? false;
+    // Не принят — вопрос уже закрыт на стороне агента; карточка не должна висеть.
+    if (!accepted) this.#closeRequest(id);
+    this.#refresh();
+  }
+
+  #closeRequest(id: string): void {
+    this.#requests.delete(id);
+    this.#questions.delete(id);
   }
 
   /** Служебное сообщение панели в беседу и журнал — например, о смене модели. */
@@ -871,6 +901,7 @@ export class Coordinator {
     // Адаптеры закрывают свои запросы при остановке; здесь — на случай,
     // если закрытие не дойдёт (адаптер уже без процесса).
     this.#requests.clear();
+    this.#questions.clear();
     this.#stage = stage;
   }
 

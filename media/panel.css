@@ -492,6 +492,35 @@ details.действия[open] > summary .шеврон { transform: rotate(90deg
 .разрешение.решено .аргументы { display: none; }
 .разрешение.отклонено .итог { color: var(--ошибка); }
 
+/* Вопрос Claude человеку (AskUserQuestion): варианты и «Свой ответ». */
+.разрешение .вопросы { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+/* fieldset по умолчанию не уже своего содержимого: длинный вариант раздвинул бы панель. */
+.разрешение .вопрос-блок { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.разрешение .вопрос-текст { max-width: 100%; padding: 0; margin-bottom: 2px; font-weight: 600; color: var(--сильный); overflow-wrap: anywhere; }
+.разрешение .вопрос-подпись {
+  margin-right: 2px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: var(--пилюля);
+  font-size: 0.88em;
+  font-weight: 400;
+  color: var(--тихий);
+}
+.разрешение .вариант { display: flex; align-items: flex-start; gap: 8px; min-width: 0; cursor: pointer; }
+.разрешение .вариант input { flex-shrink: 0; margin: 3px 0 0; accent-color: var(--главная); }
+.разрешение .вариант-текст { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.разрешение .вариант-пояснение { font-size: 0.88em; color: var(--тихий); }
+.разрешение .свой-ответ {
+  width: 100%;
+  min-width: 0;
+  padding: 5px 9px;
+  border: 1px solid var(--линия);
+  border-radius: 8px;
+  background: var(--вдавленная);
+}
+.разрешение .свой-ответ:focus { outline: 1px solid var(--фокус); outline-offset: -1px; }
+.разрешение.решено .вопросы { display: none; }
+
 /* --- низ: удержание, «Модели», поле ввода --------------------------------- */
 
 .низ { display: flex; flex-direction: column; gap: 8px; padding: 0 12px 10px; }

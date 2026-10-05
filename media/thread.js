@@ -274,6 +274,8 @@
     const view = (active, label, flow, sub = verdictSub) => ({ active, label, flow, sub, rounds, pair, lit, marks });
     // Открытый запрос разрешения важнее этапа цикла: без ответа никто не двинется.
     if (s.approvals > 0) return view("human", "Ждёт разрешения", "none");
+    // Вопрос Claude человеку (AskUserQuestion) так же держит ход, но это не разрешение.
+    if (s.questions > 0) return view("human", "Ждёт ответа на вопрос", "none");
     switch (s.stage) {
       case "held":
         return view("human", "Ждёт вашего решения", "none");

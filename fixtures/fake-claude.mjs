@@ -9,6 +9,7 @@
  *
  * Управляется словами в тексте реплики:
  *   ОШИБКА-ХОДА — result с is_error: true;
+ *   ВОПРОС-ЧЕЛОВЕКУ — AskUserQuestion: ход ждёт ответа панели;
  *   УПАСТЬ      — внезапный выход процесса посреди хода;
  *   РАЗРЫВ      — ответ с U+2028/U+2029 внутри строки JSON.
  *
@@ -225,6 +226,8 @@ lines.on("line", (line) => {
         ],
         blocked_path: "C:\\probe\\probe-dir",
         tool_use_id: "toolu_perm",
+        // ТОЛЬКО-ЧЕЛОВЕКОМ: запрос, который CLI отдаёт человеку и в bypassPermissions.
+        ...(text.includes("ТОЛЬКО-ЧЕЛОВЕКОМ") ? { requires_user_interaction: true } : {}),
       },
     });
     pendingRequests.set("perm-1", (reply) => {
@@ -258,6 +261,75 @@ lines.on("line", (line) => {
         ...(allowed
           ? {}
           : { permission_denials: [{ tool_name: "Bash", tool_use_id: "toolu_perm", tool_input: input }] }),
+      });
+    });
+    return;
+  }
+
+  // ВОПРОС-ЧЕЛОВЕКУ: AskUserQuestion в форме из журнала панели (CLI 2.1.287,
+  // seq 66068): can_use_tool с requires_user_interaction, без предложений
+  // правил. CLI присылает его и в режиме bypassPermissions. Ответ — answers
+  // в updatedInput (документация Agent SDK, user-input, 05.10.2026).
+  if (text.includes("ВОПРОС-ЧЕЛОВЕКУ")) {
+    const input = {
+      questions: [
+        { question: "Какой вариант?", header: "Выбор", options: [{ label: "а" }, { label: "б" }], multiSelect: false },
+      ],
+    };
+    writeLine({ type: "stream_event", event: { type: "message_start" }, session_id: SESSION });
+    writeLine({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "toolu_q", name: "AskUserQuestion", input: input }] },
+      session_id: SESSION,
+    });
+    writeLine({
+      type: "control_request",
+      request_id: "ask-1",
+      request: {
+        subtype: "can_use_tool",
+        tool_name: "AskUserQuestion",
+        display_name: "AskUserQuestion",
+        input: input,
+        tool_use_id: "toolu_q",
+        requires_user_interaction: true,
+      },
+    });
+    pendingRequests.set("ask-1", (reply) => {
+      const decision = reply?.response ?? {};
+      const allowed = decision.behavior === "allow";
+      const answers = allowed ? decision.updatedInput?.answers : undefined;
+      writeLine({
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_q",
+              content: !allowed
+                ? String(decision.message ?? "")
+                : answers
+                  ? `User has answered your questions: ${JSON.stringify(answers)}`
+                  : "The user did not answer the questions.",
+              is_error: !allowed,
+            },
+          ],
+        },
+        session_id: SESSION,
+      });
+      writeLine({
+        type: "assistant",
+        message: { content: [{ type: "text", text: `ответ получен: ${answers ? JSON.stringify(answers) : "нет ответов"}` }] },
+        session_id: SESSION,
+      });
+      writeLine({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 2,
+        session_id: SESSION,
+        ...(allowed
+          ? {}
+          : { permission_denials: [{ tool_name: "AskUserQuestion", tool_use_id: "toolu_q", tool_input: input }] }),
       });
     });
     return;

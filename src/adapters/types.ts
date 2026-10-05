@@ -138,6 +138,39 @@ export interface PanelEvent {
    * в виде «Bash(mkdir x *)». Пусто — такой кнопки нет.
    */
   readonly sessionRules?: readonly string[];
+  /**
+   * У approval_requested вопроса Claude (AskUserQuestion): вопросы с
+   * вариантами. Есть — это вопрос человеку, а не запрос разрешения: ответ
+   * уходит через answerQuestion, «без вопросов» его не закрывает.
+   */
+  readonly questions?: readonly AskQuestion[];
+}
+
+/**
+ * Вопрос Claude человеку — форма ввода AskUserQuestion (документация Agent
+ * SDK, user-input, прочитано 05.10.2026; журнал панели, seq 66068).
+ */
+export interface AskQuestion {
+  readonly question: string;
+  /** Короткая подпись вопроса (до 12 символов по документации). */
+  readonly header?: string;
+  readonly options: readonly { readonly label: string; readonly description?: string }[];
+  /** Можно выбрать несколько вариантов: ответ — метки через «, ». */
+  readonly multiSelect?: boolean;
+}
+
+/** Предел одного ответа человека на вопрос: свой текст из поля «Свой ответ». */
+const ANSWER_LIMIT = 4_000;
+
+/**
+ * Ответы на вопрос из webview — «текст вопроса → ответ». Сообщение webview —
+ * ввод извне: всё, кроме объекта строк не длиннее ANSWER_LIMIT, — undefined.
+ */
+export function questionAnswers(value: unknown): Record<string, string> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.some(([, answer]) => typeof answer !== "string" || answer.length > ANSWER_LIMIT)) return undefined;
+  return Object.fromEntries(entries) as Record<string, string>;
 }
 
 /**
@@ -204,9 +237,17 @@ export interface Adapter {
   /**
    * Ответить на запрос разрешения, который агент ждёт от человека.
    * false — запроса нет: уже решён или процесс, задавший его, остановлен.
+   * У вопроса (questions) принимается только отказ: «разрешить» без ответов
+   * агент прочёл бы как «человек не ответил».
    * Нет метода — агент разрешений у человека не спрашивает.
    */
   answerApproval?(id: string, choice: ApprovalChoice): Promise<boolean>;
+  /**
+   * Ответ человека на вопрос агента: текст вопроса → метка варианта, метки
+   * через «, » или свой текст. false — такого открытого вопроса нет.
+   * Нет метода — агент вопросов человеку не задаёт.
+   */
+  answerQuestion?(id: string, answers: Readonly<Record<string, string>>): Promise<boolean>;
   /**
    * Новая сессия: процесс останавливается, следующий запуск начинается без
    * возобновления прежней сессии или ветки. Прежняя остаётся в истории агента.

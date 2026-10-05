@@ -24,7 +24,7 @@ import { GeminiAdapter } from "../out/adapters/gemini.js";
 
 const FAKE_AGY = fileURLToPath(new URL("../fixtures/fake-agy.mjs", import.meta.url));
 import { Journal } from "../out/journal.js";
-import { forDisplay } from "../out/adapters/types.js";
+import { forDisplay, questionAnswers } from "../out/adapters/types.js";
 import { takeSnapshot } from "../out/snapshot.js";
 
 class Stub {
@@ -50,7 +50,12 @@ class Stub {
     this.decisions.push([id, decision]);
     return true;
   }
+  async answerQuestion(id, answers) {
+    this.answers.push([id, answers]);
+    return true;
+  }
   decisions = [];
+  answers = [];
 }
 
 /**
@@ -771,6 +776,67 @@ test("падение процесса закрывает его запросы �
   assert.equal(k.state.approvals, 0);
 });
 
+// --- Вопрос Claude человеку (AskUserQuestion) ------------------------------------
+
+const QUESTION = [{ question: "Какой вариант?", options: [{ label: "а" }, { label: "б" }] }];
+const askEvent = (callId = "q1") =>
+  event("claude", "approval_requested", { callId, tool: "AskUserQuestion", text: "Какой вариант?", questions: QUESTION });
+
+test("открытый вопрос Claude виден в состоянии отдельно от разрешений", () => {
+  const { k } = room();
+  k.handle(askEvent());
+  assert.equal(k.state.questions, 1);
+  assert.equal(k.state.approvals, 0, "этап «Ждёт разрешения» был бы неправдой");
+  k.handle(event("claude", "approval_requested", { callId: "p1", tool: "Bash" }));
+  assert.equal(k.state.approvals, 1);
+  assert.equal(k.state.questions, 1);
+  k.handle(event("claude", "approval_decided", { callId: "q1", text: "ответ человека: Какой вариант? — б" }));
+  assert.equal(k.state.questions, 0);
+  assert.equal(k.state.approvals, 1);
+});
+
+test("ответ на вопрос уходит адаптеру того агента, который спросил, — ответами", async () => {
+  const { k, claude, codex } = room();
+  k.handle(askEvent());
+  await k.answerQuestion("q1", { "Какой вариант?": "б" });
+  assert.deepEqual(claude.answers, [["q1", { "Какой вариант?": "б" }]]);
+  assert.deepEqual(codex.answers, []);
+  assert.deepEqual(claude.decisions, []);
+});
+
+test("ответы — только на вопрос; «разрешить» на вопрос не уходит, «не отвечать» уходит", async () => {
+  const { k, claude } = room();
+  k.handle(event("claude", "approval_requested", { callId: "p1", tool: "Bash" }));
+  await k.answerQuestion("p1", { x: "y" });
+  await k.answerQuestion("нет-такого", { x: "y" });
+  assert.deepEqual(claude.answers, []);
+  assert.equal(k.state.approvals, 1, "запрос разрешения остаётся открытым");
+
+  k.handle(askEvent());
+  await k.answerApproval("q1", "allow");
+  assert.deepEqual(claude.decisions, [], "без ответов Claude прочёл бы «человек не ответил»");
+  assert.equal(k.state.questions, 1, "вопрос остаётся открытым");
+  await k.answerApproval("q1", "deny");
+  assert.deepEqual(claude.decisions, [["q1", "deny"]]);
+});
+
+test("ответ, который адаптер не принял, снимает вопрос: карточка не должна висеть", async () => {
+  const { k, claude } = room();
+  claude.answerQuestion = async () => false;
+  k.handle(askEvent());
+  await k.answerQuestion("q1", { "Какой вариант?": "а" });
+  assert.equal(k.state.questions, 0);
+});
+
+test("«Прервать», «Остановить» и падение процесса закрывают открытый вопрос", async () => {
+  for (const close of [(k) => k.interruptAll(), (k) => k.stopAll(), (k) => k.handle(event("claude", "error", { failed: true, text: "процесс завершился" }))]) {
+    const { k } = room();
+    k.handle(askEvent());
+    await close(k);
+    assert.equal(k.state.questions, 0);
+  }
+});
+
 test("запрос разрешения не попадает в материал рецензенту", async () => {
   const { k, claude, codex } = room();
   await k.fromHuman("создай каталог", "review");
@@ -1155,6 +1221,23 @@ test("в webview не уходят запись протокола и полны
   assert.equal(light.full, undefined);
   assert.equal(light.text, "показ");
   assert.equal(e.full, "полный", "исходное событие не меняется: рецензенту нужен полный");
+});
+
+test("вопрос Claude доходит до webview с вариантами: forDisplay их сохраняет", () => {
+  const questions = [{ question: "Какой вариант?", header: "Выбор", options: [{ label: "а" }, { label: "б" }], multiSelect: false }];
+  const e = { id: "1", agent: "claude", kind: "approval_requested", visibility: "turn", at: 0, tool: "AskUserQuestion", callId: "q1", text: "Какой вариант?", questions, raw: { big: 1 } };
+  const light = forDisplay(e);
+  assert.equal(light.raw, undefined);
+  assert.deepEqual(light.questions, questions);
+});
+
+test("ответы из webview: только объект строк не длиннее 4000 символов", () => {
+  assert.deepEqual(questionAnswers({ "Какой вариант?": "б", "Ещё?": "а, б" }), { "Какой вариант?": "б", "Ещё?": "а, б" });
+  assert.deepEqual(questionAnswers({}), {});
+  for (const bad of [undefined, null, "б", 1, ["б"], { "Какой вариант?": 1 }, { "Какой вариант?": "x".repeat(4001) }]) {
+    assert.equal(questionAnswers(bad), undefined, JSON.stringify(bad)?.slice(0, 40));
+  }
+  assert.deepEqual(questionAnswers({ q: "x".repeat(4000) }), { q: "x".repeat(4000) });
 });
 
 // ---------------------------------------------------------------------------

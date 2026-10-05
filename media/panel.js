@@ -78,6 +78,7 @@ const ICONS = {
   check: '<path d="M3.5 8.5 6.5 11.5 12.5 4.5"/>',
   attention: '<circle cx="8" cy="8" r="6.2"/><path d="M8 4.8v3.6M8 10.8v.3"/>',
   pause: '<circle cx="8" cy="8" r="6.2"/><path d="M6.5 5.8v4.4M9.5 5.8v4.4"/>',
+  question: '<circle cx="8" cy="8" r="6.2"/><path d="M6.2 6.3a1.8 1.8 0 1 1 2.6 1.6c-.5.3-.8.7-.8 1.2v.3M8 11.2v.3"/>',
   chevron: '<path d="M6 3.5 10.5 8 6 12.5"/>',
 };
 
@@ -375,6 +376,107 @@ function permissionCard(e, history) {
   requests.set(e.callId, card);
 }
 
+// --- Вопрос Claude человеку (AskUserQuestion) ------------------------------------
+
+/** Ответ на один вопрос: свой текст важнее вариантов, несколько вариантов — через «, ». */
+function chosenAnswer(block) {
+  const own = block.querySelector(".свой-ответ").value.trim();
+  if (own) return own;
+  return [...block.querySelectorAll("input:checked")].map((k) => k.value).join(", ");
+}
+
+/**
+ * Карточка вопроса: по каждому вопросу варианты (несколько — флажками) и поле
+ * «Свой ответ». «Ответить» — когда ответ есть на каждый вопрос; ответы уходят
+ * по тексту вопроса, как их ждёт Claude. Закрывает карточку решение адаптера,
+ * как у разрешения: она живёт в той же карте requests.
+ */
+function questionCard(e, history) {
+  const card = makeEl("section", "разрешение вопрос");
+  card.setAttribute("aria-label", "Вопрос Claude");
+  const header = makeEl("div", "заголовок");
+  const who = makeEl("span");
+  who.append(makeEl("span", "кто", NAMES[e.agent] ?? e.agent), " спрашивает");
+  header.append(icon(ICONS.question), who);
+  card.append(header);
+  const questions = Array.isArray(e.questions) ? e.questions : [];
+  const result = makeEl("div", "итог");
+  // Из журнала вопросы приходят только текстом: процесс уже другой, ответить нельзя.
+  if (history || questions.length === 0) card.append(makeEl("pre", "аргументы", e.text ?? ""));
+  if (history) {
+    result.textContent = "вопрос из прошлого запуска панели";
+  } else {
+    const form = makeEl("div", "вопросы");
+    const blocks = questions.map((q, index) => {
+      const block = makeEl("fieldset", "вопрос-блок");
+      const legend = makeEl("legend", "вопрос-текст");
+      if (q.header) legend.append(makeEl("span", "вопрос-подпись", q.header), " ");
+      legend.append(q.question ?? "");
+      block.append(legend);
+      for (const option of q.options ?? []) {
+        const label = makeEl("label", "вариант");
+        const input = makeEl("input");
+        input.type = q.multiSelect ? "checkbox" : "radio";
+        input.name = `${e.callId}-${index}`;
+        input.value = option.label ?? "";
+        const text = makeEl("span", "вариант-текст");
+        text.append(makeEl("span", "вариант-метка", option.label ?? ""));
+        if (option.description) text.append(makeEl("span", "вариант-пояснение", option.description));
+        label.append(input, text);
+        block.append(label);
+      }
+      const own = makeEl("input", "свой-ответ");
+      own.type = "text";
+      own.placeholder = "Свой ответ";
+      own.maxLength = 4000;
+      own.setAttribute("aria-label", "Свой ответ");
+      block.append(own);
+      form.append(block);
+      return { question: q.question ?? "", block };
+    });
+    if (blocks.length > 0) card.append(form);
+
+    const buttons = makeEl("div", "кнопки");
+    const lock = () => {
+      for (const k of card.querySelectorAll("button, input")) k.disabled = true;
+    };
+    const ready = () => blocks.every(({ block }) => chosenAnswer(block) !== "");
+    const reply = makeEl("button", "пилюля главная", "Ответить");
+    reply.title = "Отправить ответы Claude";
+    reply.addEventListener("click", () => {
+      if (!ready()) return;
+      const answers = {};
+      for (const { question, block } of blocks) answers[question] = chosenAnswer(block);
+      lock();
+      vscode.postMessage({ type: "answerQuestion", id: e.callId, answers: answers });
+    });
+    const refresh = () => {
+      reply.disabled = !ready();
+    };
+    form.addEventListener("input", refresh);
+    form.addEventListener("change", refresh);
+    // Enter в поле «Свой ответ» — то же, что «Ответить».
+    form.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || !event.target.classList.contains("свой-ответ")) return;
+      event.preventDefault();
+      if (!reply.disabled) reply.click();
+    });
+    const decline = makeEl("button", "пилюля опасно", "Не отвечать");
+    decline.title = "Claude узнает, что вы не стали отвечать";
+    decline.addEventListener("click", () => {
+      lock();
+      vscode.postMessage({ type: "approval", id: e.callId, choice: "deny" });
+    });
+    if (blocks.length > 0) buttons.append(reply);
+    buttons.append(makeEl("span", "распорка"), decline);
+    refresh();
+    card.append(buttons);
+  }
+  card.append(result);
+  conversation.append(card);
+  requests.set(e.callId, card);
+}
+
 // --- События -------------------------------------------------------------------
 
 /**
@@ -451,7 +553,8 @@ function showEvent(e, history = false) {
     case "approval_requested": {
       // Без callId запрос уже решён самим адаптером (запись файлов у Codex).
       if (!e.callId) return;
-      permissionCard(e, history);
+      if (e.tool === "AskUserQuestion") questionCard(e, history);
+      else permissionCard(e, history);
       scrollToBottom();
       return;
     }
@@ -459,6 +562,7 @@ function showEvent(e, history = false) {
       const card = requests.get(e.callId);
       if (card) {
         card.querySelector(".кнопки")?.remove();
+        for (const k of card.querySelectorAll("input")) k.disabled = true;
         card.querySelector(".итог").textContent = e.text ?? "решено";
         card.classList.add(/^отклонено/.test(e.text ?? "") ? "отклонено" : "решено");
         requests.delete(e.callId);
@@ -792,7 +896,7 @@ function showMode() {
   button.querySelector(".подпись").textContent = MODE_LABELS[claudeMode] ?? claudeMode;
   button.title =
     claudeMode === "bypassPermissions"
-      ? "Claude выполняет команды без запроса разрешения. Нажмите — спрашивать каждое действие, требующее согласия"
+      ? "Claude выполняет команды без запроса разрешения; свои вопросы к вам задаёт карточкой. Нажмите — спрашивать каждое действие, требующее согласия"
       : "Каждое действие Claude, требующее согласия, приходит карточкой. Нажмите — без вопросов. Действует для этой папки";
 }
 

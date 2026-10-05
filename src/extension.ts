@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { ClaudeAdapter } from "./adapters/claude.js";
 import { CodexAdapter } from "./adapters/codex.js";
 import { GeminiAdapter } from "./adapters/gemini.js";
-import { Adapter, ApprovalChoice, ModelChoice, ModelOption, PanelEvent, forDisplay, stripAnsi } from "./adapters/types.js";
+import { Adapter, ApprovalChoice, ModelChoice, ModelOption, PanelEvent, forDisplay, questionAnswers, stripAnsi } from "./adapters/types.js";
 import { Coordinator, RoomState, Route } from "./coordinator.js";
 import { Journal } from "./journal.js";
 import { describeChoice, normalizeChoice, sameChoice } from "./models.js";
@@ -287,7 +287,8 @@ class Room {
           await this.#memento.update(this.#modeKey, message.mode);
           this.#coordinator.notice(
             message.mode === "bypassPermissions"
-              ? "Разрешения Claude: без вопросов. Открытые запросы разрешены сразу, со следующего хода Claude не спрашивает."
+              ? "Разрешения Claude: без вопросов. Открытые запросы разрешены сразу, со следующего хода Claude не спрашивает разрешений. " +
+                "Свои вопросы к вам он по-прежнему задаёт карточкой."
               : `Разрешения Claude: ${MODE_LABELS[message.mode] ?? message.mode} — со следующего хода.`,
           );
         }
@@ -329,6 +330,13 @@ class Room {
         if (!CHOICES.has(message.choice as ApprovalChoice)) return;
         await this.#coordinator.answerApproval(message.id, message.choice as ApprovalChoice);
         return;
+      case "answerQuestion": {
+        // Ответ на вопрос Claude (AskUserQuestion): форма проверяется — это ввод webview.
+        const answers = questionAnswers(message.answers);
+        if (typeof message.id !== "string" || !answers) return;
+        await this.#coordinator.answerQuestion(message.id, answers);
+        return;
+      }
     }
   }
 
@@ -439,6 +447,7 @@ type UiMessage =
   | { type: "interrupt" }
   | { type: "setAuto"; on: boolean }
   | { type: "approval"; id: string; choice: string }
+  | { type: "answerQuestion"; id: unknown; answers: unknown }
   | { type: "openLink"; href: string }
   | { type: "listModels" }
   | { type: "setModel"; agent: string; model: unknown; effort: unknown }

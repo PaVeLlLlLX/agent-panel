@@ -50,6 +50,7 @@ import {
   Adapter,
   AgentPrompt,
   ApprovalChoice,
+  AskQuestion,
   EventSink,
   ModelChoice,
   ModelOption,
@@ -151,6 +152,72 @@ interface OpenRequest {
   readonly call: string | undefined;
   /** Предложения addRules, переписанные на destination "session". */
   readonly rules: readonly Record<string, unknown>[];
+  /**
+   * Ответить должен человек (requires_user_interaction или AskUserQuestion):
+   * режим «без вопросов» такой запрос не разрешает.
+   */
+  readonly interactive: boolean;
+  /** Вопросы AskUserQuestion; нет — это обычный запрос разрешения. */
+  readonly questions?: readonly AskedQuestion[];
+}
+
+/** Вопрос, как его видит человек, и его исходный текст — ключ ответа для Claude. */
+interface AskedQuestion {
+  readonly shown: AskQuestion;
+  readonly key: string;
+}
+
+/** Пределы строк вопроса для показа: один огромный вопрос — мегабайты в webview. */
+const QUESTION_LIMIT = 2_000;
+const HEADER_LIMIT = 200;
+const LABEL_LIMIT = 500;
+
+/**
+ * Вопросы из ввода AskUserQuestion: `questions[] { question, header, options[]
+ * { label, description }, multiSelect }`. Строки обрезаются для показа, но
+ * ключ ответа — исходный текст вопроса: по нему Claude сопоставляет ответы.
+ */
+function parseQuestions(input: unknown): AskedQuestion[] {
+  const list = ((input ?? {}) as Record<string, unknown>)["questions"];
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((item: unknown): AskedQuestion[] => {
+    const q = (item ?? {}) as Record<string, unknown>;
+    if (typeof q["question"] !== "string") return [];
+    const options = (Array.isArray(q["options"]) ? q["options"] : []).flatMap((o: unknown) => {
+      const option = (o ?? {}) as Record<string, unknown>;
+      if (typeof option["label"] !== "string") return [];
+      const description = option["description"];
+      return [
+        {
+          label: clamp(option["label"], LABEL_LIMIT),
+          ...(typeof description === "string" && description ? { description: clamp(description, QUESTION_LIMIT) } : {}),
+        },
+      ];
+    });
+    const header = q["header"];
+    const multiSelect = q["multiSelect"];
+    return [
+      {
+        key: q["question"],
+        shown: {
+          question: clamp(q["question"], QUESTION_LIMIT),
+          ...(typeof header === "string" && header ? { header: clamp(header, HEADER_LIMIT) } : {}),
+          options,
+          ...(typeof multiSelect === "boolean" ? { multiSelect } : {}),
+        },
+      },
+    ];
+  });
+}
+
+/** Вопросы одной строкой каждый: «Выбор: Какой вариант? (а / б)». */
+function questionLines(questions: readonly AskedQuestion[]): string {
+  return questions
+    .map(({ shown }) => {
+      const labels = shown.options.map((o) => o.label).join(" / ");
+      return `${shown.header ? `${shown.header}: ` : ""}${shown.question}${labels ? ` (${labels})` : ""}`;
+    })
+    .join("\n");
 }
 
 /** Суть ввода инструмента для человека: команда, путь или весь ввод. */
@@ -423,11 +490,15 @@ export class ClaudeAdapter implements Adapter {
    * действует и сразу: открытые и новые запросы текущего процесса разрешает
    * панель. Проба на Claude Code 2.1.220 показала, что setMode
    * bypassPermissions в ответе на запрос повторных запросов не отключает.
+   * Вопросы человеку (AskUserQuestion) режим не закрывает: на них отвечает
+   * человек, а «разрешить» без ответов Claude читает как «не ответил».
    */
   setPermissionMode(mode: string): void {
     this.#mode = mode || "default";
     if (this.#mode !== "bypassPermissions") return;
-    for (const id of [...this.#requests.keys()]) void this.#decide(id, "allow", NO_QUESTIONS_NOTE);
+    for (const [id, request] of [...this.#requests]) {
+      if (!request.interactive) void this.#decide(id, "allow", NO_QUESTIONS_NOTE);
+    }
   }
 
   setModel(choice: ModelChoice): void {
@@ -489,21 +560,53 @@ export class ClaudeAdapter implements Adapter {
   }
 
   async answerApproval(id: string, choice: ApprovalChoice): Promise<boolean> {
+    // У вопроса «разрешить» без ответов — то самое «The user did not answer
+    // the questions» (журнал 04–05.10): принимается только отказ.
+    if (this.#requests.get(id)?.questions && choice !== "deny") return false;
     return this.#decide(id, choice);
   }
 
-  async #decide(id: string, choice: ApprovalChoice, caption?: string): Promise<boolean> {
+  /**
+   * Ответ человека на AskUserQuestion: allow с исходными вопросами и answers
+   * «текст вопроса → метка / метки через «, » / свой текст» (документация
+   * Agent SDK, user-input, 05.10.2026). Ключи — исходный текст вопроса, даже
+   * если человеку он показан обрезанным.
+   */
+  async answerQuestion(id: string, answers: Readonly<Record<string, string>>): Promise<boolean> {
+    const request = this.#requests.get(id);
+    if (!request?.questions) return false;
+    const chosen: Record<string, string> = {};
+    const lines: string[] = [];
+    for (const { shown, key } of request.questions) {
+      const value = Object.hasOwn(answers, key) ? answers[key] : Object.hasOwn(answers, shown.question) ? answers[shown.question] : undefined;
+      if (typeof value !== "string") continue;
+      chosen[key] = value;
+      lines.push(`${shown.question} — ${value}`);
+    }
+    return this.#decide(id, "allow", clamp(`ответ человека: ${lines.join("; ") || "без ответов"}`), chosen);
+  }
+
+  async #decide(
+    id: string,
+    choice: ApprovalChoice,
+    caption?: string,
+    answers?: Readonly<Record<string, string>>,
+  ): Promise<boolean> {
     const request = this.#requests.get(id);
     if (!request || request.proc !== this.#proc) return false;
     this.#requests.delete(id);
 
     const forSession = choice === "allowSession" && request.rules.length > 0;
+    const question = request.questions !== undefined;
     const decision =
       choice === "deny"
-        ? { behavior: "deny", message: "Отклонено человеком в панели." }
+        ? {
+            behavior: "deny",
+            message: question ? "Человек не стал отвечать на вопрос в панели." : "Отклонено человеком в панели.",
+          }
         : {
             behavior: "allow",
-            updatedInput: request.input,
+            updatedInput: answers ? { ...(request.input as Record<string, unknown>), answers } : request.input,
             ...(forSession ? { updatedPermissions: request.rules } : {}),
           };
     if (choice === "deny" && request.call) this.#deniedByHuman.add(request.call);
@@ -518,7 +621,9 @@ export class ClaudeAdapter implements Adapter {
       text:
         caption ??
         (choice === "deny"
-          ? "отклонено человеком"
+          ? question
+            ? "человек не стал отвечать"
+            : "отклонено человеком"
           : forSession
             ? `разрешено в этой сессии: ${ruleLabels(request.rules).join(", ")}`
             : "разрешено"),
@@ -881,29 +986,39 @@ export class ClaudeAdapter implements Adapter {
 
     const rules = sessionRules(request["permission_suggestions"]);
     const input = request["input"] ?? {};
+    // Вопрос человеку: ответ — answers, а не «разрешить». Прочие запросы,
+    // требующие человека, — обычная карточка, но без разрешения режимом.
+    const questions = request["tool_name"] === "AskUserQuestion" ? parseQuestions(input) : undefined;
+    const interactive = questions !== undefined || request["requires_user_interaction"] === true;
     this.#requests.set(id, {
       proc,
       input,
       call: typeof request["tool_use_id"] === "string" ? request["tool_use_id"] : undefined,
       rules,
+      interactive,
+      ...(questions ? { questions } : {}),
     });
 
-    const lines = [inputGist(input)];
+    const lines = [questions ? questionLines(questions) : inputGist(input)];
     if (typeof request["description"] === "string" && request["description"] !== lines[0]) {
       lines.push(request["description"]);
     }
     if (typeof request["blocked_path"] === "string") lines.push(`путь: ${request["blocked_path"]}`);
 
     this.#emit("approval_requested", "turn", {
-      tool: String(request["display_name"] ?? request["tool_name"] ?? "?"),
+      tool: questions ? "AskUserQuestion" : String(request["display_name"] ?? request["tool_name"] ?? "?"),
       callId: id,
       ...(typeof request["tool_use_id"] === "string" ? { toolCallId: request["tool_use_id"] } : {}),
       text: clamp(lines.join("\n")),
       sessionRules: ruleLabels(rules),
+      ...(questions ? { questions: questions.map((q) => q.shown) } : {}),
       raw: record,
     });
-    // Режим сменён на «без вопросов», а процесс ещё старый: разрешает панель.
-    if (this.#mode === "bypassPermissions") void this.#decide(id, "allow", NO_QUESTIONS_NOTE);
+    // «Без вопросов» разрешает панель: режим сменён, а процесс ещё старый, или
+    // CLI спрашивает и в этом режиме. Запрос, требующий человека, — нет: CLI
+    // присылает AskUserQuestion и в bypassPermissions (журнал 04–05.10,
+    // CLI 2.1.220 и 2.1.287), и ответ панели за человека лишал его вопроса.
+    if (this.#mode === "bypassPermissions" && !interactive) void this.#decide(id, "allow", NO_QUESTIONS_NOTE);
   }
 
   #delta(record: Record<string, unknown>): void {
