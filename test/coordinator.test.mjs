@@ -1967,6 +1967,271 @@ test("Gemini: ERROR после полного ответа — отзыв вхо
   }
 });
 
+// ---------------------------------------------------------------------------
+// Повтор хода Gemini при сетевом сбое (журнал 05.10, seq 70995–70998)
+// ---------------------------------------------------------------------------
+
+/**
+ * Конец хода проверки при сетевом сбое, как в журнале 05.10 00:38: agy
+ * ответил Bad Gateway с пустым ответом. Через 11 минут тот же Gemini
+ * отработал нормально.
+ */
+const NETWORK_FAILURE = { failed: true, text: "ход завершён: ERROR — Bad Gateway" };
+
+/** Ход Gemini кончился сетевым сбоем; agy после этого сам выходит кодом 3. */
+function geminiNetworkFailure(k, gemini, text = NETWORK_FAILURE.text) {
+  gemini.busy = false;
+  k.handle(event("gemini", "turn_completed", { failed: true, text }));
+  k.handle(event("gemini", "error", { failed: true, text: "процесс Gemini завершился неожиданно (код 3, сигнал null): Bad Gateway" }));
+}
+
+test("Gemini: сбой сети в проверке — пара ждёт его, через geminiRetryMs тот же материал уходит снова, второй ответ сводится обычно", async () => {
+  const { k, claude, gemini, events, journal } = await pairRoom({ geminiRetryMs: 40 }, 3, { liveGemini: true });
+  geminiNetworkFailure(k, gemini);
+  await waitFor(() => said(events, /^Gemini: сбой сети/).length === 1, "строка о повторе");
+  assert.equal(said(events, /^Gemini: сбой сети \(Bad Gateway\) — повтор через 1 с\.$/).length, 1);
+  // Выход agy кодом 3 после сбоя — не «не проверял»: пара ждёт повтора.
+  assert.deepEqual(k.state.pair.sides.gemini, { state: "waiting" });
+  assert.equal(said(events, /Gemini не проверял/).length, 0);
+  assert.equal(gemini.received.length, 1, "повтор — не сразу");
+  turn(k, "codex", "Дефект в пороге.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => gemini.received.length === 2, "повторный ход Gemini");
+  assert.equal(gemini.received[1].text, gemini.received[0].text, "тот же материал");
+  assert.equal(gemini.received[1].heading, "[материал проверки от панели]");
+  assert.equal(gemini.received[1].snapshot, gemini.received[0].snapshot, "та же версия");
+  geminiTurn(k, gemini, "Пробел в разбиении.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => claude.received.length === 2, "сведённые замечания у Claude");
+  assert.match(claude.received[1].text, /— Gemini — методология и факты —\nПробел в разбиении\./);
+  assert.equal(said(events, /^Итог проверки 1: Codex — есть замечания, Gemini — есть замечания\.$/).length, 1);
+  assert.deepEqual(k.state.trail.find((sh) => sh.who === "gemini" && sh.round === 1), { who: "gemini", round: 1, mark: "!" });
+  const materials = journal.history("r").filter((e) => e.kind === "material" && e.agent === "gemini");
+  assert.equal(materials.length, 2, "в журнале — оба раза, когда материал ушёл Gemini");
+  journal.close();
+});
+
+test("Gemini: сетевой сбой узнаётся по словам ошибки без учёта регистра", async () => {
+  const texts = [
+    "ход завершён: ERROR — request failed: Post \"https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse\": EOF",
+    "ход завершён: ERROR — upstream 502",
+    "ход завершён: ERROR — 503 service unavailable",
+    "ход завершён: ERROR — status 504",
+    "ход завершён: ERROR — rpc error: code = Unavailable",
+    "ход завершён: ERROR — read tcp: Connection reset by peer",
+    "ход завершён: ERROR — i/o TIMEOUT",
+  ];
+  for (const text of texts) {
+    const { k, gemini, events, journal } = await pairRoom({ geminiRetryMs: 40 }, 3, { liveGemini: true });
+    geminiNetworkFailure(k, gemini, text);
+    await waitFor(() => gemini.received.length === 2, `повтор: ${text}`);
+    assert.equal(said(events, /^Gemini: сбой сети \(.+\) — повтор через 1 с\.$/).length, 1, text);
+    journal.close();
+  }
+});
+
+test("Gemini: повтор после сбоя сети один — второй сбой даёт «не проверял: … (повтор тоже не удался)», итог по Codex", async () => {
+  const { k, gemini, events, journal } = await pairRoom({ geminiRetryMs: 40 }, 3, { liveGemini: true });
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  geminiNetworkFailure(k, gemini);
+  await waitFor(() => gemini.received.length === 2, "повторный ход");
+  geminiNetworkFailure(k, gemini, "ход завершён: ERROR — EOF");
+  await waitFor(() => k.state.stage === "accepted", "итог по Codex");
+  assert.equal(k.state.pair.sides.gemini.reason, "ход завершён: ERROR — EOF (повтор тоже не удался)");
+  assert.equal(
+    said(events, /^Gemini не проверял: ход завершён: ERROR — EOF \(повтор тоже не удался\)\. Итог — по вердикту Codex\.$/).length,
+    1,
+  );
+  assert.equal(said(events, /^Codex принял работу \(Gemini не проверял\)\. Цикл завершён\./).length, 1);
+  await sleep(150);
+  assert.equal(gemini.received.length, 2, "третьего хода нет");
+  assert.equal(said(events, /^Gemini: сбой сети/).length, 1, "строка о повторе — одна");
+  journal.close();
+});
+
+test("Gemini: повтор не запустился (или процесс упал в повторном ходе) — тоже «(повтор тоже не удался)»", async () => {
+  {
+    const { k, gemini, events, journal } = await pairRoom({ geminiRetryMs: 40 }, 3, { liveGemini: true });
+    turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+    geminiNetworkFailure(k, gemini);
+    gemini.send = async (prompt) => {
+      gemini.received.push(prompt);
+      throw new Error("agy не найден");
+    };
+    await waitFor(() => k.state.stage === "accepted", "итог по Codex");
+    assert.equal(k.state.pair.sides.gemini.reason, "agy не найден (повтор тоже не удался)");
+    assert.equal(gemini.received.length, 2);
+    journal.close();
+  }
+  {
+    const { k, gemini, journal } = await pairRoom({ geminiRetryMs: 40 }, 3, { liveGemini: true });
+    turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+    geminiNetworkFailure(k, gemini);
+    await waitFor(() => gemini.received.length === 2, "повторный ход");
+    gemini.busy = false;
+    k.handle(event("gemini", "error", { failed: true, text: "процесс Gemini завершился неожиданно (код 3, сигнал null)" }));
+    await waitFor(() => k.state.stage === "accepted", "итог по Codex");
+    assert.equal(k.state.pair.sides.gemini.reason, "процесс Gemini завершился неожиданно (код 3, сигнал null) (повтор тоже не удался)");
+    journal.close();
+  }
+});
+
+test("Gemini: не сетевой сбой (регион, квота, модель) и сбой после части ответа — без повтора, сразу «не проверял»", async () => {
+  const endings = [
+    {
+      name: "регион",
+      fn: (k) =>
+        k.handle(
+          event("gemini", "turn_completed", {
+            failed: true,
+            text: "ход завершён: ERROR — Eligibility check failed: Your current account is not eligible for Antigravity, because it is not currently available in your location. (Antigravity отказал по региону (Eligibility check failed))",
+          }),
+        ),
+    },
+    { name: "квота", fn: (k) => k.handle(event("gemini", "turn_completed", { failed: true, text: "ход завершён: ERROR — RESOURCE_EXHAUSTED: quota exceeded" })) },
+    { name: "модель", fn: (k) => k.handle(event("gemini", "turn_completed", { failed: true, text: "ход завершён: ERROR — model error (model overloaded)" })) },
+    {
+      name: "часть ответа",
+      fn: (k) => {
+        k.handle(event("gemini", "message", { text: "Начал проверку разбиения." }));
+        k.handle(event("gemini", "turn_completed", NETWORK_FAILURE));
+      },
+    },
+    { name: "номер ошибки в чужом слове", fn: (k) => k.handle(event("gemini", "turn_completed", { failed: true, text: "ход завершён: ERROR — limit 15020 reached" })) },
+  ];
+  for (const { name, fn } of endings) {
+    const { k, gemini, events, journal } = await pairRoom({ geminiRetryMs: 40 }, 3, { liveGemini: true });
+    turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+    gemini.busy = false;
+    fn(k);
+    await waitFor(() => k.state.stage === "accepted", `${name}: итог по Codex`);
+    await sleep(100);
+    assert.equal(gemini.received.length, 1, `${name}: повтора нет`);
+    assert.equal(said(events, /^Gemini: сбой сети/).length, 0, name);
+    assert.equal(said(events, /\(повтор тоже не удался\)/).length, 0, name);
+    assert.equal(said(events, /^Gemini не проверял: /).length, 1, name);
+    journal.close();
+  }
+});
+
+test("Gemini: «Прервать», «Остановить», новая задача и новая сессия во время ожидания повтора — повтора нет", async () => {
+  for (const action of ["interruptAll", "stopAll", "новая задача", "новая сессия Gemini"]) {
+    const { k, gemini, events, journal } = await pairRoom({ geminiRetryMs: 60 }, 3, { liveGemini: true });
+    geminiNetworkFailure(k, gemini);
+    await waitFor(() => said(events, /^Gemini: сбой сети/).length === 1, `${action}: ожидание повтора`);
+    if (action === "новая задача") await k.fromHuman("новая задача", "review");
+    else if (action === "новая сессия Gemini") await k.newSession("gemini");
+    else await k[action]();
+    await sleep(200);
+    assert.equal(gemini.received.length, 1, `${action}: повтора нет`);
+    if (action === "новая сессия Gemini") {
+      assert.equal(k.state.pair.sides.gemini.reason, "новая сессия Gemini");
+      assert.equal(k.state.stage, "reviewing", "цикл идёт с Codex");
+    }
+    journal.close();
+  }
+});
+
+test("Gemini: прямой вопрос человека во время ожидания повтора ждёт в очереди и уходит Gemini только после повторного хода", async () => {
+  const { k, gemini, events, journal } = await pairRoom({ geminiRetryMs: 300 }, 3, { liveGemini: true });
+  geminiNetworkFailure(k, gemini);
+  await waitFor(() => said(events, /^Gemini: сбой сети/).length === 1, "ожидание повтора");
+  await k.fromHuman("какой бейзлайн взять?", "gemini");
+  assert.equal(gemini.received.length, 1, "вопрос не ушёл Gemini во время ожидания");
+  assert.equal(k.state.queued, 1, "вопрос ждёт в очереди");
+  await waitFor(() => gemini.received.length === 2, "повторный ход");
+  assert.equal(gemini.received[1].text, gemini.received[0].text, "сначала — повтор проверки");
+  assert.equal(k.state.queued, 1, "вопрос ждёт конца повторного хода");
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  geminiTurn(k, gemini, "Утечек нет.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => gemini.received.length === 3, "прямой вопрос после повтора");
+  assert.match(gemini.received[2].text, /какой бейзлайн взять\?/);
+  await waitFor(() => k.state.stage === "accepted", "проверка принята обоими");
+  assert.equal(said(events, /^Рецензенты приняли работу\. Цикл завершён\./).length, 1);
+  journal.close();
+});
+
+test("Gemini: ожидание повтора — признак жизни: молчание его не снимает, «был занят другим ходом» не пишется", async () => {
+  {
+    // Codex уже ответил: часы Gemini идут, а цели у Gemini нет.
+    const { k, gemini, events, journal } = await pairRoom({ geminiRetryMs: 400, geminiSilenceMs: 120 }, 3, { liveGemini: true });
+    turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+    geminiNetworkFailure(k, gemini);
+    await sleep(330);
+    assert.equal(gemini.interrupted, 0, "ожидание повтора — не молчание");
+    assert.deepEqual(k.state.pair.sides.gemini, { state: "waiting" });
+    await waitFor(() => gemini.received.length === 2, "повторный ход");
+    geminiTurn(k, gemini, "Утечек нет.\nВЕРДИКТ: ПРИНЯТО");
+    await waitFor(() => k.state.stage === "accepted", "итог с Gemini");
+    assert.equal(said(events, /^Рецензенты приняли работу\. Цикл завершён\./).length, 1);
+    assert.equal(said(events, /замолчал|не подавал признаков жизни|был занят другим ходом/).length, 0);
+    journal.close();
+  }
+  {
+    // Предел безопасности истёк во время ожидания: это предел, а не «занят другим ходом»; повтора нет.
+    const { k, gemini, events, journal } = await pairRoom({ geminiRetryMs: 300, geminiSafetyMs: 80 }, 3, { liveGemini: true });
+    turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+    geminiNetworkFailure(k, gemini);
+    await waitFor(() => k.state.stage === "accepted", "итог по Codex по пределу");
+    assert.match(k.state.pair.sides.gemini.reason, /^не закончил за .+ после ответа Codex — остановлен$/);
+    assert.equal(said(events, /был занят другим ходом/).length, 0);
+    await sleep(350);
+    assert.equal(gemini.received.length, 1, "снятая проверка не повторяется");
+    journal.close();
+  }
+});
+
+test("Gemini: срок при замечаниях Codex истёк во время ожидания повтора — Claude получает замечания Codex, повтор идёт, поздний отзыв — в ленте", async () => {
+  const { k, claude, gemini, events, journal } = await pairRoom({ geminiRetryMs: 150, geminiWaitMs: 40 }, 3, { liveGemini: true });
+  turn(k, "codex", "Дефект.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  geminiNetworkFailure(k, gemini);
+  await waitFor(() => claude.received.length === 2, "замечания Codex у Claude");
+  assert.match(k.state.pair.sides.gemini.reason, /^не уложился в .+ после ответа Codex — ещё проверяет$/);
+  await waitFor(() => gemini.received.length === 2, "повтор после срока");
+  geminiTurn(k, gemini, "Пробел.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => said(events, /^Gemini опоздал к проверке 1: есть замечания/).length === 1, "поздний отзыв в ленте");
+  assert.equal(claude.received.length, 2, "поздний отзыв Claude не пересылается");
+  journal.close();
+});
+
+test("Gemini на фальшивом agy: Bad Gateway и выход кодом 3 — повтор через geminiRetryMs, отзыв повторного хода входит в проверку (журнал 05.10)", async () => {
+  const catalog = mkdtempSync(join(tmpdir(), "panel-"));
+  const journal = new Journal(join(catalog, "j.sqlite"));
+  journal.ensureRoom("r", catalog);
+  const claude = new Stub("claude");
+  const codex = new Stub("codex");
+  const events = [];
+  let k;
+  const gemini = new GeminiAdapter({ command: "node", commandArgs: [FAKE_AGY], cwd: catalog }, (e) => k.handle(e));
+  k = new Coordinator(claude, codex, journal, {
+    room: "r",
+    cwd: catalog,
+    maxAutoRounds: 3,
+    onEvent: (e) => events.push(e),
+    gemini,
+    geminiRetryMs: 500,
+  });
+  try {
+    await k.fromHuman("подобрать порог классификатора СБОЙ-СЕТИ-ОДИН-РАЗ", "review");
+    turn(k, "claude", "порог 0.4, F1 на валидации 0.71");
+    await waitFor(() => codex.received.length === 1, "материал у Codex");
+    turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+    await waitFor(() => said(events, /^Gemini: сбой сети/).length === 1, "строка о повторе", 10_000);
+    assert.equal(said(events, /^Gemini: сбой сети \(Bad Gateway\) — повтор через 1 с\.$/).length, 1);
+    await waitFor(() => events.some((e) => e.agent === "gemini" && e.kind === "error"), "выход agy кодом 3", 10_000);
+    assert.deepEqual(k.state.pair.sides.gemini, { state: "waiting" }, "выход процесса после сбоя — не «не проверял»");
+    // Обычный ответ фальшивки вердикта не содержит: важно, что он засчитан как отзыв.
+    await waitFor(() => k.state.stage === "held", "итог после повтора", 10_000);
+    assert.equal(said(events, /^Итог проверки 1: Codex — принято, Gemini — без вердикта\.$/).length, 1);
+    assert.equal(said(events, /Gemini не проверял/).length, 0);
+    const completed = events.filter((e) => e.agent === "gemini" && e.kind === "turn_completed");
+    assert.equal(completed.length, 2);
+    assert.equal(completed[0].failed, true);
+    assert.equal(completed[1].failed, undefined);
+  } finally {
+    await gemini.stop();
+    journal.close();
+  }
+});
+
 test("T7-wording: принятие при непроверенном Gemini — «Codex принял работу», не «Рецензенты»", async () => {
   const { k, events, journal } = await pairRoom();
   turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");

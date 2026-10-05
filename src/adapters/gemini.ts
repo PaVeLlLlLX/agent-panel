@@ -127,11 +127,18 @@ function toTurnUsage(usage: unknown): TurnUsage {
   return { input: num("input_tokens"), cached: num("cache_read_tokens"), output: num("output_tokens") + num("thinking_tokens") };
 }
 
-/** Причина из строки «AGY_ERROR: {…}» — её message, иначе вся строка. */
+/**
+ * Причина из строки «AGY_ERROR: {…}» — её message или short_error, иначе вся
+ * строка. У настоящего AGY_ERROR (журнал 05.10, Bad Gateway) message нет, есть
+ * short_error: прежде причиной становилась вся строка с error_id и retryable.
+ */
 function agyErrorReason(line: string): string {
   try {
     const record = JSON.parse(line.slice("AGY_ERROR:".length)) as Record<string, unknown>;
-    if (typeof record["message"] === "string") return record["message"];
+    for (const key of ["message", "short_error"]) {
+      const reason = record[key];
+      if (typeof reason === "string" && reason) return reason;
+    }
   } catch {
     // не JSON — остаётся строка целиком
   }

@@ -20,6 +20,11 @@
  *     failed, ход продолжается и отвечает;
  *   ОШИБКА-ХОДА       — status ERROR с error "model error", строка AGY_ERROR
  *     в stderr раньше result;
+ *   СБОЙ-СЕТИ-ОДИН-РАЗ — сетевой сбой, как в журнале 05.10 00:38: строка
+ *     stderr «error: … Bad Gateway», AGY_ERROR с short_error (без message),
+ *     result ERROR с пустым ответом и выход кодом 3. Сбой бывает один раз на
+ *     папку: метка — файл в текущей папке процесса (повтор поднимает новый
+ *     процесс); дальше — обычный ответ;
  *   ОШИБКА-ПОСЛЕ-ОТВЕТА — полный ответ с вердиктом, затем result со status
  *     ERROR, ошибкой API и тем же response (живой прогон 04.10); вместе с
  *     БЕЗ-ПОТОКА ответ приходит только в response, без text_delta;
@@ -34,6 +39,8 @@
  * Поле init.argv — весь argv процесса, только у этой фальшивки.
  * Лежит вне test/ по той же причине, что fake-claude.mjs: читает stdin.
  */
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 const argv = process.argv.slice(2);
@@ -173,6 +180,22 @@ lines.on("line", (line) => {
       result("ERROR", "", { error: "model error" });
     }, 50);
     return;
+  }
+  // Журнал 05.10 (seq 70995–70998): две строки stderr, result ERROR без
+  // ответа, затем agy сам выходит кодом 3 (в жизни — через ~5 с).
+  if (text.includes("СБОЙ-СЕТИ-ОДИН-РАЗ")) {
+    const marker = join(process.cwd(), ".fake-agy-network-failed");
+    if (!existsSync(marker)) {
+      writeFileSync(marker, "");
+      const failure = 'agent executor error: generating and executing: request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": Bad Gateway';
+      process.stderr.write(`error: ${failure}\n`);
+      process.stderr.write('AGY_ERROR: {"short_error":"Bad Gateway","retryable":false}\n');
+      setTimeout(() => {
+        result("ERROR", "", { error: failure });
+        setTimeout(() => process.exit(3), 30);
+      }, 50);
+      return;
+    }
   }
   // Живой прогон 04.10: ответ пришёл целиком и кончился вердиктом, а result —
   // со status ERROR и ошибкой повтора запроса к API.

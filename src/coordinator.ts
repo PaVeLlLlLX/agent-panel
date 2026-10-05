@@ -177,6 +177,8 @@ export interface CoordinatorOptions {
   readonly geminiSilenceMs?: number;
   /** Предел ожидания Gemini, когда Codex принял работу или просит решения, мс (GEMINI_SAFETY_MS). */
   readonly geminiSafetyMs?: number;
+  /** Через сколько повторить ход проверки Gemini после сетевого сбоя, мс (GEMINI_RETRY_MS). */
+  readonly geminiRetryMs?: number;
 }
 
 type Role = "work" | "review" | "direct";
@@ -207,6 +209,30 @@ export const GEMINI_SILENCE_MS = 6 * 60_000;
  * ждут, пока он работает, — но не дольше этого.
  */
 export const GEMINI_SAFETY_MS = 45 * 60_000;
+
+/**
+ * Через сколько повторить ход проверки Gemini, сорванный сетевым сбоем.
+ * Журнал 05.10 00:38: agy ответил Bad Gateway с пустым ответом и вышел кодом
+ * 3, а через 11 минут тот же Gemini отработал нормально. Повтор один на
+ * проверку: второй сбой — «не проверял».
+ */
+export const GEMINI_RETRY_MS = 60_000;
+
+/**
+ * Слова сетевого сбоя в тексте конца хода (без учёта регистра). Флаг
+ * retryable в AGY_ERROR о временности не говорит: у Bad Gateway он false.
+ * Коды и EOF — отдельными словами: «502» внутри числа или номера ошибки
+ * сбоем сети не считается. Регион, квота, отказ правил — не сеть.
+ */
+const NETWORK_FAILURE = /bad gateway|\beof\b|\b50[234]\b|unavailable|connection reset|timeout/i;
+
+/** Слово сетевого сбоя из текста конца хода, как оно там написано; нет — undefined. */
+function networkFailure(text: string): string | undefined {
+  return NETWORK_FAILURE.exec(text)?.[0];
+}
+
+/** Пометка к причине «не проверял», когда сорвался и повторный ход. */
+const RETRY_FAILED = " (повтор тоже не удался)";
 
 /** Пометка к первому сообщению Gemini после хода, снятого панелью (R11, дизайн 03.10). */
 const CUT_NOTE = "[прошлый ход прерван панелью — его материал устарел, проверяй только этот]";
@@ -276,6 +302,18 @@ interface ReviewPair {
    * сведение прочтёт само (рецензия 03.10 — иначе он терялся в этом окне).
    */
   merging?: boolean;
+  /** Материал проверки для Gemini — его повторяют после сетевого сбоя. */
+  readonly geminiOut?: Outgoing;
+  /** Ход проверки Gemini уже повторяли: повтор один на проверку. */
+  retried?: boolean;
+  /** Часы повтора хода Gemini после сетевого сбоя. */
+  retryTimer?: NodeJS.Timeout | undefined;
+  /**
+   * Следующий ход Gemini этой проверки панель отдаст сама (ждёт повтора), а
+   * цели у него сейчас нет. Пока так: ход Gemini — эта проверка (часы,
+   * признак жизни), прямые сообщения ему ждут в очереди.
+   */
+  geminiPending?: boolean;
 }
 
 /** Сторона пары для интерфейса. */
@@ -948,7 +986,16 @@ export class Coordinator {
     if (stale > 0) {
       this.#report(`Новая задача: не доставлено устаревших пересылок прежней — ${stale}.`);
     }
+    // Повтор хода Gemini прежней задачи снимается с парой; прямые сообщения,
+    // ждавшие его, уходят свободному Gemini сразу, а не после чужого хода.
+    const released = this.#geminiReserved();
     this.#clearPair();
+    if (released) {
+      void Promise.resolve().then(async () => {
+        await this.#flushQueue();
+        this.#refresh();
+      });
+    }
     this.#cycle += 1;
     this.#held = undefined;
     this.#lastWork = undefined;
@@ -1112,6 +1159,7 @@ export class Coordinator {
       outcomes: new Map(),
       deadline: undefined,
       overdue: false,
+      ...(geminiOut ? { geminiOut } : {}),
     };
     this.#pair = pair;
     if (cycle === this.#cycle) {
@@ -1143,7 +1191,10 @@ export class Coordinator {
   }
 
   #clearPair(): void {
-    if (this.#pair?.deadline) clearTimeout(this.#pair.deadline);
+    const pair = this.#pair;
+    if (pair?.deadline) clearTimeout(pair.deadline);
+    // Снятая пара не повторяет ход Gemini: «Прервать», «Остановить», новая задача, новая проверка.
+    if (pair) this.#cancelGeminiRetry(pair);
     this.#pair = undefined;
   }
 
@@ -1179,15 +1230,72 @@ export class Coordinator {
       .filter((e) => e.kind === "message" && e.text)
       .map((e) => e.text as string)
       .join("\n\n");
-    const problem = agent === "gemini" ? (ended.failed ? ended.text || "ход завершился с ошибкой" : ended.incomplete) : undefined;
+    // Сетевой сбой без ответа (журнал 05.10: Bad Gateway) — один повтор того
+    // же материала; ответ, начатый до сбоя, — уже не сеть, а неполная проверка.
+    const trouble = agent === "gemini" && ended.failed && !text.trim() ? networkFailure(ended.text ?? "") : undefined;
+    if (trouble && !pair.retried && pair.geminiOut) {
+      this.#retryGeminiLater(pair, trouble);
+      return;
+    }
+    const failure = agent === "gemini" ? (ended.failed ? ended.text || "ход завершился с ошибкой" : ended.incomplete) : undefined;
+    const problem = failure && pair.retried ? `${failure}${RETRY_FAILED}` : failure;
     const outcome: ReviewOutcome = problem
       ? { kind: "unchecked", reason: problem }
       : { kind: "verdict", verdict: parseVerdict(text), text, snapshot: this.#snapshots.get(agent) };
     await this.#recordOutcome(pair, agent, outcome);
   }
 
+  /**
+   * Сетевой сбой хода проверки Gemini: пара ждёт его дальше, а тот же
+   * материал уходит ему снова через geminiRetryMs. Всё — синхронно: выход
+   * agy кодом 3 после сбоя (журнал 05.10, через ~5 с) приходит уже в
+   * ожидание и проверку не срывает (#agentCrashed).
+   */
+  #retryGeminiLater(pair: ReviewPair, trouble: string): void {
+    const delay = this.options.geminiRetryMs ?? GEMINI_RETRY_MS;
+    pair.retried = true;
+    pair.geminiPending = true;
+    // unref — ожидание повтора не держит процесс (и тесты) живыми.
+    pair.retryTimer = setTimeout(() => void this.#retryGemini(pair), Math.min(Math.max(1, delay), 2_147_483_647));
+    pair.retryTimer.unref();
+    this.#report(`Gemini: сбой сети (${trouble}) — повтор через ${waitWords(delay)}.`);
+    this.#refresh();
+  }
+
+  /**
+   * Повтор хода Gemini. Пару могли снять или свести без него — тогда
+   * повторять нечего. Срок при замечаниях Codex мог истечь, пока ждали: его
+   * отзыв ещё нужен как поздний (pair.overdue), повтор идёт.
+   */
+  async #retryGemini(pair: ReviewPair): Promise<void> {
+    pair.retryTimer = undefined;
+    pair.geminiPending = false;
+    const out = pair.geminiOut;
+    if (out && this.#pair === pair && this.#isCurrent(pair.cycle) && (pair.waiting.has("gemini") || pair.overdue)) {
+      await this.#send(out);
+    }
+    // Прямые сообщения Gemini ждали повтора: после него они идут обычной очередью.
+    await this.#flushQueue();
+    this.#refresh();
+  }
+
+  /** Повтор хода Gemini больше не нужен: часы — снять, Gemini свободен для очереди. */
+  #cancelGeminiRetry(pair: ReviewPair): void {
+    if (pair.retryTimer) clearTimeout(pair.retryTimer);
+    pair.retryTimer = undefined;
+    pair.geminiPending = false;
+  }
+
+  /** Gemini держит панель (ждёт повтора хода проверки): прямые сообщения ему ждут в очереди. */
+  #geminiReserved(): boolean {
+    return this.#pair?.geminiPending === true;
+  }
+
   async #recordOutcome(pair: ReviewPair, agent: Reviewer, outcome: ReviewOutcome): Promise<void> {
     if (!pair.waiting.delete(agent)) return;
+    // Исход Gemini записан — повтор не нужен; кроме срока при замечаниях
+    // Codex: тогда Gemini ещё проверяет, и его поздний отзыв пригодится (R7).
+    if (agent === "gemini" && !pair.overdue) this.#cancelGeminiRetry(pair);
     pair.outcomes.set(agent, outcome);
     const step = [...this.#trail].reverse().find((sh) => sh.who === agent && sh.round === pair.round);
     if (step && outcome.kind === "verdict") step.mark = MARKS[outcome.verdict];
@@ -1221,8 +1329,13 @@ export class Coordinator {
     this.#geminiTick(pair);
   }
 
-  /** Ход Gemini, идущий сейчас (голова его целей), — проверка именно этой пары (R3). */
+  /**
+   * Ход Gemini, идущий сейчас (голова его целей), — проверка именно этой пары
+   * (R3). Пока пара ждёт повтора его хода, цели нет, но ход — всё ещё её:
+   * иначе по сроку вышло бы «был занят другим ходом».
+   */
   #geminiOnPair(pair: ReviewPair): boolean {
+    if (pair.geminiPending) return true;
     const head = this.#targets.get("gemini")?.[0];
     return head?.role === "review" && head.cycle === pair.cycle && head.round === pair.round;
   }
@@ -1241,7 +1354,9 @@ export class Coordinator {
     const start = Math.max(pair.codexAt, pair.geminiSentAt ?? pair.codexAt);
     const output = ours ? (this.options.gemini?.lastOutputAt ?? 0) : 0;
     const event = ours ? (pair.lastEventAt ?? 0) : 0;
-    return { ours, capAt: pair.codexAt + pair.limit, alive: Math.max(start, output, event) };
+    // Ожидание повтора — признак жизни: молчит панель, а не Gemini.
+    const alive = pair.geminiPending ? Date.now() : Math.max(start, output, event);
+    return { ours, capAt: pair.codexAt + pair.limit, alive };
   }
 
   /** Срок ожидания Gemini для «Эстафеты»: только пока Codex ответил, а Gemini ещё проверяет. */
@@ -1422,6 +1537,8 @@ export class Coordinator {
     }
     this.#targets.delete("gemini");
     this.#buffers.delete("gemini");
+    // Снятая проверка не повторяется: ход, которого ждали, снят вместе с ней.
+    if (this.#pair) this.#cancelGeminiRetry(this.#pair);
     // Новая сессия не помнит прерванного хода — пометка ей не нужна.
     this.#geminiCut = how === "interrupt";
     const stopping = how === "interrupt" ? gemini.interrupt() : (gemini.forgetSession?.() ?? Promise.resolve());
@@ -1669,9 +1786,17 @@ export class Coordinator {
     if (agent === "gemini") {
       // Gemini — не арбитр: его сбой — «не проверял», цикл идёт с Codex.
       // Причина хода — слова самой ошибки (T7-crash), а не общая заглушка.
+      // Пока пара ждёт повтора, выход процесса — следствие того же сетевого
+      // сбоя (agy выходит кодом 3, журнал 05.10): проверку он не срывает.
       const pair = this.#pair;
-      if (pair && this.#isCurrent(pair.cycle) && pending.some((t) => t.role === "review" && t.cycle === pair.cycle && t.round === pair.round)) {
-        await this.#recordOutcome(pair, "gemini", { kind: "unchecked", reason: reason ?? "процесс Gemini завершился" });
+      if (
+        pair &&
+        !pair.geminiPending &&
+        this.#isCurrent(pair.cycle) &&
+        pending.some((t) => t.role === "review" && t.cycle === pair.cycle && t.round === pair.round)
+      ) {
+        const failure = reason ?? "процесс Gemini завершился";
+        await this.#recordOutcome(pair, "gemini", { kind: "unchecked", reason: pair.retried ? `${failure}${RETRY_FAILED}` : failure });
       }
     } else if (pending.some((c) => c.cycle !== undefined && this.#isCurrent(c.cycle))) {
       this.#stage = "stopped";
@@ -1694,7 +1819,8 @@ export class Coordinator {
       this.#report(`${NAMES[o.to]} не подключён — сообщение не отправлено.`);
       return;
     }
-    if (adapter.busy) {
+    // Gemini, ждущий повтора хода проверки, занят ею, хотя адаптер свободен.
+    if (adapter.busy || (o.to === "gemini" && this.#geminiReserved())) {
       // Новее от того же цикла тому же адресату вытесняет старое.
       if (o.target.cycle !== undefined) {
         for (let i = this.#queue.length - 1; i >= 0; i -= 1) {
@@ -1770,9 +1896,10 @@ export class Coordinator {
       const reason = (err as Error).message;
       if (o.to === "gemini" && o.target.role === "review") {
         // Gemini не запустился (нет правил, нет agy, регион): «не проверял», цикл идёт с Codex.
+        // Не запустился повтор после сетевого сбоя — пометка, что сорвался и он.
         const pair = this.#pair;
         if (pair && pair.cycle === o.target.cycle && pair.round === o.target.round) {
-          await this.#recordOutcome(pair, "gemini", { kind: "unchecked", reason });
+          await this.#recordOutcome(pair, "gemini", { kind: "unchecked", reason: pair.retried ? `${reason}${RETRY_FAILED}` : reason });
         }
         return;
       }
@@ -1821,7 +1948,7 @@ export class Coordinator {
         this.#queue.splice(i, 1);
         continue;
       }
-      if (adapter.busy) {
+      if (adapter.busy || (o.to === "gemini" && this.#geminiReserved())) {
         i += 1;
         continue;
       }

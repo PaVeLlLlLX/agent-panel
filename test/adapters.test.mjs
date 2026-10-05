@@ -2081,6 +2081,33 @@ test("Codex: при возобновлении ветки роль реценз�
     }
   });
 
+  test("Gemini: сетевой сбой — причина из short_error строки AGY_ERROR, выход кодом 3, следующий ход продолжает разговор (журнал 05.10)", async () => {
+    // Журнал 05.10 00:38: у настоящего AGY_ERROR нет поля message, есть
+    // short_error. Прежде причиной становилась вся строка «AGY_ERROR: {…}».
+    const s = collector();
+    const a = gemini(s);
+    try {
+      await a.send({ text: "СБОЙ-СЕТИ-ОДИН-РАЗ", from: "human" });
+      await waitFor(() => completed(s.events).length === 1 && errors(s.events).length === 1, "сбой хода и выход процесса");
+      const failed = completed(s.events)[0];
+      assert.equal(failed.failed, true);
+      assert.match(failed.text, /^ход завершён: ERROR — agent executor error: .*: Bad Gateway \(Bad Gateway\)$/);
+      assert.doesNotMatch(failed.text, /AGY_ERROR|short_error|retryable/, "причина — short_error, а не строка AGY_ERROR целиком");
+      assert.match(errors(s.events)[0].text, /завершился неожиданно \(код 3/);
+      assert.doesNotMatch(errors(s.events)[0].text, /AGY_ERROR|retryable/);
+      assert.equal(a.busy, false);
+
+      await a.send({ text: "СБОЙ-СЕТИ-ОДИН-РАЗ", from: "human" });
+      await waitFor(() => completed(s.events).length === 2, "повторный ход");
+      assert.equal(completed(s.events)[1].failed, undefined, "второй раз — обычный ответ");
+      assert.deepEqual(s.events.filter((e) => e.kind === "message").map((e) => e.text), ["готово: файл прочитан"]);
+      const second = launches(s.events)[1];
+      assert.deepEqual(second.slice(second.indexOf("--conversation"), second.indexOf("--conversation") + 2), ["--conversation", "fake-agy-conv"]);
+    } finally {
+      await a.stop();
+    }
+  });
+
   test("Gemini: ERROR после полного ответа — ход не провален: реплика одна, ошибка в диагностике и в конце хода (живой прогон 04.10)", async () => {
     // Живой прогон 04.10 (seq 57682–57683): Gemini ответил целиком и закончил
     // вердиктом, а result пришёл со status ERROR и «API error (attempt 2): …
