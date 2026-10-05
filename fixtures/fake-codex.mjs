@@ -44,6 +44,10 @@
  * путь внутри writableRoots политики workspaceWrite — файл пишется на диск
  * и ответ {exitCode: 0}; иначе — ошибка JSON-RPC «sandbox denied», как у
  * настоящего (проба 05.10). Параметры — в stderr строкой «ПАРАМЕТРЫ-КОМАНДЫ {…}».
+ * Как у настоящего (живая проверка 05.10, вечер), рабочая папка ПРОЦЕССА
+ * app-server — лишний корень записи, хотя cwd и writableRoots запроса
+ * называют только папку проверок: процесс, запущенный в проекте, пишет в
+ * проект. Рабочая папка процесса — поле processCwd в «ПАРАМЕТРЫ-ВЕТКИ».
  *
  * И скрипт Gemini — `<python> <файл>.py` (ступень 3): ответ «выполнено <имя
  * файла>» с кодом 0. Слова в файле:
@@ -71,6 +75,7 @@ const logThread = (resume, params) =>
     resume,
     ...(resume ? { threadId: params.threadId } : {}),
     cwd: params.cwd,
+    processCwd: process.cwd(),
     approvalPolicy: params.approvalPolicy,
     sandbox: params.sandbox,
     profile: Boolean(params.config?.permissions),
@@ -211,8 +216,9 @@ lines.on("line", (line) => {
         return;
       }
       const policy = p.sandboxPolicy ?? {};
-      const allowed =
-        EXEC_BROKEN || (policy.type === "workspaceWrite" && (policy.writableRoots ?? []).some((root) => within(target, root)));
+      // Рабочая папка процесса — корень записи наравне с writableRoots (шапка).
+      const roots = [...(policy.writableRoots ?? []), process.cwd()];
+      const allowed = EXEC_BROKEN || (policy.type === "workspaceWrite" && roots.some((root) => within(target, root)));
       if (allowed) {
         try {
           writeFileSync(target, "x");

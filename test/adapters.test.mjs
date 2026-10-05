@@ -2175,6 +2175,7 @@ test("Codex с папкой проверок: самопроверка до ве
     assert.equal(existsSync(join(project, ".agent-panel-probe")), false);
 
     const p = threadParams(s.events)[0];
+    assert.equal(p.processCwd, folder, "процесс app-server — в папке проверок (живой цикл 05.10)");
     assert.equal(p.resume, false);
     assert.equal(p.profile, true);
     assert.equal("sandbox" in p, false, "поле sandbox при профиле не передаётся");
@@ -2239,6 +2240,7 @@ test("Codex: профиль прав не принят (Codex обновился
     assert.equal(readOnly.sandbox, "read-only");
     assert.equal(readOnly.approvalPolicy, "never");
     assert.equal(readOnly.cwd, project, "ступень 1 — рабочая папка проект");
+    assert.equal(readOnly.processCwd, folder, "процесс тот же — в папке проверок; проект — рабочая папка ветки");
     assert.equal(readOnly.developerInstructions, reviewerRole([]), "роль без папки проверок");
     assert.equal(processStarts(s.events), 1, "отказ в профиле — тот же процесс: ветка не загружена");
     const lines = errors(s.events);
@@ -2278,6 +2280,55 @@ test("Codex: самопроверка — запись в проект прош�
   }
 });
 
+test("Codex с папкой проверок: app-server запускается в папке проверок — из проекта command/exec пишет в проект (живой цикл 05.10)", async () => {
+  // Живой цикл 05.10, вечер: процесс app-server запускался в проекте, и
+  // запись самопроверки в проект проходила. Рабочая папка процесса для
+  // command/exec — лишний корень записи (живая проверка в тот же вечер;
+  // фальшивка ведёт себя так же). Песочница при этом навсегда дала проекту
+  // право записи, а проверка шла «только чтение».
+  const s = collector();
+  const { project, folder } = checksRoom();
+  const a = codex(s, { cwd: project, review: { folder } });
+  try {
+    await a.send({ text: "здравствуй", from: "claude" });
+    await waitFor(() => ends(s.events) === 1, "ход под профилем");
+    const [p, ...rest] = threadParams(s.events);
+    assert.equal(rest.length, 0);
+    assert.equal(p.processCwd, folder, "процесс — в папке проверок, а не в проекте");
+    assert.equal(p.profile, true, "самопроверка прошла — ветка с профилем");
+    assert.deepEqual(errors(s.events), [], "без отката на «только чтение»");
+    assert.equal(existsSync(join(project, ".agent-panel-probe")), false, "в проект ничего не записано");
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Codex: папку проверок не создать — процесс в проекте (иначе он не запустится), ветка «только чтение», строка в ленте", async () => {
+  const s = collector();
+  const project = catalog();
+  const blocker = join(catalog(), "не-папка");
+  writeFileSync(blocker, "файл на месте родителя");
+  const folder = join(blocker, "codex");
+  const a = codex(s, { cwd: project, review: { folder } });
+  try {
+    await a.send({ text: "здравствуй", from: "claude" });
+    await waitFor(() => ends(s.events) === 1, "ход «только чтение»");
+    const [p, ...rest] = threadParams(s.events);
+    assert.equal(rest.length, 0);
+    assert.equal(p.processCwd, project);
+    assert.equal(p.profile, false);
+    assert.equal(p.cwd, project);
+    assert.equal(execParams(s.events).length, 0, "без папки самопроверки нет");
+    const lines = errors(s.events);
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].failed, undefined);
+    assert.match(lines[0].text, FALLBACK);
+    assert.match(lines[0].text, /папка проверок не создана/);
+  } finally {
+    await a.stop();
+  }
+});
+
 test("Codex: профиль принят, а ответ без него — новый процесс и ветка «только чтение»", async () => {
   // Решение пробы (а): принятие профиля видно только по ответу thread/start|resume;
   // ветка уже загружена с чужими правами — её место в новом процессе.
@@ -2293,6 +2344,8 @@ test("Codex: профиль принят, а ответ без него — но
     assert.equal(readOnly.profile, false);
     assert.equal(readOnly.sandbox, "read-only");
     assert.equal(readOnly.resume, false, "новая ветка: первая не продолжается");
+    assert.equal(readOnly.cwd, project);
+    assert.deepEqual([withProfile.processCwd, readOnly.processCwd], [folder, folder], "и новый процесс — в папке проверок");
     assert.equal(processStarts(s.events), 2, "ветка с чужими правами осталась в прежнем процессе");
     const lines = errors(s.events);
     assert.equal(lines.length, 1);
@@ -2322,13 +2375,13 @@ test("Codex: переключатель проверок — со следующ
     await waitFor(() => ends(s.events) === 4, "ход 4");
     const launches = threadParams(s.events);
     assert.deepEqual(
-      launches.map((p) => [p.resume, p.threadId, p.profile, p.cwd]),
+      launches.map((p) => [p.resume, p.threadId, p.profile, p.cwd, p.processCwd]),
       [
-        [false, undefined, false, project],
-        [true, "fake-thread-1", true, folder],
-        [true, "fake-thread-1", false, project],
+        [false, undefined, false, project, project],
+        [true, "fake-thread-1", true, folder, folder],
+        [true, "fake-thread-1", false, project, project],
       ],
-      "то же значение переключателя процесс не перезапускает",
+      "то же значение переключателя процесс не перезапускает; процесс — в папке проверок, только пока они включены",
     );
     assert.equal(processStarts(s.events), 3);
     assert.deepEqual(errors(s.events), []);

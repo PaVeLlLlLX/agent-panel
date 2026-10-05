@@ -25,6 +25,8 @@
  * принятие профиля видно только по ответу thread/start|resume. Перед веткой —
  * самопроверка command/exec (запись в папку проходит, в проект — нет). Любой
  * провал — ветка «только чтение» (ступень 1) и строка в ленте, ход не провален.
+ * Процесс app-server с папкой проверок запускается в ней: его рабочая папка
+ * для command/exec — тоже корень записи (живой цикл 05.10, вечер).
  *
  * **Команды чтения рецензенту разрешены** (ступень 1, 05.10): rg, git,
  * python -c над кодом — он проверяет утверждения сам, а не по пересказу.
@@ -408,7 +410,15 @@ export class CodexAdapter implements Adapter {
         trouble = { what: "папка проверок не создана", detail: (err as Error).message };
       }
     }
-    let k = this.#spawn();
+    // С папкой проверок процесс запускается в ней. Рабочая папка процесса
+    // app-server для command/exec — лишний корень записи, даже когда cwd и
+    // writableRoots запроса называют только папку: процесс, запущенный в
+    // проекте, писал в проект, а unelevated-песочница навсегда давала проекту
+    // право записи (живой цикл и живая проверка 05.10, вечер). Ветка «только
+    // чтение» и в этом процессе получает cwd проекта в thread/start. Папку не
+    // создать — процесс в проекте: в несуществующей папке он не запустится.
+    const processCwd = review && !trouble ? review.folder : this.options.cwd;
+    let k = this.#spawn(processCwd);
     try {
       await this.#initialize(k);
       // Известная ветка продолжается, иначе создаётся новая. Известная — своя
@@ -434,7 +444,7 @@ export class CodexAdapter implements Adapter {
           // время, ждёт этого же запуска. Прежний снимается до того, как новый
           // откроет ветку, — два процесса с одной веткой не работают.
           const previous = k;
-          k = this.#spawn();
+          k = this.#spawn(processCwd);
           await this.#retire(previous);
           await this.#initialize(k);
         }
@@ -459,12 +469,12 @@ export class CodexAdapter implements Adapter {
     }
   }
 
-  /** Процесс app-server с разбором его вывода; становится текущим. */
-  #spawn(): Context {
+  /** Процесс app-server в папке cwd с разбором его вывода; становится текущим. */
+  #spawn(cwd: string): Context {
     const proc = spawnProcess(
       this.options.command,
       [...(this.options.commandArgs ?? []), "app-server"],
-      this.options.cwd,
+      cwd,
       this.options.shell,
     );
     const k: Context = {
