@@ -43,9 +43,19 @@
  * путь внутри writableRoots политики workspaceWrite — файл пишется на диск
  * и ответ {exitCode: 0}; иначе — ошибка JSON-RPC «sandbox denied», как у
  * настоящего (проба 05.10). Параметры — в stderr строкой «ПАРАМЕТРЫ-КОМАНДЫ {…}».
+ *
+ * И скрипт Gemini — `<python> <файл>.py` (ступень 3): ответ «выполнено <имя
+ * файла>» с кодом 0. Слова в файле:
+ *   ДОЛГО            — через timeoutMs ошибка «command timed out» без вывода,
+ *                      как при превышении срока на пробе 05.10;
+ *   ЗАПИСЬ-В-ПРОЕКТ  — ошибка «sandbox denied exec error, exit code: 1,
+ *                      stdout: …, stderr: …» (отказ песочницы);
+ *   ОШИБКА-СКРИПТА   — код 1 и Traceback в stderr;
+ *   ДЛИННЫЙ-ВЫВОД    — 30 000 знаков вывода и строка «конец»;
+ *   ПОКАЖИ-ПАРАМЕТРЫ — вывод — параметры command/exec в JSON.
  */
-import { existsSync, writeFileSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 
 const THREAD = "fake-thread-1";
@@ -94,6 +104,34 @@ const threadRights = (params) => {
     },
     activePermissionProfile: { id: name, extends: null },
   };
+};
+
+/** Скрипт Gemini через command/exec: исход — по словам в файле (шапка). */
+const runScript = (id, params, file) => {
+  const fail = (message) => send({ jsonrpc: "2.0", id, error: { code: -32603, message } });
+  const ok = (exitCode, stdout, stderr = "") => send({ jsonrpc: "2.0", id, result: { exitCode, stdout, stderr } });
+  let code;
+  try {
+    code = readFileSync(file, "utf8");
+  } catch (err) {
+    ok(2, "", `python: can't open file '${file}': ${err.message}`);
+    return;
+  }
+  if (code.includes("ДОЛГО")) {
+    setTimeout(() => fail("exec failed: sandbox error: command timed out"), Math.min(Number(params.timeoutMs) || 1000, 60_000));
+    return;
+  }
+  if (code.includes("ЗАПИСЬ-В-ПРОЕКТ")) {
+    fail(
+      "exec failed: sandbox error: sandbox denied exec error, exit code: 1, stdout: начал запись\r\n, " +
+        "stderr: Traceback (most recent call last):\r\nPermissionError: [Errno 13] Permission denied: 'C:/p/x.txt'\r\n",
+    );
+    return;
+  }
+  if (code.includes("ОШИБКА-СКРИПТА")) ok(1, "", "Traceback (most recent call last):\r\nKeyError: 'date'\r\n");
+  else if (code.includes("ДЛИННЫЙ-ВЫВОД")) ok(0, `${"a".repeat(30_000)}\nконец\n`);
+  else if (code.includes("ПОКАЖИ-ПАРАМЕТРЫ")) ok(0, JSON.stringify(params));
+  else ok(0, `выполнено ${basename(file)}\n`);
 };
 
 process.stderr.write(
@@ -161,6 +199,10 @@ lines.on("line", (line) => {
       const p = z.params ?? {};
       process.stderr.write(`ПАРАМЕТРЫ-КОМАНДЫ ${JSON.stringify(p)}\n`);
       const command = Array.isArray(p.command) ? p.command : [];
+      if (command.length === 2 && /\.py$/i.test(String(command[1]))) {
+        runScript(z.id, p, String(command[1]));
+        return;
+      }
       const target = command[1] === "-c" && typeof command[3] === "string" ? command[3] : undefined;
       if (!target) {
         send({ jsonrpc: "2.0", id: z.id, error: { code: -32603, message: "exec failed: фальшивка понимает только самопроверку" } });

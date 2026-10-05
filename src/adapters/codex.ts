@@ -160,8 +160,9 @@ function profileConfig(folder: string): Record<string, unknown> {
 /**
  * Политика command/exec — строгая форма: без excludeTmpdirEnvVar корнем
  * записи становится %TEMP% пользователя и всё, что в нём лежит (проба 05.10).
+ * Та же — у исполнителя скриптов Gemini (checkRunner.ts).
  */
-function execPolicy(folder: string): Record<string, unknown> {
+export function execPolicy(folder: string): Record<string, unknown> {
   return { type: "workspaceWrite", writableRoots: [folder], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true };
 }
 

@@ -19,10 +19,11 @@ import { ClaudeAdapter } from "./adapters/claude.js";
 import { CodexAdapter } from "./adapters/codex.js";
 import { GeminiAdapter } from "./adapters/gemini.js";
 import { Adapter, ApprovalChoice, ModelChoice, ModelOption, PanelEvent, forDisplay, questionAnswers, stripAnsi } from "./adapters/types.js";
-import { Coordinator, RoomState, Route } from "./coordinator.js";
+import { Coordinator, GeminiChecks, RoomState, Route } from "./coordinator.js";
 import { Journal } from "./journal.js";
 import { describeChoice, normalizeChoice, sameChoice } from "./models.js";
 import { resolveCodexCommand } from "./codexBinary.js";
+import { pythonFor, runCheck } from "./checkRunner.js";
 import { codexRoomOptions, reviewFor } from "./codexOptions.js";
 import { ensureReviewFolder, reviewFolderFor } from "./reviewFolder.js";
 import { resolveGeminiCommand } from "./geminiBinary.js";
@@ -47,6 +48,12 @@ const AGENT_NAMES: Record<SelectableAgent, string> = { claude: "Claude", codex: 
  */
 function checksAllowed(): boolean {
   return vscode.workspace.getConfiguration("agentPanel").get<boolean>("reviewerChecks", false) === true;
+}
+
+/** Срок одного скрипта Gemini (agentPanel.reviewerCheckSeconds), мс: не меньше 5 с. Читается к каждому скрипту. */
+function checkTimeoutMs(): number {
+  const seconds = Number(vscode.workspace.getConfiguration("agentPanel").get<number>("reviewerCheckSeconds", 60));
+  return Math.max(5, Number.isFinite(seconds) ? seconds : 60) * 1000;
 }
 
 /** Режимы разрешений, которые принимает Claude Code (2.1.220 и 2.1.280), плюс default — не передавать флаг. */
@@ -84,6 +91,8 @@ class Room {
   readonly #codex: CodexAdapter;
   /** Папка проверок Codex комнаты — вне репозитория (ступень 2). */
   readonly #reviewFolder: string;
+  /** Исполнитель скриптов Gemini (ступень 3), если проверки включены; Gemini нет — никогда. */
+  readonly #geminiChecks: () => GeminiChecks | undefined;
   readonly #listeners: vscode.Disposable[] = [];
 
   constructor(context: vscode.ExtensionContext, cwd: string) {
@@ -157,11 +166,8 @@ class Room {
     // настройка папки проекта (у Trading — данные). Тот же разобранный
     // список получает координатор для стоп-сигнала на командах Codex.
     // Папка проверок — когда включены и общая настройка, и переключатель комнаты.
-    this.#reviewFolder = reviewFolderFor(
-      process.env["LOCALAPPDATA"] ?? join(homedir(), "AppData", "Local"),
-      this.#name,
-      "codex",
-    );
+    const localAppData = process.env["LOCALAPPDATA"] ?? join(homedir(), "AppData", "Local");
+    this.#reviewFolder = reviewFolderFor(localAppData, this.#name, "codex");
     const codexOptions = codexRoomOptions({
       launch: codexLaunch,
       cwd,
@@ -215,6 +221,30 @@ class Room {
 
     this.#agents = gemini ? ["claude", "codex", "gemini"] : ["claude", "codex"];
     this.#adapters = { claude, codex, ...(gemini ? { gemini } : {}) };
+
+    // Скрипты Gemini (блоки «проверка») выполняет панель — коротким процессом
+    // того же codex, в папке проверок Gemini, с тем же запретом путей, что у
+    // Codex. Только при включённых общей настройке и переключателе комнаты.
+    const geminiFolder = reviewFolderFor(localAppData, this.#name, "gemini");
+    this.#geminiChecks = () => {
+      if (!gemini || !reviewFor(checksAllowed(), this.#journal.binding(this.#name), geminiFolder)) return undefined;
+      return {
+        forbidden: codexOptions.forbidden ?? [],
+        run: (name, code, signal) =>
+          runCheck({
+            command: codexLaunch.command,
+            ...(codexLaunch.shell !== undefined ? { shell: codexLaunch.shell } : {}),
+            folder: geminiFolder,
+            python: pythonFor(cwd),
+            name,
+            code,
+            timeoutMs: checkTimeoutMs(),
+            project: cwd,
+            ...(signal ? { signal } : {}),
+          }),
+      };
+    };
+    const geminiChecks = this.#geminiChecks();
     this.#coordinator = new Coordinator(claude, codex, this.#journal, {
       room: this.#name,
       cwd,
@@ -222,6 +252,7 @@ class Room {
       evidenceBudget: settings.get<number>("reviewEvidenceChars", 240_000),
       taskTokenLimit: settings.get<number>("taskTokenLimit", 0),
       ...(codexOptions.forbidden ? { forbidden: codexOptions.forbidden } : {}),
+      ...(geminiChecks ? { checks: geminiChecks } : {}),
       ...(memoryCommand
         ? { memory: (text: string, catalog: string) => runMemorySearch(memoryCommand, catalog, text) }
         : {}),
@@ -321,8 +352,10 @@ class Room {
           this.#applyReviewerChecks();
           this.#coordinator.notice(
             on
-              ? `Проверки рецензентов включены — со следующего хода Codex пишет и запускает свои скрипты только в папке проверок (${this.#reviewFolder}).`
-              : "Проверки рецензентов выключены — со следующего хода Codex только читает проект.",
+              ? `Проверки рецензентов включены — со следующего хода Codex пишет и запускает свои скрипты только в папке проверок (${this.#reviewFolder}).` +
+                  (this.#agents.includes("gemini") ? " Блоки «проверка» Gemini панель выполняет в песочнице Codex, в его папке проверок." : "")
+              : "Проверки рецензентов выключены — со следующего хода Codex только читает проект" +
+                  (this.#agents.includes("gemini") ? ", блоки «проверка» Gemini не выполняются." : "."),
           );
           return;
         }
@@ -436,9 +469,13 @@ class Room {
     await this.#memento.update(this.#modelsKey, this.#choices);
   }
 
-  /** Переключатель комнаты или общая настройка сменились: Codex — со следующего хода, webview — сразу. */
+  /**
+   * Переключатель комнаты или общая настройка сменились: Codex — со
+   * следующего хода, скрипты Gemini — со следующего его ответа, webview — сразу.
+   */
   #applyReviewerChecks(): void {
     this.#codex.setReview(reviewFor(checksAllowed(), this.#journal.binding(this.#name), this.#reviewFolder));
+    this.#coordinator.setChecks(this.#geminiChecks());
     this.#postReviewerChecks();
   }
 
