@@ -23,6 +23,7 @@ import {
   reviewerAgentMarkdown,
   rulesRefusal,
 } from "../out/geminiSetup.js";
+import { VERIFICATION_RULES } from "../out/adapters/types.js";
 
 const home = () => mkdtempSync(join(tmpdir(), "home-"));
 
@@ -121,6 +122,9 @@ test("роль рецензента: в начале тела, сразу под
   assert.equal(lines[0], "# Рецензент методологии и фактов");
   assert.equal(lines[1], "Будь честен в своём ответе.");
   assert.equal(REVIEWER_AGENT_MD.split("\n---\n")[1].split("\n").filter((line) => line.trim() !== "")[1], "Будь честен в своём ответе.");
+  // Сразу за ней — правила утверждений (рекомендации /insights, решение владельца 05.10).
+  const flat = flatRole();
+  assert.ok(flat.includes(`Будь честен в своём ответе. ${VERIFICATION_RULES}`), "правила утверждений сразу за строкой честности");
 });
 
 test("роль рецензента: правила проекта — файл из шапки, иначе GEMINI.md, иначе AGENTS.md, перечитать при изменении; роль важнее (проверка Trading 02.10)", () => {

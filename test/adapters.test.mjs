@@ -27,6 +27,10 @@ import { fileURLToPath } from "node:url";
 
 import { ClaudeAdapter, formatForClaude } from "../out/adapters/claude.js";
 import { CodexAdapter, reviewerRole } from "../out/adapters/codex.js";
+import { VERIFICATION_RULES } from "../out/adapters/types.js";
+
+/** Строка честности и правила утверждений в шапке сообщения Claude (05.10). */
+const HONESTY_HEAD = `[Будь честен в своём ответе. ${VERIFICATION_RULES}]`;
 import { codexRoomOptions, reviewFor } from "../out/codexOptions.js";
 import { Journal } from "../out/journal.js";
 import { GeminiAdapter, formatForGemini } from "../out/adapters/gemini.js";
@@ -1079,7 +1083,7 @@ test("Claude: выбранные модель и уровень передают
   }
 });
 
-test("Claude: запускается с --append-system-prompt «Будь честен в своём ответе.» — и после перезапуска (просьба владельца 05.10)", async () => {
+test("Claude: запускается с --append-system-prompt «Будь честен в своём ответе.» и правилами утверждений — и после перезапуска (просьба владельца 05.10)", async () => {
   const s = collector();
   const a = claude(s);
   try {
@@ -1091,7 +1095,7 @@ test("Claude: запускается с --append-system-prompt «Будь чес
     const all = launches(s.events);
     assert.equal(all.length, 2);
     for (const argv of all) {
-      assert.equal(flag(argv, "--append-system-prompt"), "Будь честен в своём ответе.", argv.join(" "));
+      assert.equal(flag(argv, "--append-system-prompt"), `Будь честен в своём ответе. ${VERIFICATION_RULES}`, argv.join(" "));
       assert.equal(argv.filter((it) => it === "--append-system-prompt").length, 1);
     }
   } finally {
@@ -1452,14 +1456,18 @@ test("Claude: session_id сообщается обратным вызовом", 
   }
 });
 
-test("Claude: заголовок сообщения — из prompt.heading, иначе по отправителю; в шапке — строка честности", () => {
-  assert.match(formatForClaude({ text: "т", from: "human" }), /^\[от человека\]\n\[Будь честен в своём ответе\.\]\nт$/);
-  assert.match(formatForClaude({ text: "т", from: "codex" }), /^\[замечание рецензента Codex\]\n\[Будь честен в своём ответе\.\]\n/);
-  assert.match(formatForClaude({ text: "т", from: "gemini" }), /^\[замечание рецензента Gemini\]\n\[Будь честен в своём ответе\.\]\n/);
-  assert.match(formatForClaude({ text: "т", from: "system" }), /^\[от панели\]\n\[Будь честен в своём ответе\.\]\n/);
+test("Claude: заголовок сообщения — из prompt.heading, иначе по отправителю; в шапке — строка честности и правила утверждений", () => {
+  // Правила утверждений — рекомендации /insights, решение владельца 05.10.
+  assert.match(VERIFICATION_RULES, /«Проверено», «исправлено», «причина найдена» — только если ты запускал проверку/);
+  assert.match(VERIFICATION_RULES, /«измерено» \(видно в выводе\) или «предположение»/);
+  assert.match(VERIFICATION_RULES, /что именно не проверено/);
+  assert.equal(formatForClaude({ text: "т", from: "human" }), `[от человека]\n${HONESTY_HEAD}\nт`);
+  assert.equal(formatForClaude({ text: "т", from: "codex" }), `[замечание рецензента Codex]\n${HONESTY_HEAD}\nт`);
+  assert.equal(formatForClaude({ text: "т", from: "gemini" }), `[замечание рецензента Gemini]\n${HONESTY_HEAD}\nт`);
+  assert.equal(formatForClaude({ text: "т", from: "system" }), `[от панели]\n${HONESTY_HEAD}\nт`);
   assert.equal(
     formatForClaude({ text: "т", from: "codex", heading: "[замечания рецензентов Codex и Gemini]", snapshot: "abc" }),
-    "[замечания рецензентов Codex и Gemini]\n[версия файлов: abc]\n[Будь честен в своём ответе.]\nт",
+    `[замечания рецензентов Codex и Gemini]\n[версия файлов: abc]\n${HONESTY_HEAD}\nт`,
   );
 });
 
@@ -1480,8 +1488,8 @@ test("Claude: строка честности доходит и до возоб�
       .filter((e) => e.kind === "diagnostic" && (e.text ?? "").startsWith("ВВОД "))
       .map((e) => JSON.parse(e.text.slice("ВВОД ".length)));
     assert.deepEqual(inputs, [
-      "[от человека]\n[Будь честен в своём ответе.]\nздравствуй",
-      "[замечания рецензентов Codex и Gemini]\n[Будь честен в своём ответе.]\nзамечание",
+      `[от человека]\n${HONESTY_HEAD}\nздравствуй`,
+      `[замечания рецензентов Codex и Gemini]\n${HONESTY_HEAD}\nзамечание`,
     ]);
   } finally {
     await a.stop();
@@ -2149,6 +2157,9 @@ test("Codex: без продолжаемой ветки — thread/start с ро
 test("роль Codex: первая строка — «Будь честен в своём ответе.», и с папкой проверок тоже (просьба владельца 05.10)", () => {
   assert.equal(reviewerRole([]).split("\n")[0], "Будь честен в своём ответе.");
   assert.equal(reviewerRole([".env"], { folder: "C:\\review\\x-1\\codex", project: "C:\\work\\x" }).split("\n")[0], "Будь честен в своём ответе.");
+  // Вторая строка — правила утверждений (рекомендации /insights, решение владельца 05.10).
+  assert.equal(reviewerRole([]).split("\n")[1], VERIFICATION_RULES);
+  assert.equal(reviewerRole([".env"], { folder: "C:\\review\\x-1\\codex", project: "C:\\work\\x" }).split("\n")[1], VERIFICATION_RULES);
 });
 
 test("роль Codex: читать репозиторий командами можно; проект, сеть, долгие процессы и запрещённые пути — нельзя", () => {

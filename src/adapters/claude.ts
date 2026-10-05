@@ -60,6 +60,7 @@ import {
   clampKeepingFull,
   addUsage,
   HONESTY_LINE,
+  VERIFICATION_RULES,
   LimitInfo,
   NO_USAGE,
   TurnUsage,
@@ -151,7 +152,7 @@ export function formatForClaude(prompt: AgentPrompt): string {
           ? "[замечание рецензента Gemini]"
           : "[от панели]");
   const version = prompt.snapshot ? `\n[версия файлов: ${prompt.snapshot}]` : "";
-  return `${heading}${version}\n[${HONESTY_LINE}]\n${prompt.text}`;
+  return `${heading}${version}\n[${HONESTY_LINE} ${VERIFICATION_RULES}]\n${prompt.text}`;
 }
 
 /** Запрос разрешения, на который человек ещё не ответил. */
@@ -420,7 +421,7 @@ export class ClaudeAdapter implements Adapter {
       // идёт в шапке каждого сообщения (formatForClaude). В кавычках через
       // cmd.exe: пробелы иначе разбили бы строку на слова.
       "--append-system-prompt",
-      argumentForLaunch(HONESTY_LINE, this.options.shell),
+      argumentForLaunch(`${HONESTY_LINE} ${VERIFICATION_RULES}`, this.options.shell),
       ...(settingSources ? ["--setting-sources", settingSources] : []),
       ...(this.#choice.model ? ["--model", this.#choice.model] : []),
       ...(this.#choice.effort ? ["--effort", this.#choice.effort] : []),

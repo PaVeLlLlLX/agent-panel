@@ -13,7 +13,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { HONESTY_LINE } from "./adapters/types.js";
+import { HONESTY_LINE, VERIFICATION_RULES } from "./adapters/types.js";
 
 export const REVIEWER_AGENT = "agent-panel-reviewer";
 
@@ -112,6 +112,7 @@ export function reviewerAgentMarkdown(name: string, excludeDefault: boolean): st
     "# Рецензент методологии и фактов",
     "",
     HONESTY_LINE,
+    ...wrapLines(VERIFICATION_RULES, 92, ""),
     "",
     "Ты второй рецензент в комнате Agent Panel: человек ставит задачу, разработчик Claude Code",
     "её выполняет, рецензент Codex проверяет код и сырой вывод. Ты проверяешь то, чего Codex",

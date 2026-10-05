@@ -83,6 +83,7 @@ import {
   HONESTY_LINE,
   LimitInfo,
   TurnUsage,
+  VERIFICATION_RULES,
   newEventId,
   stripAnsi,
 } from "./types.js";
@@ -1326,6 +1327,7 @@ export function reviewerRole(
 ): string {
   return [
     HONESTY_LINE,
+    VERIFICATION_RULES,
     "",
     "Ты рецензент в общей комнате с человеком и разработчиком Claude Code.",
     "",
