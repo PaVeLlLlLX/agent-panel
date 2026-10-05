@@ -918,10 +918,16 @@ export class Coordinator {
     // Прежняя — у адаптера, а пока Codex не поднял ветку (он поднимает её
     // при первой отправке) — в привязке комнаты: иначе строка ниже сказала
     // бы «прежней не было» о ветке, которую следующий ход продолжил бы.
+    // У Codex это своя ветка рецензента: чат владельца (codexThreadId)
+    // следующий ход не продолжил бы и с 05.10 прежней сессией не назван.
     const bound = this.journal.closed ? undefined : this.journal.binding(this.options.room);
     const previousSession =
       adapter.sessionId ??
-      (agent === "claude" ? bound?.claudeSessionId : agent === "codex" ? bound?.codexThreadId : bound?.geminiConversationId);
+      (agent === "claude"
+        ? bound?.claudeSessionId
+        : agent === "codex"
+          ? bound?.codexReviewThreadId
+          : bound?.geminiConversationId);
     // Журнал — раньше остановки: закрытие панели во время неё не вернёт
     // прежнюю привязку (рецензия Codex 28.09).
     this.journal.forgetSession(this.options.room, agent);

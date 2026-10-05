@@ -194,3 +194,44 @@ test("журнал прежней версии получает колонку �
   assert.equal(p.claudeSessionId, "claude-old", "прежняя привязка на месте");
   journal.close();
 });
+
+test("своя ветка рецензента Codex: прежний чат владельца не становится ею", () => {
+  // Решение владельца 05.10: у рецензента своя ветка на комнату, а чат
+  // владельца в codex_thread панель больше не продолжает — он остаётся в
+  // журнале историей.
+  const filePath = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const oldDb = new DatabaseSync(filePath);
+  oldDb.exec(`
+    CREATE TABLE rooms (room TEXT PRIMARY KEY, cwd TEXT NOT NULL, claude_session TEXT, codex_thread TEXT,
+      gemini_conversation TEXT, updated_at INTEGER NOT NULL);
+    INSERT INTO rooms VALUES ('r', 'C:/x', 'claude-old', 'owner-chat', NULL, 1);
+  `);
+  oldDb.close();
+  const journal = new Journal(filePath);
+  let p = journal.binding("r");
+  assert.equal(p.codexReviewThreadId, undefined, "чат владельца не становится веткой рецензента");
+  assert.equal(p.codexThreadId, "owner-chat", "и остаётся в журнале историей");
+  journal.bindCodexReviewThread("r", "review-1");
+  p = journal.binding("r");
+  assert.equal(p.codexReviewThreadId, "review-1");
+  assert.equal(p.codexThreadId, "owner-chat", "своя ветка не перетирает прежнюю");
+  assert.equal(p.claudeSessionId, "claude-old");
+  journal.forgetSession("r", "codex");
+  p = journal.binding("r");
+  assert.equal(p.codexReviewThreadId, undefined, "новая сессия Codex забывает свою ветку");
+  assert.equal(p.codexThreadId, undefined, "и прежний чат владельца");
+  assert.equal(p.claudeSessionId, "claude-old", "привязка Claude на месте");
+  journal.close();
+});
+
+test("ветка рецензента Codex переживает повторное открытие журнала", () => {
+  const filePath = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const journal = new Journal(filePath);
+  journal.ensureRoom("r", "C:/x");
+  journal.bindCodexReviewThread("r", "review-1");
+  journal.forgetSession("r", "claude");
+  journal.close();
+  const reopened = new Journal(filePath);
+  assert.equal(reopened.binding("r").codexReviewThreadId, "review-1", "новая сессия Claude ветку Codex не трогает");
+  reopened.close();
+});

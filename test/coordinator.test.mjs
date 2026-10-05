@@ -1495,6 +1495,7 @@ test("расход: поздний ход прежней задачи и пря�
 test("новая сессия: агент забывает сессию, журнал — привязку, человек видит строку", async () => {
   const { k, claude, journal, events } = room();
   journal.bindSessions("r", "claude-старая", "codex-ветка");
+  journal.bindCodexReviewThread("r", "codex-рецензент");
   claude.forgotten = 0;
   claude.forgetSession = async () => {
     claude.forgotten += 1;
@@ -1503,6 +1504,7 @@ test("новая сессия: агент забывает сессию, жур�
   assert.equal(claude.forgotten, 1);
   assert.equal(journal.binding("r").claudeSessionId, undefined);
   assert.equal(journal.binding("r").codexThreadId, "codex-ветка", "ветку Codex не трогаем");
+  assert.equal(journal.binding("r").codexReviewThreadId, "codex-рецензент", "и его ветку рецензента");
   assert.ok(systemEvents(events).some((e) => /новая сессия Claude/i.test(e.text ?? "")));
   journal.close();
 });
@@ -1587,12 +1589,29 @@ test("новая сессия Codex до его первого хода: пре�
   // адаптера пуст, хотя комната привязана к ветке и следующий ход её бы
   // продолжил. Прежняя — по журналу.
   const { k, codex, journal, events } = room();
-  journal.bindSessions("r", undefined, "codex-ветка-1");
+  journal.bindCodexReviewThread("r", "codex-ветка-1");
   codex.sessionId = undefined;
   await k.newSession("codex");
   const lines = systemEvents(events).filter((e) => /^Новая сессия Codex/.test(e.text ?? ""));
   assert.equal(lines.length, 1);
   assert.match(lines[0].text, /^Новая сессия Codex: прежняя \(codex-ве\) сохранена в истории Codex/);
+  assert.equal(journal.binding("r").codexReviewThreadId, undefined);
+  journal.close();
+});
+
+test("новая сессия Codex в комнате, привязанной к чату владельца: чат не назван прежней сессией", async () => {
+  // Чат владельца (codex_thread) панель больше не продолжает (решение 05.10):
+  // назвать его прежней сессией значило бы сказать, что следующий ход его
+  // продолжил бы. Привязка к нему тоже забывается.
+  const { k, codex, journal, events } = room();
+  journal.bindSessions("r", undefined, "owner-chat");
+  codex.sessionId = undefined;
+  await k.newSession("codex");
+  const lines = systemEvents(events).filter((e) => /^Новая сессия Codex/.test(e.text ?? ""));
+  assert.deepEqual(
+    lines.map((e) => e.text),
+    ["Новая сессия Codex: прежней не было — следующий ход начнёт новую."],
+  );
   assert.equal(journal.binding("r").codexThreadId, undefined);
   journal.close();
 });

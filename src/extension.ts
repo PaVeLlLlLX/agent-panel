@@ -3,8 +3,8 @@
  *
  * Панель владеет обеими сессиями: подписка на поток уже открытой вкладки по
  * идентификатору не гарантирована, а у истории должен быть один управляющий
- * процесс. Ветку чата Codex владельца панель может продолжить: для этого её
- * идентификатор ставится в привязку комнаты, а чат закрывается в приложении.
+ * процесс. У рецензента Codex своя ветка на комнату (решение владельца
+ * 05.10): чат Codex владельца панель больше не продолжает (codexOptions.ts).
  *
  * Агенты запускаются при первом сообщении, а не при открытии: в живом прогоне
  * сессия Claude создавалась просто оттого, что панель открыли в другой папке.
@@ -23,6 +23,7 @@ import { Coordinator, RoomState, Route } from "./coordinator.js";
 import { Journal } from "./journal.js";
 import { describeChoice, normalizeChoice, sameChoice } from "./models.js";
 import { resolveCodexCommand } from "./codexBinary.js";
+import { codexRoomOptions } from "./codexOptions.js";
 import { resolveGeminiCommand } from "./geminiBinary.js";
 import { addReadOnlyRules, agySettingsPath, checkReadOnlyRules, ensureReviewerAgent, reviewerAgentPath, rulesRefusal } from "./geminiSetup.js";
 import { fetchGeminiUsage } from "./geminiUsage.js";
@@ -138,18 +139,18 @@ class Room {
       settings.get<string>("codexCommand", "codex"),
       vscode.extensions.getExtension("openai.chatgpt")?.extensionPath,
     );
+    // Своя ветка рецензента комнаты, не чат владельца; запрещённые пути —
+    // настройка папки проекта (у Trading — данные).
     const codex = new CodexAdapter(
-      {
-        command: codexLaunch.command,
-        ...(codexLaunch.shell !== undefined ? { shell: codexLaunch.shell } : {}),
+      codexRoomOptions({
+        launch: codexLaunch,
         cwd,
-        model: this.#choices.codex.model,
-        effort: this.#choices.codex.effort,
-        ...(binding?.codexThreadId ? { resumeThreadId: binding.codexThreadId } : {}),
-        onSessionId: (id) => {
-          if (!this.#closed) this.#journal.bindSessions(this.#name, undefined, id);
-        },
-      },
+        choice: this.#choices.codex,
+        forbidden: vscode.workspace.getConfiguration("agentPanel", vscode.Uri.file(cwd)).get("reviewerForbidden"),
+        journal: this.#journal,
+        room: this.#name,
+        closed: () => this.#closed,
+      }),
       accept,
     );
 

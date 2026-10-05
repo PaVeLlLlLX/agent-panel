@@ -20,6 +20,10 @@
  *                 и пишет в stderr, что клиент ответил.
  * РАЗРЫВ в id возобновляемой ветки — ответ thread/resume с U+2028/U+2029
  * внутри строки JSON.
+ *
+ * Параметры ветки (thread/start и thread/resume) пишутся в stderr строкой
+ * «ПАРАМЕТРЫ-ВЕТКИ {…}»: resume, id продолжаемой ветки, песочница и роль
+ * целиком — тест читает их из диагностики.
  */
 import { existsSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -27,6 +31,13 @@ import { createInterface } from "node:readline";
 const THREAD = "fake-thread-1";
 const send = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
 const notify = (method, params) => send({ jsonrpc: "2.0", method, params });
+const logThread = (resume, params) =>
+  process.stderr.write(`ПАРАМЕТРЫ-ВЕТКИ ${JSON.stringify({
+    resume,
+    ...(resume ? { threadId: params.threadId } : {}),
+    sandbox: params.sandbox,
+    developerInstructions: String(params.developerInstructions ?? ""),
+  })}\n`);
 
 process.stderr.write(
   "\x1b[2m2026-09-14T17:07:57Z\x1b[0m \x1b[31mERROR\x1b[0m codex_models_manager::manager: failed to refresh available models\n",
@@ -66,17 +77,12 @@ lines.on("line", (line) => {
       reply({});
       return;
     case "thread/start":
+      logThread(false, z.params);
       reply({ thread: { id: THREAD, sessionId: "fake-session" } });
       notify("thread/started", { thread: { id: THREAD } });
       return;
     case "thread/resume":
-      // Параметры возобновления — в stderr: тест читает их из диагностики.
-      process.stderr.write(`ПАРАМЕТРЫ-ВЕТКИ ${JSON.stringify({
-        resume: true,
-        sandbox: z.params.sandbox,
-        developerInstructions: String(z.params.developerInstructions ?? "").slice(0, 60),
-      })}
-`);
+      logThread(true, z.params);
       // РАЗРЫВ в id ветки: в истории U+2028/U+2029 «как есть» — так их пишет
       // настоящий app-server, и JSON.stringify здесь тоже их не экранирует.
       reply({

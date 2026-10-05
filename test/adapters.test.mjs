@@ -22,10 +22,13 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
 import { ClaudeAdapter, formatForClaude } from "../out/adapters/claude.js";
-import { CodexAdapter } from "../out/adapters/codex.js";
+import { CodexAdapter, reviewerRole } from "../out/adapters/codex.js";
+import { codexRoomOptions } from "../out/codexOptions.js";
+import { Journal } from "../out/journal.js";
 import { GeminiAdapter, formatForGemini } from "../out/adapters/gemini.js";
 
 const fixturePath = (name) => fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url));
@@ -1870,6 +1873,162 @@ test("Codex: при возобновлении ветки роль реценз�
     assert.match(p.developerInstructions, /рецензент/i, "без инструкции ветка сохранит прежнюю роль");
   } finally {
     await a.stop();
+  }
+});
+
+test("Codex: без продолжаемой ветки — thread/start с ролью рецензента и read-only", async () => {
+  const s = collector();
+  const a = codex(s);
+  try {
+    await a.start();
+    await waitFor(() => threadParams(s.events).length === 1, "параметры новой ветки");
+    const p = threadParams(s.events)[0];
+    assert.equal(p.resume, false);
+    assert.equal(p.sandbox, "read-only", "права ступени 1 — прежние");
+    assert.match(p.developerInstructions, /рецензент/i);
+  } finally {
+    await a.stop();
+  }
+});
+
+test("роль Codex: читать репозиторий командами можно; проект, сеть, долгие процессы и запрещённые пути — нельзя", () => {
+  // Ступень 1 (спека 05.10): Codex проверяет утверждения сам, командами
+  // чтения, а не только по пересказу Claude. Запрещённые пути — данные и
+  // секреты проекта: песочница чтение не ограничивает, остаётся правило роли.
+  const role = reviewerRole(["data/", ".env"]);
+  assert.doesNotMatch(role, /Команды не запускай/);
+  assert.match(role, /\brg\b/);
+  assert.match(role, /git log\/show\/diff/);
+  assert.match(role, /python -c/);
+  assert.match(role, /Не изменяй проект/);
+  assert.match(role, /не ходи в сеть/);
+  assert.match(role, /долгие и фоновые процессы/);
+  assert.match(role, /Не открывай и не читай пути: data\/, \.env\./);
+  assert.match(role, /ВЕРДИКТ: ПРИНЯТО/, "правила вердикта на месте");
+  assert.doesNotMatch(reviewerRole([]), /Не открывай и не читай пути/, "пустой список не даёт пустого запрета");
+});
+
+test("Codex: запрещённые пути из опций вписываются в роль ветки", async () => {
+  const s = collector();
+  const a = codex(s, { forbidden: ["data/", "data\\", ".env"] });
+  try {
+    await a.start();
+    await waitFor(() => threadParams(s.events).length === 1, "параметры новой ветки");
+    assert.equal(threadParams(s.events)[0].developerInstructions, reviewerRole(["data/", "data\\", ".env"]));
+  } finally {
+    await a.stop();
+  }
+});
+
+const roomSetup = (journal, extra = {}) => ({
+  launch: { command: "codex", shell: false },
+  cwd: "C:/x",
+  choice: { model: "gpt-luna", effort: "high" },
+  forbidden: ["data/", ".env"],
+  journal,
+  room: "r",
+  closed: () => false,
+  ...extra,
+});
+
+test("опции Codex комнаты: продолжается только своя ветка рецензента, номер новой пишется в неё", () => {
+  const journal = new Journal(join(catalog(), "j.sqlite"));
+  journal.ensureRoom("r", "C:/x");
+  journal.bindSessions("r", undefined, "owner-chat");
+  try {
+    let options = codexRoomOptions(roomSetup(journal));
+    assert.equal(options.resumeThreadId, undefined, "чат владельца панель не продолжает");
+    assert.equal(options.command, "codex");
+    assert.equal(options.shell, false);
+    assert.equal(options.cwd, "C:/x");
+    assert.equal(options.model, "gpt-luna");
+    assert.equal(options.effort, "high");
+    assert.deepEqual(options.forbidden, ["data/", ".env"]);
+    options.onSessionId("review-1");
+    assert.equal(journal.binding("r").codexReviewThreadId, "review-1");
+    assert.equal(journal.binding("r").codexThreadId, "owner-chat", "чат владельца остаётся историей");
+    options = codexRoomOptions(roomSetup(journal));
+    assert.equal(options.resumeThreadId, "review-1");
+  } finally {
+    journal.close();
+  }
+});
+
+test("опции Codex комнаты: закрытая комната ветку не пишет; запрещённые пути без мусора", () => {
+  const journal = new Journal(join(catalog(), "j.sqlite"));
+  journal.ensureRoom("r", "C:/x");
+  try {
+    codexRoomOptions(roomSetup(journal, { closed: () => true })).onSessionId("поздняя");
+    assert.equal(journal.binding("r").codexReviewThreadId, undefined);
+    const clean = codexRoomOptions(roomSetup(journal, { forbidden: [" data/ ", "", 5, ".env"] }));
+    assert.deepEqual(clean.forbidden, ["data/", ".env"]);
+    const broken = codexRoomOptions(roomSetup(journal, { forbidden: "data/" }));
+    assert.deepEqual(broken.forbidden, [".env"], "испорченная настройка — запрет по умолчанию, не пустой");
+  } finally {
+    journal.close();
+  }
+});
+
+test("Codex: комната, привязанная к чату владельца, не продолжает его ни при каком пути", async () => {
+  // Review Focus 3: после обновления комната с codex_thread = чат владельца
+  // заводит свою ветку — при обычном запуске, после сбоя запуска и падения
+  // посреди хода, после смены модели и при повторном открытии комнаты.
+  const dir = catalog();
+  const filePath = join(dir, "j.sqlite");
+  const oldDb = new DatabaseSync(filePath);
+  oldDb.exec(`
+    CREATE TABLE rooms (room TEXT PRIMARY KEY, cwd TEXT NOT NULL, claude_session TEXT, codex_thread TEXT,
+      gemini_conversation TEXT, updated_at INTEGER NOT NULL);
+    INSERT INTO rooms VALUES ('r', 'C:/x', NULL, 'owner-chat', NULL, 1);
+  `);
+  oldDb.close();
+  const journal = new Journal(filePath);
+  const label = join(catalog(), "умер");
+  const s = collector();
+  const open = () =>
+    new CodexAdapter(
+      {
+        ...codexRoomOptions(
+          roomSetup(journal, { launch: { command: "node", shell: undefined }, cwd: dir, choice: { model: "", effort: "" } }),
+        ),
+        commandArgs: [FAKE_CODEX, "--die-once", label],
+      },
+      s.sink,
+    );
+  let a = open();
+  try {
+    // Сбой при запуске: первый процесс умирает на initialize.
+    await assert.rejects(a.send({ text: "привет", from: "human" }));
+    // Обычный запуск после сбоя.
+    await a.send({ text: "привет", from: "human" });
+    await waitFor(() => ends(s.events) === 1, "первый ход");
+    // Смена модели.
+    a.setModel({ model: "gpt-luna", effort: "high" });
+    await a.send({ text: "привет", from: "human" });
+    await waitFor(() => ends(s.events) === 2, "ход после смены модели");
+    // Падение посреди хода и перезапуск.
+    await a.send({ text: "УПАСТЬ-ХОД", from: "human" }).catch(() => undefined);
+    // Первая смерть — на initialize, вторая — эта.
+    await waitFor(() => errors(s.events).filter((e) => e.failed).length === 2, "смерть процесса посреди хода");
+    await a.send({ text: "привет", from: "human" });
+    await waitFor(() => ends(s.events) === 3, "ход после падения");
+    // Повторное открытие комнаты.
+    await a.stop();
+    a = open();
+    await a.send({ text: "привет", from: "human" });
+    await waitFor(() => ends(s.events) === 4, "ход после повторного открытия");
+
+    const launches = threadParams(s.events);
+    assert.equal(launches.length, 3, "три запуска процесса дошли до ветки");
+    assert.equal(launches.some((p) => p.threadId === "owner-chat"), false, "чат владельца не продолжен");
+    assert.equal(launches[0].resume, false, "первый запуск заводит свою ветку");
+    assert.deepEqual(launches.slice(1).map((p) => p.threadId), ["fake-thread-1", "fake-thread-1"]);
+    const p = journal.binding("r");
+    assert.equal(p.codexReviewThreadId, "fake-thread-1");
+    assert.equal(p.codexThreadId, "owner-chat", "чат владельца остаётся в журнале историей");
+  } finally {
+    await a.stop();
+    journal.close();
   }
 });
 

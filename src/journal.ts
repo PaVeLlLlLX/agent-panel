@@ -27,7 +27,13 @@ export interface RoomBinding {
   readonly room: string;
   readonly cwd: string;
   readonly claudeSessionId: string | undefined;
+  /**
+   * Прежняя привязка Codex — к чату владельца (codex_thread). С 05.10 панель
+   * её не продолжает: она остаётся историей.
+   */
   readonly codexThreadId: string | undefined;
+  /** Своя ветка рецензента Codex комнаты: её продолжает следующий ход. */
+  readonly codexReviewThreadId: string | undefined;
   readonly geminiConversationId: string | undefined;
   readonly updatedAt: number;
 }
@@ -47,7 +53,8 @@ export class Journal {
         claude_session TEXT,
         codex_thread   TEXT,
         gemini_conversation TEXT,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL,
+        codex_review_thread TEXT
       );
       CREATE TABLE IF NOT EXISTS events (
         seq        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,6 +92,10 @@ export class Journal {
       (this.#db.prepare("PRAGMA table_info(rooms)").all() as Record<string, unknown>[]).map((k) => String(k["name"])),
     );
     if (!roomColumns.has("gemini_conversation")) this.#db.exec("ALTER TABLE rooms ADD COLUMN gemini_conversation TEXT");
+    // Своя ветка рецензента Codex (решение владельца 05.10): прежняя
+    // codex_thread — чат владельца, панель его больше не продолжает. Новая
+    // колонка у прежней базы пуста — первый ход заводит новую ветку.
+    if (!roomColumns.has("codex_review_thread")) this.#db.exec("ALTER TABLE rooms ADD COLUMN codex_review_thread TEXT");
   }
 
   ensureRoom(room: string, cwd: string): void {
@@ -97,6 +108,10 @@ export class Journal {
       .run(room, cwd, Date.now());
   }
 
+  /**
+   * codexThreadId — прежняя привязка к чату владельца (codex_thread). Панель
+   * её больше не пишет: ветка рецензента — {@link bindCodexReviewThread}.
+   */
   bindSessions(
     room: string,
     claudeSessionId: string | undefined,
@@ -116,6 +131,14 @@ export class Journal {
     }
   }
 
+  /** Ветка рецензента Codex комнаты: следующий запуск app-server продолжит её. */
+  bindCodexReviewThread(room: string, threadId: string): void {
+    if (this.#closed) return;
+    this.#db
+      .prepare(`UPDATE rooms SET codex_review_thread = ?, updated_at = ? WHERE room = ?`)
+      .run(threadId, Date.now(), room);
+  }
+
   /** Разговор Gemini комнаты: следующий запуск agy продолжит его через --conversation. */
   bindGeminiConversation(room: string, conversationId: string): void {
     this.#db
@@ -123,17 +146,25 @@ export class Journal {
       .run(conversationId, Date.now(), room);
   }
 
-  /** Новая сессия агента: привязка комнаты к прежней забывается. */
+  /**
+   * Новая сессия агента: привязка комнаты к прежней забывается. У Codex —
+   * обе: своя ветка рецензента и прежний чат владельца.
+   */
   forgetSession(room: string, agent: "claude" | "codex" | "gemini"): void {
     if (this.#closed) return;
-    const column = agent === "claude" ? "claude_session" : agent === "codex" ? "codex_thread" : "gemini_conversation";
-    this.#db.prepare(`UPDATE rooms SET ${column} = NULL, updated_at = ? WHERE room = ?`).run(Date.now(), room);
+    const assignments =
+      agent === "claude"
+        ? "claude_session = NULL"
+        : agent === "codex"
+          ? "codex_review_thread = NULL, codex_thread = NULL"
+          : "gemini_conversation = NULL";
+    this.#db.prepare(`UPDATE rooms SET ${assignments}, updated_at = ? WHERE room = ?`).run(Date.now(), room);
   }
 
   binding(room: string): RoomBinding | undefined {
     const line = this.#db
       .prepare(
-        `SELECT room, cwd, claude_session, codex_thread, gemini_conversation, updated_at
+        `SELECT room, cwd, claude_session, codex_thread, codex_review_thread, gemini_conversation, updated_at
          FROM rooms WHERE room = ?`,
       )
       .get(room) as Record<string, unknown> | undefined;
@@ -143,6 +174,7 @@ export class Journal {
       cwd: String(line["cwd"]),
       claudeSessionId: (line["claude_session"] as string | null) ?? undefined,
       codexThreadId: (line["codex_thread"] as string | null) ?? undefined,
+      codexReviewThreadId: (line["codex_review_thread"] as string | null) ?? undefined,
       geminiConversationId: (line["gemini_conversation"] as string | null) ?? undefined,
       updatedAt: Number(line["updated_at"]),
     };
