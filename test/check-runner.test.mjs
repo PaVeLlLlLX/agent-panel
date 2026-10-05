@@ -144,6 +144,29 @@ test("самопроверка не прошла (запись в проект �
   assert.deepEqual(readdirSync(project), [], "файл, записанный в проект, удалён");
 });
 
+test("codex ищется от проекта, а не в папке проверок Gemini: подложенный туда codex.bat не запускается (рецензия цикла 05.10)", { skip: process.platform !== "win32" }, async () => {
+  // Процесс исполнителя работает в папке проверок, а cmd.exe ищет голое имя
+  // сначала в рабочей папке. NoDefaultCurrentDirectoryInExePath снят, как в
+  // окружении VS Code.
+  const folder = freshFolder();
+  mkdirSync(folder, { recursive: true });
+  const project = mkdtempSync(join(tmpdir(), "project-"));
+  const bin = mkdtempSync(join(tmpdir(), "bin-"));
+  writeFileSync(join(bin, "zzpanelcodex.cmd"), `@"${process.execPath}" "${FAKE_CODEX}" %*\r\n`);
+  writeFileSync(join(folder, "zzpanelcodex.bat"), "@echo planted> planted.txt\r\n");
+  const saved = { path: process.env.PATH, flag: process.env.NoDefaultCurrentDirectoryInExePath };
+  process.env.PATH = `${bin};${saved.path}`;
+  delete process.env.NoDefaultCurrentDirectoryInExePath;
+  try {
+    const result = await runCheck(options(folder, { command: "zzpanelcodex", commandArgs: [], project }));
+    assert.equal(result.exitCode, 0);
+    assert.equal(existsSync(join(folder, "planted.txt")), false, "подложенный codex.bat не запускался");
+  } finally {
+    process.env.PATH = saved.path;
+    if (saved.flag !== undefined) process.env.NoDefaultCurrentDirectoryInExePath = saved.flag;
+  }
+});
+
 test("Codex не запустился — исключение, а не зависание", async () => {
   const folder = freshFolder();
   await assert.rejects(runCheck(options(folder, { commandArgs: [join(tmpdir(), "нет-такого-codex.mjs")] })), /Codex/);

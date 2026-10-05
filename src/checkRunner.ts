@@ -109,7 +109,9 @@ interface Server {
 
 /** Короткий процесс app-server с запросами по номеру; выход процесса и отмена отклоняют ожидания. */
 function openServer(run: CheckRun): Server {
-  const proc = spawnProcess(run.command, [...(run.commandArgs ?? []), "app-server"], run.folder, run.shell);
+  // Команда — от проекта, а не от папки проверок: та открыта скриптам на
+  // запись (рецензия цикла 05.10, process.ts).
+  const proc = spawnProcess(run.command, [...(run.commandArgs ?? []), "app-server"], run.folder, run.shell, run.project ?? run.folder);
   proc.stderr.resume();
   proc.stdin.on("error", () => undefined);
   const waiters = new Map<number, Waiter>();

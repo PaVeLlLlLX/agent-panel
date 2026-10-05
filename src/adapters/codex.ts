@@ -548,13 +548,19 @@ export class CodexAdapter implements Adapter {
     }
   }
 
-  /** Процесс app-server в папке cwd с разбором его вывода; становится текущим. */
+  /**
+   * Процесс app-server в папке cwd с разбором его вывода; становится текущим.
+   * Команда ищется от проекта, как в listModels: папка проверок открыта
+   * рецензенту на запись, и подложенный им codex.bat не должен запуститься
+   * (рецензия цикла 05.10, process.ts).
+   */
   #spawn(cwd: string): Context {
     const proc = spawnProcess(
       this.options.command,
       [...(this.options.commandArgs ?? []), "app-server"],
       cwd,
       this.options.shell,
+      this.options.cwd,
     );
     const k: Context = {
       proc,

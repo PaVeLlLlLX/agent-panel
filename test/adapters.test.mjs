@@ -2513,6 +2513,58 @@ test("Codex с папкой проверок: app-server запускается 
   }
 });
 
+/**
+ * Обёртка, которая ищется по PATH, — фальшивый Codex через cmd.exe; и её
+ * двойники, подложенные в папку проверок: запустись они — метка в папке.
+ * NoDefaultCurrentDirectoryInExePath снят, как в окружении VS Code: с ним
+ * cmd.exe и так не ищет команду в рабочей папке (рецензия цикла 05.10).
+ */
+async function withPlantedCodex(folder, project, body) {
+  const bin = catalog();
+  const real = `@"${process.execPath}" "${FAKE_CODEX}" %*\r\n`;
+  const planted = "@echo planted> planted.txt\r\n";
+  writeFileSync(join(bin, "zzpanelcodex.cmd"), real);
+  mkdirSync(join(folder, "tools"), { recursive: true });
+  mkdirSync(join(project, "tools"), { recursive: true });
+  writeFileSync(join(folder, "zzpanelcodex.bat"), planted);
+  writeFileSync(join(folder, "tools", "zzpanelcodex.cmd"), planted);
+  writeFileSync(join(project, "tools", "zzpanelcodex.cmd"), real);
+  const saved = { path: process.env.PATH, flag: process.env.NoDefaultCurrentDirectoryInExePath };
+  process.env.PATH = `${bin};${saved.path}`;
+  delete process.env.NoDefaultCurrentDirectoryInExePath;
+  try {
+    await body();
+  } finally {
+    process.env.PATH = saved.path;
+    if (saved.flag !== undefined) process.env.NoDefaultCurrentDirectoryInExePath = saved.flag;
+  }
+}
+
+test("Codex с папкой проверок: команда ищется от проекта — codex.bat, подложенный рецензентом в папку проверок, не запускается (рецензия цикла 05.10)", { skip: process.platform !== "win32" }, async () => {
+  // Процесс app-server с папкой проверок запускается в ней (265be00), а
+  // cmd.exe ищет голое имя сначала в рабочей папке, относительный путь —
+  // только от неё. Папка проверок открыта рецензенту на запись: его codex.bat
+  // запустился бы без песочницы с правами пользователя при следующем запуске
+  // процесса — до самопроверки.
+  const { project, folder } = checksRoom();
+  await withPlantedCodex(folder, project, async () => {
+    for (const command of ["zzpanelcodex", "tools\\zzpanelcodex.cmd"]) {
+      const s = collector();
+      const a = new CodexAdapter({ command, cwd: project, review: { folder } }, s.sink);
+      try {
+        await a.send({ text: "здравствуй", from: "claude" });
+        await waitFor(() => ends(s.events) === 1, `ход через ${command}`);
+        assert.equal(existsSync(join(folder, "planted.txt")), false, `подложенный ${command} не запускался`);
+        const [p] = threadParams(s.events);
+        assert.equal(p.processCwd, folder, "процесс — по-прежнему в папке проверок");
+        assert.equal(p.profile, true);
+      } finally {
+        await a.stop();
+      }
+    }
+  });
+});
+
 test("Codex: папку проверок не создать — процесс в проекте (иначе он не запустится), ветка «только чтение», строка в ленте", async () => {
   const s = collector();
   const project = catalog();
