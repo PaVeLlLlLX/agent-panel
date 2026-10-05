@@ -777,6 +777,28 @@ test("реплика самостоятельного хода Claude помеч
   assert.deepEqual(r.bubbles, [[true, "Claude · сам"], [false, "Claude"]]);
 });
 
+test("действие человека — строка ленты «Вы: …», материал рецензенту лента не рисует", { skip: NO_BROWSER }, () => {
+  // Журнал хранит, что сделал человек (отправил удержанное, выключил
+  // автопересылку), и материал проверки целиком. Первое лента показывает
+  // служебной строкой, второе — только журнал.
+  const r = open(
+    js`
+    const s = (agent, kind, extra) => ({ id: kind + Math.random(), agent, kind, visibility: "turn", at: Date.now(), ...extra });
+    const before = getById("беседа").childElementCount;
+    postToPage({ type: "event", event: s("human", "action", { text: "Автопересылка выключена" }) });
+    postToPage({ type: "event", event: s("codex", "material", { visibility: "stream", text: "Материал разработчика: порог 0.4" }) });
+    postToPage({ type: "event", event: s("human", "action", { text: "Отправлено Claude вручную: Автопересылка выключена" }), history: true });
+    result.added = getById("беседа").childElementCount - before;
+    result.notices = [...getById("беседа").querySelectorAll(".уведомление")].map((n) => n.textContent);
+    result.bubbles = getById("беседа").querySelectorAll(".пузырь").length;
+  `,
+    { withUi: true },
+  );
+  assert.deepEqual(r.notices, ["Вы: Автопересылка выключена", "Вы: Отправлено Claude вручную: Автопересылка выключена"]);
+  assert.equal(r.added, 2, "материал ничего не добавляет в ленту");
+  assert.equal(r.bubbles, 0, "действие — не реплика человека");
+});
+
 test("реплика субагента — отдельный приглушённый блок, пузырь Claude не трогает", { skip: NO_BROWSER }, () => {
   // Живая трасса 28.09: текст фонового субагента приходит в поток и без
   // --forward-subagent-text, с parent_tool_use_id.

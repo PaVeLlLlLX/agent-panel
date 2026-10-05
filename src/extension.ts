@@ -232,6 +232,9 @@ class Room {
     switch (message.type) {
       case "ready":
         for (const event of this.#journal.history(this.#name)) {
+          // Материал рецензенту — только журнал: лента его не рисует, а это
+          // сотни тысяч символов на проверку.
+          if (event.kind === "material") continue;
           const light = forDisplay(event);
           const clean = light.text ? { ...light, text: stripAnsi(light.text) } : light;
           this.#postToPanel({ type: "event", event: clean, history: true });

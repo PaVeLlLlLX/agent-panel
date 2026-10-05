@@ -1251,6 +1251,114 @@ test("ответы из webview: только непустой объект ст
 });
 
 // ---------------------------------------------------------------------------
+// Журнал: действия человека и материал рецензентам
+//
+// Журнал 04–05.10: по нему нельзя было понять, что человек отправил
+// удержанное или выключил автопересылку, и что именно получил рецензент —
+// материал проверки собирается панелью и нигде не хранился.
+// ---------------------------------------------------------------------------
+
+const actions = (journal) => journal.history("r").filter((e) => e.kind === "action");
+
+test("журнал: «Отправить» удержанное — действие человека с причиной и текстом ушедшей передачи", async () => {
+  const { k, claude, codex, journal, events } = room();
+  await k.fromHuman("задача", "review");
+  turn(k, "claude", "сделал");
+  await waitFor(() => codex.received.length === 1, "передача рецензенту");
+  turn(k, "codex", "Что-то не нравится.");
+  await waitFor(() => k.state.stage === "held", "удержание");
+  const reason = k.state.held.reason;
+  assert.deepEqual(actions(journal), [], "удержание — решение панели, не действие человека");
+
+  await k.releaseHeld();
+  assert.equal(claude.received.length, 2);
+  const [action] = actions(journal);
+  assert.equal(action.agent, "human");
+  assert.equal(action.visibility, "turn");
+  assert.equal(action.text, `Отправлено Claude вручную: ${reason}`);
+  assert.deepEqual(journal.rawOf("r", action.id), { to: "claude", text: claude.received[1].text });
+  // Лента показывает действие строкой; запись протокола в webview не уходит (forDisplay).
+  assert.equal(events.filter((e) => e.kind === "action").length, 1);
+  assert.equal(forDisplay(events.find((e) => e.kind === "action")).raw, undefined);
+
+  await k.releaseHeld();
+  assert.equal(actions(journal).length, 1, "нечего отправлять — нечего и записывать");
+  journal.close();
+});
+
+test("журнал: «Отправить на проверку» удержанную пару — действие называет обоих рецензентов", async () => {
+  const { k, codex, gemini, journal } = room(0, {}, { withGemini: true });
+  await k.fromHuman("задача", "review");
+  turn(k, "claude", "сделал");
+  await waitFor(() => k.state.stage === "held", "удержание по пределу");
+  const reason = k.state.held.reason;
+  await k.releaseHeld();
+  const [action] = actions(journal);
+  assert.equal(action.text, `Отправлено Codex и Gemini вручную: ${reason}`);
+  assert.deepEqual(journal.rawOf("r", action.id), {
+    to: "codex",
+    text: codex.received[0].text,
+    companion: { to: "gemini", text: gemini.received[0].text },
+  });
+  journal.close();
+});
+
+test("журнал: автопересылку выключил и включил человек — по действию на каждое переключение", async () => {
+  const { k, journal, events } = room();
+  k.setAuto(false);
+  k.setAuto(false);
+  k.setAuto(true);
+  assert.deepEqual(actions(journal).map((e) => [e.agent, e.text]), [
+    ["human", "Автопересылка выключена"],
+    ["human", "Автопересылка включена"],
+  ]);
+  assert.equal(events.filter((e) => e.kind === "action").length, 2, "и в ленте");
+  journal.close();
+});
+
+test("журнал: материал проверки — по событию на каждого рецензента с полным текстом, в ленту не уходит", async () => {
+  const r = room(3, {}, { withGemini: true });
+  const { k, codex, gemini, journal, events } = r;
+  await k.fromHuman("задача", "review");
+  // Длиннее предела показа (64 000): журнал хранит материал целиком.
+  turn(k, "claude", `итог: ${"ф".repeat(70_000)}`);
+  await waitFor(() => codex.received.length === 1 && gemini.received.length === 1, "проверка у обоих");
+  const materials = journal.history("r").filter((e) => e.kind === "material");
+  assert.deepEqual(materials.map((e) => e.agent).sort(), ["codex", "gemini"]);
+  assert.ok(materials.every((e) => e.visibility === "stream"));
+  assert.equal(materials.find((e) => e.agent === "codex").text, codex.received[0].text);
+  assert.equal(materials.find((e) => e.agent === "gemini").text, gemini.received[0].text);
+  assert.ok(codex.received[0].text.length > 70_000);
+  assert.equal(events.some((e) => e.kind === "material"), false, "материал — только журнал");
+  // Прямой вопрос рецензенту — не материал: его слова уже в журнале репликой человека.
+  turn(k, "codex", "Хорошо.\nВЕРДИКТ: ПРИНЯТО");
+  turn(k, "gemini", "Хорошо.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => k.state.stage === "accepted", "принято");
+  await k.fromHuman("а что с порогом?", "codex");
+  await waitFor(() => codex.received.length === 2, "прямой вопрос");
+  assert.equal(journal.history("r").filter((e) => e.kind === "material").length, 2);
+  journal.close();
+});
+
+test("журнал: материал, ждавший занятого рецензента, записан, когда ушёл, а не когда встал в очередь", async () => {
+  const { k, claude, gemini, journal } = room(3, {}, { liveGemini: true });
+  await k.fromHuman("вопрос Gemini", "gemini");
+  assert.equal(gemini.busy, true);
+  await k.fromHuman("задача", "review");
+  turn(k, "claude", "сделал");
+  await waitFor(() => k.state.stage === "reviewing", "проверка");
+  const materialsFor = (agent) => journal.history("r").filter((e) => e.kind === "material" && e.agent === agent);
+  assert.equal(materialsFor("gemini").length, 0, "материал в очереди ещё не ушёл");
+  gemini.busy = false;
+  turn(k, "gemini", "ответ на вопрос");
+  await waitFor(() => gemini.received.length === 2, "материал у Gemini");
+  assert.equal(materialsFor("gemini").length, 1);
+  assert.equal(materialsFor("gemini")[0].text, gemini.received[1].text);
+  assert.equal(claude.received.length, 1);
+  journal.close();
+});
+
+// ---------------------------------------------------------------------------
 // Память по теме: заметки к сообщению человека
 // ---------------------------------------------------------------------------
 

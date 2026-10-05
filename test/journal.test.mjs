@@ -75,6 +75,24 @@ test("история помнит ошибку, о которой агент с�
   journal.close();
 });
 
+test("журнал хранит действия человека и материал рецензенту целиком", () => {
+  // Материал проверки бывает длиннее предела показа: журнал хранит его весь.
+  const filePath = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const journal = new Journal(filePath);
+  journal.ensureRoom("r", "C:/x");
+  const long = "м".repeat(70_000);
+  journal.append("r", event({ agent: "human", kind: "action", text: "Автопересылка выключена" }));
+  journal.append("r", event({ agent: "codex", kind: "material", visibility: "stream", text: long }));
+  const [action, material] = journal.history("r");
+  assert.equal(action.kind, "action");
+  assert.equal(action.agent, "human");
+  assert.equal(action.text, "Автопересылка выключена");
+  assert.equal(material.kind, "material");
+  assert.equal(material.visibility, "stream");
+  assert.equal(material.text, long);
+  journal.close();
+});
+
 test("журнал прежней версии получает новые колонки при открытии", () => {
   const filePath = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
   const oldDb = new DatabaseSync(filePath);
@@ -94,6 +112,43 @@ test("журнал прежней версии получает новые ко�
   assert.equal(history[0].text, "прежнее", "прежние записи на месте");
   assert.equal(history[1].parentCallId, "p");
   assert.equal(history[2].lateError, "agy сообщил об ошибке после ответа: ERROR");
+  journal.close();
+});
+
+test("журнал хранит расход хода и отдаёт его в истории", () => {
+  // Журнал 04–05.10: расход каждого хода в журнал не попадал, и сколько
+  // стоила проверка, после перезапуска узнать было нельзя.
+  const filePath = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const journal = new Journal(filePath);
+  journal.ensureRoom("r", "C:/x");
+  journal.append("r", event({ kind: "turn_completed", usage: { input: 10, cached: 2, output: 3 } }));
+  journal.append("r", event({ kind: "turn_completed" }));
+  const history = journal.history("r");
+  assert.deepEqual(history[0].usage, { input: 10, cached: 2, output: 3 });
+  assert.equal("usage" in history[1], false, "хода без расхода расход не выдумывается");
+  journal.close();
+});
+
+test("журнал прежней версии получает колонку расхода при открытии", () => {
+  const filePath = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const oldDb = new DatabaseSync(filePath);
+  oldDb.exec(`
+    CREATE TABLE rooms (room TEXT PRIMARY KEY, cwd TEXT NOT NULL, claude_session TEXT, codex_thread TEXT,
+      gemini_conversation TEXT, updated_at INTEGER NOT NULL);
+    CREATE TABLE events (seq INTEGER PRIMARY KEY AUTOINCREMENT, room TEXT NOT NULL REFERENCES rooms(room), id TEXT NOT NULL,
+      agent TEXT NOT NULL, kind TEXT NOT NULL, visibility TEXT NOT NULL, at INTEGER NOT NULL, text TEXT, tool TEXT,
+      call_id TEXT, turn_id TEXT, snapshot TEXT, raw TEXT, tool_call_id TEXT, parent_call_id TEXT, unsolicited TEXT,
+      failed TEXT, late_error TEXT);
+    INSERT INTO rooms VALUES ('r', 'C:/x', NULL, NULL, NULL, 1);
+    INSERT INTO events (room, id, agent, kind, visibility, at, text) VALUES ('r', 'old', 'codex', 'turn_completed', 'turn', 1, 'ход завершён');
+  `);
+  oldDb.close();
+  const journal = new Journal(filePath);
+  journal.append("r", event({ kind: "turn_completed", usage: { input: 7, cached: 0, output: 1 } }));
+  const history = journal.history("r");
+  assert.equal(history[0].text, "ход завершён", "прежние записи на месте");
+  assert.equal("usage" in history[0], false);
+  assert.deepEqual(history[1].usage, { input: 7, cached: 0, output: 1 });
   journal.close();
 });
 

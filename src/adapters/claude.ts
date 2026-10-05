@@ -483,6 +483,11 @@ export class ClaudeAdapter implements Adapter {
     this.#openRequests = 0;
     this.#awaitingEcho += 1;
     this.#write(proc, record);
+    // Начало своего хода — с отправки, как turn/started у Codex: без него в
+    // журнале у хода Claude был только конец (журнал 04–05.10). Ответ процесса
+    // придёт позже — это событие хода первое. Ход, начатый самим Claude,
+    // помечается unsolicited отдельно (#startAutonomous, #foreignRequestDone).
+    this.#emit("turn_started", "turn", {});
   }
 
   /**

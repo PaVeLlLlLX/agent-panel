@@ -21,7 +21,7 @@
  * и дочитать её можно.
  */
 import { DatabaseSync } from "node:sqlite";
-import { PanelEvent } from "./adapters/types.js";
+import { PanelEvent, TurnUsage } from "./adapters/types.js";
 
 export interface RoomBinding {
   readonly room: string;
@@ -71,11 +71,13 @@ export class Journal {
     // (tool_call_id) и действия субагента (parent_call_id) — рецензия Codex 28.09;
     // unsolicited — ход, начатый агентом без сообщения панели; failed — ход не
     // удался (иначе после перезапуска пропадало уведомление об этом); late_error —
-    // ошибка, о которой агент сообщил после ответа (то же уведомление, 04.10).
+    // ошибка, о которой агент сообщил после ответа (то же уведомление, 04.10);
+    // usage — расход хода в JSON (журнал 04–05.10: сколько стоил каждый ход,
+    // после перезапуска было не узнать).
     const existing = new Set(
       (this.#db.prepare("PRAGMA table_info(events)").all() as Record<string, unknown>[]).map((k) => String(k["name"])),
     );
-    for (const column of ["tool_call_id", "parent_call_id", "unsolicited", "failed", "late_error"]) {
+    for (const column of ["tool_call_id", "parent_call_id", "unsolicited", "failed", "late_error", "usage"]) {
       if (!existing.has(column)) this.#db.exec(`ALTER TABLE events ADD COLUMN ${column} TEXT`);
     }
     // Разговор Gemini (agy --conversation) — колонка комнаты, добавленная позже.
@@ -162,8 +164,8 @@ export class Journal {
       .prepare(
         `INSERT INTO events
            (room, id, agent, kind, visibility, at, text, tool, call_id,
-            turn_id, snapshot, raw, tool_call_id, parent_call_id, unsolicited, failed, late_error)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            turn_id, snapshot, raw, tool_call_id, parent_call_id, unsolicited, failed, late_error, usage)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         room,
@@ -183,6 +185,7 @@ export class Journal {
         event.unsolicited ? "1" : null,
         event.failed ? "1" : null,
         event.lateError ?? null,
+        event.usage ? JSON.stringify(event.usage) : null,
       );
   }
 
@@ -192,7 +195,7 @@ export class Journal {
     const lines = this.#db
       .prepare(
         `SELECT id, agent, kind, visibility, at, text, tool, call_id, turn_id, snapshot,
-                tool_call_id, parent_call_id, unsolicited, failed, late_error
+                tool_call_id, parent_call_id, unsolicited, failed, late_error, usage
          FROM events WHERE room = ? ORDER BY seq DESC LIMIT ?`,
       )
       .all(room, limit) as Record<string, unknown>[];
@@ -212,6 +215,7 @@ export class Journal {
       ...(s["unsolicited"] != null ? { unsolicited: true } : {}),
       ...(s["failed"] != null ? { failed: true } : {}),
       ...(s["late_error"] != null ? { lateError: String(s["late_error"]) } : {}),
+      ...usageOf(s["usage"]),
     })) as PanelEvent[];
   }
 
@@ -233,5 +237,18 @@ export class Journal {
     if (this.#closed) return;
     this.#closed = true;
     this.#db.close();
+  }
+}
+
+/** Расход из колонки usage; испорченная запись — расхода нет, а не сбой чтения истории. */
+function usageOf(stored: unknown): { usage?: TurnUsage } {
+  if (typeof stored !== "string") return {};
+  try {
+    const u = JSON.parse(stored) as Record<string, unknown>;
+    const { input, cached, output } = u;
+    if (typeof input !== "number" || typeof cached !== "number" || typeof output !== "number") return {};
+    return { usage: { input, cached, output } };
+  } catch {
+    return {};
   }
 }

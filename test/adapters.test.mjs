@@ -90,6 +90,29 @@ test("Claude: процесс поднимается сам при первой �
   }
 });
 
+test("Claude: свой ход начинается событием turn_started — не самостоятельным, одним на ход", async () => {
+  // Журнал 04–05.10: у ходов Claude было только окончание — когда он начал
+  // работу над сообщением панели, по журналу не узнать (у Codex и Gemini начало есть).
+  const s = collector();
+  const a = claude(s);
+  try {
+    await a.send({ text: "здравствуй", from: "human" });
+    assert.equal(a.busy, true);
+    await waitFor(() => s.events.some((e) => e.kind === "turn_completed"), "конец хода");
+    const turnEvents = s.events.filter((e) => e.kind !== "diagnostic");
+    assert.equal(turnEvents[0].kind, "turn_started", "первое событие хода — его начало");
+    assert.equal(turnEvents[0].unsolicited, undefined);
+    assert.equal(s.events.filter((e) => e.kind === "turn_started").length, 1);
+    s.events.length = 0;
+    // Ход, который держат субагенты, — один ход: итоговый запрос начала не повторяет.
+    await a.send({ text: "ДВА-СУБАГЕНТА", from: "human" });
+    await waitFor(() => s.events.some((e) => e.kind === "turn_completed"), "конец хода с субагентами");
+    assert.deepEqual(s.events.filter((e) => e.kind === "turn_started").map((e) => e.unsolicited), [undefined]);
+  } finally {
+    await a.stop();
+  }
+});
+
 test("Claude: U+2028 и U+2029 внутри строки JSON не режут её", async () => {
   // readline делит строки и по U+2028/U+2029, а JSON.stringify пишет их как
   // есть: ответ рвался на куски вне протокола (живой прогон 02.10, у Codex).
@@ -356,13 +379,13 @@ test("Claude: фоновая команда кончилась после ход
     assert.equal(second.unsolicited, true);
     assert.deepEqual(second.usage, { input: 503, cached: 500, output: 4 });
 
-    const start = events.find((e) => e.kind === "turn_started");
-    assert.equal(start?.unsolicited, true);
+    // Свой ход начат сообщением панели, следующий — самим Claude.
+    assert.deepEqual(events.filter((e) => e.kind === "turn_started").map((e) => e.unsolicited), [undefined, true]);
+    const start = events.find((e) => e.kind === "turn_started" && e.unsolicited);
     assert.match(start.text, /sleep 20 в фоне/);
     // Пока идёт самостоятельный ход, адаптер занят: координатор копит
     // сообщения в очереди, а не пишет их в чужой ход.
-    const i = busyStates.findIndex(([kind]) => kind === "turn_started");
-    assert.deepEqual(busyStates[i], ["turn_started", true]);
+    assert.deepEqual(busyStates[events.indexOf(start)], ["turn_started", true]);
     assert.ok(events.some((e) => e.kind === "message" && e.text === "Команда завершена успешно."));
     assert.equal(a.busy, false);
   } finally {
@@ -394,8 +417,8 @@ test("Claude: гонка — CLI начал свой запрос раньше, 
     assert.deepEqual(foreign.usage, { input: 70, cached: 0, output: 7 });
     assert.equal(own.unsolicited, undefined);
     assert.deepEqual(own.usage, { input: 5, cached: 0, output: 5 });
-    const start = events.find((e) => e.kind === "turn_started");
-    assert.equal(start?.unsolicited, true);
+    const start = events.find((e) => e.kind === "turn_started" && e.unsolicited);
+    assert.ok(start, "чужой запрос помечен как ход, начатый самим Claude");
     assert.match(start.text, /pytest/);
     // Реплика чужого запроса — до его конца, ответ на сообщение — после.
     const replyIndex = events.findIndex((e) => e.text === "ответ на сообщение");
@@ -521,8 +544,8 @@ test("Claude: причина самостоятельного хода не пе
     await a.stop();
     s.events.length = 0;
     await a.send({ text: "САМ-БЕЗ-ПРИЧИНЫ", from: "human" });
-    await waitFor(() => s.events.some((e) => e.kind === "turn_started"), "самостоятельный ход");
-    const start = s.events.find((e) => e.kind === "turn_started");
+    await waitFor(() => s.events.some((e) => e.kind === "turn_started" && e.unsolicited), "самостоятельный ход");
+    const start = s.events.find((e) => e.kind === "turn_started" && e.unsolicited);
     assert.doesNotMatch(start.text, /старая/);
   } finally {
     await a.stop();
@@ -536,7 +559,7 @@ test("Claude: фоновая команда без продолжения — х
   try {
     await a.send({ text: "ФОНОВЫЙ-BASH", from: "human" });
     await waitFor(() => s.events.some((e) => e.kind === "turn_completed"), "конец хода");
-    assert.equal(s.events.some((e) => e.kind === "turn_started"), false);
+    assert.equal(s.events.some((e) => e.kind === "turn_started" && e.unsolicited), false);
     assert.equal(a.busy, false);
   } finally {
     await a.stop();

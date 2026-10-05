@@ -603,6 +603,13 @@ function showEvent(e, history = false) {
       scrollToBottom();
       return;
     }
+    // Действие человека (отправил удержанное, переключил автопересылку) —
+    // служебной строкой: это не реплика агентам. Материал рецензенту (material)
+    // лента не рисует — он только в журнале.
+    case "action":
+      showNotice(`Вы: ${e.text ?? ""}`);
+      scrollToBottom();
+      return;
     case "diagnostic": {
       const lines = byId("диагностика-строки");
       const time = new Date(e.at).toLocaleTimeString("ru-RU", { hour12: false });

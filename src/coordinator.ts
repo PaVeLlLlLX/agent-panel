@@ -783,6 +783,13 @@ export class Coordinator {
       this.#refresh();
       return;
     }
+    // В журнал — до отправки: ход, начатый ею, идёт после решения человека.
+    const recipients = u.companion ? `${NAMES[u.to]} и ${NAMES[u.companion.to]}` : NAMES[u.to];
+    this.#action(`Отправлено ${recipients} вручную: ${u.reason}`, {
+      to: u.to,
+      text: u.prompt.text,
+      ...(u.companion ? { companion: { to: u.companion.to, text: u.companion.prompt.text } } : {}),
+    });
     if (u.target.role === "review") {
       this.#round += 1;
       this.#stage = "reviewing";
@@ -834,6 +841,7 @@ export class Coordinator {
   }
 
   setAuto(enabled: boolean): void {
+    if (this.#auto !== enabled) this.#action(enabled ? "Автопересылка включена" : "Автопересылка выключена");
     this.#auto = enabled;
     this.#refresh();
   }
@@ -1730,6 +1738,27 @@ export class Coordinator {
     const cutNote = o.to === "gemini" && this.#geminiCut;
     if (cutNote) this.#geminiCut = false;
     const prompt: AgentPrompt = cutNote ? { ...o.prompt, text: `${CUT_NOTE}${NL}${o.prompt.text}` } : o.prompt;
+    // Материал проверки — в журнал целиком в момент отправки, а не постановки
+    // в очередь (из очереди отправка тоже идёт здесь) и до ответа рецензента:
+    // что он получил, панель собирает сама, и больше нигде этого нет (журнал
+    // 04–05.10). Сбой отправки назовёт следующая строка журнала.
+    if (o.target.role === "review") {
+      this.#write(
+        {
+          agent: o.to,
+          kind: "material",
+          visibility: "stream",
+          text: prompt.text,
+          ...(o.snapshot ? { snapshot: o.snapshot.id } : {}),
+          raw: {
+            round: o.target.round,
+            ...(prompt.heading ? { heading: prompt.heading } : {}),
+            ...(prompt.snapshot ? { version: prompt.snapshot } : {}),
+          },
+        },
+        false,
+      );
+    }
 
     try {
       await adapter.send(prompt);
@@ -1817,16 +1846,27 @@ export class Coordinator {
   }
 
   #report(text: string): void {
+    this.#write({ agent: "system", kind: "message", visibility: "turn", text: text });
+  }
+
+  /** Действие человека — в журнал и в ленту (строкой «Вы: …»); raw — что именно ушло. */
+  #action(text: string, raw?: unknown): void {
+    this.#write({ agent: "human", kind: "action", visibility: "turn", text: text, ...(raw !== undefined ? { raw } : {}) });
+  }
+
+  /**
+   * Событие самой панели — мимо handle: без отметки версии, буфера рецензенту
+   * и целей. toPanel false — только журнал.
+   */
+  #write(fields: Omit<PanelEvent, "id" | "at">, toPanel = true): void {
+    const prefix = fields.kind === "action" ? "a" : fields.kind === "material" ? "m" : "s";
     const event: PanelEvent = {
-      id: `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
-      agent: "system",
-      kind: "message",
-      visibility: "turn",
+      id: `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       at: Date.now(),
-      text: text,
+      ...fields,
     };
     this.journal.append(this.options.room, event);
-    this.options.onEvent(event);
+    if (toPanel) this.options.onEvent(event);
   }
 
   #refresh(): void {
