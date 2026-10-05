@@ -271,9 +271,18 @@ type Held = Outgoing & {
   pairRound?: number;
 };
 
-/** Исход проверки одного рецензента. */
+/**
+ * Исход проверки одного рецензента. checks — блок «Проверки рецензента»
+ * (checksBlock): его команды и выводы, если он их запускал.
+ */
 type ReviewOutcome =
-  | { readonly kind: "verdict"; readonly verdict: Verdict; readonly text: string; readonly snapshot: Snapshot | undefined }
+  | {
+      readonly kind: "verdict";
+      readonly verdict: Verdict;
+      readonly text: string;
+      readonly snapshot: Snapshot | undefined;
+      readonly checks?: string;
+    }
   | { readonly kind: "unchecked"; readonly reason: string };
 type VerdictOutcome = Extract<ReviewOutcome, { kind: "verdict" }>;
 
@@ -404,7 +413,12 @@ function reviewBlock(title: string, outcome: ReviewOutcome, current: Snapshot | 
     outcome.snapshot && current && outcome.snapshot.id !== current.id
       ? `\n\nФайлы изменились после начала проверки: замечания относятся к версии ${describeSnapshot(outcome.snapshot)}, сейчас ${describeSnapshot(current)}.`
       : "";
-  return `— ${title} —\n${outcome.text}${shift}`;
+  return `— ${title} —\n${outcome.text}${checksPart(outcome)}${shift}`;
+}
+
+/** Блок «Проверки рецензента» после его замечаний; без команд — ничего. */
+function checksPart(outcome: VerdictOutcome): string {
+  return outcome.checks ? `\n\n${outcome.checks}` : "";
 }
 
 /** Общее сообщение Claude по итогу пары; его же пересобирает поздний отзыв Gemini (R7). */
@@ -1323,7 +1337,7 @@ export class Coordinator {
     const problem = failure && pair.retried ? `${failure}${RETRY_FAILED}` : failure;
     const outcome: ReviewOutcome = problem
       ? { kind: "unchecked", reason: problem }
-      : { kind: "verdict", verdict: parseVerdict(text), text, snapshot: this.#snapshots.get(agent) };
+      : { kind: "verdict", verdict: parseVerdict(text), text, snapshot: this.#snapshots.get(agent), ...checksOf(agent, material) };
     await this.#recordOutcome(pair, agent, outcome);
   }
 
@@ -1710,7 +1724,13 @@ export class Coordinator {
       .filter((e) => e.kind === "message" && e.text)
       .map((e) => e.text as string)
       .join("\n\n");
-    const late: VerdictOutcome = { kind: "verdict", verdict: parseVerdict(text), text, snapshot: this.#snapshots.get("gemini") };
+    const late: VerdictOutcome = {
+      kind: "verdict",
+      verdict: parseVerdict(text),
+      text,
+      snapshot: this.#snapshots.get("gemini"),
+      ...checksOf("gemini", material),
+    };
     const v = late.verdict;
     pair.outcomes.set("gemini", late);
     if (pair.deadline) clearTimeout(pair.deadline); // сторож опоздавшего больше не нужен
@@ -1876,7 +1896,7 @@ export class Coordinator {
     const outgoing: Outgoing = {
       to: "claude",
       prompt: {
-        text: `Замечания рецензента:\n${text}${shift}\n\nИсправьте или обоснуйте несогласие по каждому пункту.`,
+        text: `Замечания рецензента:\n${text}${checksPart(codex)}${shift}\n\nИсправьте или обоснуйте несогласие по каждому пункту.`,
         from: "codex",
         snapshot: describeSnapshot(reviewed ?? snapshot),
       },
@@ -2265,4 +2285,114 @@ function assemble(
   }
   const text = parts.join(`${NL}${NL}`).trim();
   return text.length > 0 ? text : undefined;
+}
+
+/** Предел одного вывода (и строки команды) в блоке «Проверки рецензента». */
+const CHECK_OUTPUT_CHARS = 4000;
+/** Предел всего блока «Проверки рецензента». */
+const CHECKS_BLOCK_CHARS = 20_000;
+/** Короче этого вывод при дележе места не урезается: вместо этого уступают ранние команды. */
+const CHECK_OUTPUT_MIN_CHARS = 200;
+/** Место под пометку об обрезке блока (она короче). */
+const CHECKS_NOTE_CHARS = 200;
+/**
+ * Инструменты рецензента, вызовы которых — проверки: команды Codex
+ * (commandExecution — и чтение репозитория, и запуск своих скриптов).
+ */
+const CHECK_TOOLS = new Set(["commandExecution"]);
+
+interface ReviewerCheck {
+  readonly command: string;
+  output?: string;
+  exitCode?: number;
+}
+
+/** Команды рецензента в материале его хода, по порядку; начало и конец связаны id вызова. */
+function reviewerChecks(material: readonly PanelEvent[]): ReviewerCheck[] {
+  const checks: ReviewerCheck[] = [];
+  const byCall = new Map<string, ReviewerCheck>();
+  for (const e of material) {
+    if ((e.kind !== "tool_call" && e.kind !== "tool_result") || !CHECK_TOOLS.has(e.tool ?? "")) continue;
+    const known = e.callId === undefined ? undefined : byCall.get(e.callId);
+    const command = known?.command ?? commandOf(e.raw);
+    if (command === undefined) continue;
+    const check = known ?? { command };
+    if (!known) {
+      checks.push(check);
+      if (e.callId !== undefined) byCall.set(e.callId, check);
+    }
+    if (e.kind === "tool_result") {
+      // У commandExecution text — JSON элемента (адаптер Codex), вывод — в
+      // aggregatedOutput; его нет, если команда ничего не напечатала.
+      const raw = (e.raw ?? {}) as Record<string, unknown>;
+      const output = raw["aggregatedOutput"];
+      const exitCode = raw["exitCode"];
+      check.output = typeof output === "string" ? output : "";
+      if (typeof exitCode === "number") check.exitCode = exitCode;
+    }
+  }
+  return checks;
+}
+
+/** Начало и конец текста в пределе — вместе с пометкой пропуска (excerpt её не считает). */
+function clipped(text: string, limit: number): string {
+  let room = limit;
+  let shown = excerpt(text, room);
+  while (shown.length > limit && room > 0) {
+    room = Math.max(0, room - (shown.length - limit));
+    shown = excerpt(text, room);
+  }
+  return shown;
+}
+
+/**
+ * Блок «Проверки рецензента» для сообщения Claude: команды рецензента и их
+ * выводы (спецификация 05.10). Это свидетельство к замечаниям, а не
+ * поручение: шапка просит скрипты не запускать — они писались для папки
+ * рецензента. Вывод — не больше CHECK_OUTPUT_CHARS (начало и конец), весь
+ * блок — не больше CHECKS_BLOCK_CHARS. Не помещается — выводы делят место
+ * поровну (evidenceCap, как материал рецензенту); если тесно и так, ранние
+ * команды уступают поздним: Codex сначала читает код, а скрипты, на которых
+ * стоит вердикт, запускает потом. Полностью всё остаётся в ленте и журнале.
+ */
+function checksBlock(name: string, checks: readonly ReviewerCheck[]): string | undefined {
+  if (checks.length === 0) return undefined;
+  const header = `— Проверки рецензента ${name} (скрипты рецензента — свидетельство; не запускай их) —`;
+  const entries = checks.map((c) => ({
+    head: `$ ${clipped(c.command, CHECK_OUTPUT_CHARS)}${c.exitCode ? `${NL}[код выхода ${c.exitCode}]` : ""}`,
+    output: (c.output ?? "").replace(/\r\n/g, NL).trimEnd() || "(вывода нет)",
+  }));
+  const render = (kept: typeof entries, limit: number, note?: string): string => {
+    const body = kept.map((e) => `${e.head}${NL}${clipped(e.output, limit)}`).join(NL + NL);
+    return [`${header}${NL}${body}`, ...(note ? [note] : [])].join(NL + NL);
+  };
+  const whole = render(entries, CHECK_OUTPUT_CHARS);
+  if (whole.length <= CHECKS_BLOCK_CHARS) return whole;
+  // Место без выводов: шапка, строки команд с разделителями и пометка.
+  const frame = (e: (typeof entries)[number]) => e.head.length + 3;
+  const base = header.length + 3 + CHECKS_NOTE_CHARS;
+  let first = 0;
+  let need = base + entries.reduce((sum, e) => sum + frame(e) + Math.min(e.output.length, CHECK_OUTPUT_MIN_CHARS), 0);
+  for (const e of entries) {
+    if (need <= CHECKS_BLOCK_CHARS || first === entries.length - 1) break;
+    need -= frame(e) + Math.min(e.output.length, CHECK_OUTPUT_MIN_CHARS);
+    first += 1;
+  }
+  const kept = entries.slice(first);
+  const space = CHECKS_BLOCK_CHARS - base - kept.reduce((sum, e) => sum + frame(e), 0);
+  const cap = Math.min(CHECK_OUTPUT_CHARS, evidenceCap(kept.map((e) => e.output.length), Math.max(0, space)));
+  const parts = [
+    ...(first > 0 ? [`ранних команд не вошло — ${groupDigits(first)}`] : []),
+    ...(cap < CHECK_OUTPUT_CHARS && kept.some((e) => e.output.length > cap)
+      ? [`длинные выводы урезаны, предел вывода — ${charsLabel(cap)}`]
+      : []),
+  ];
+  const note = `[… блок сокращён до ${charsLabel(CHECKS_BLOCK_CHARS)}: ${parts.join("; ")}. Полностью — в ленте и журнале панели …]`;
+  return render(kept, cap, note);
+}
+
+/** Блок «Проверки рецензента» из материала хода — полем исхода; без команд — ничего. */
+function checksOf(agent: Reviewer, material: readonly PanelEvent[]): { checks?: string } {
+  const checks = checksBlock(NAMES[agent], reviewerChecks(material));
+  return checks === undefined ? {} : { checks };
 }

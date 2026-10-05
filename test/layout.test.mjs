@@ -529,6 +529,27 @@ test("действия хода: бусина на вызов, форма по �
   assert.equal(r.deniedRow, "отказано");
 });
 
+test("подпись вывода инструмента: у Claude — «передаётся рецензенту», у рецензента — «вывод проверки рецензента»", { skip: NO_BROWSER }, () => {
+  // Выводы команд рецензента рецензенту не пересылаются — они идут Claude
+  // блоком «Проверки рецензента» (задача 10 плана 05.10).
+  const r = open(
+    js`
+    const ev = (agent, kind, extra) => ({ id: agent + kind + Math.random(), agent, kind, visibility: "turn", at: Date.now(), ...extra });
+    postToPage({ type: "event", event: ev("claude", "tool_call", { tool: "Bash", callId: "b1", text: "python -m pytest -q" }) });
+    postToPage({ type: "event", event: ev("claude", "tool_result", { tool: "Bash", callId: "b1", text: "5 passed" }) });
+    postToPage({ type: "event", event: ev("codex", "tool_call", { tool: "commandExecution", callId: "c1", text: "{}" }) });
+    postToPage({ type: "event", event: ev("codex", "tool_result", { tool: "commandExecution", callId: "c1", text: "max_dd -0.2" }) });
+    postToPage({ type: "event", event: ev("gemini", "tool_call", { tool: "view_file", callId: "g:1", text: "{}" }) });
+    postToPage({ type: "event", event: ev("gemini", "tool_result", { tool: "view_file", callId: "g:1", text: "2 lines" }) });
+    result.labels = ["claude", "codex", "gemini"].map((agent) => document.querySelector(".действия." + agent + " .вывод-подпись")?.textContent);
+    result.outputs = ["claude", "codex", "gemini"].map((agent) => document.querySelector(".действия." + agent + " pre.вывод")?.textContent);
+  `,
+    { withUi: true },
+  );
+  assert.deepEqual(r.labels, ["сырой вывод — передаётся рецензенту как есть", "вывод проверки рецензента", "вывод проверки рецензента"]);
+  assert.deepEqual(r.outputs, ["5 passed", "max_dd -0.2", "2 lines"]);
+});
+
 test("эстафета и дорожка цикла: кто работает, счёт проверок, след по клику", { skip: NO_BROWSER }, () => {
   const r = open(
     js`

@@ -548,7 +548,10 @@ function showEvent(e, history = false) {
       const g = actionGroup(e.agent);
       const call = g.calls.get(e.callId) ?? newCall(g, e.tool ?? "?", "", e.callId, e.parentCallId);
       markCall(g, call, call.state === "denied" ? "denied" : "done");
-      call.line.append(makeEl("div", "вывод-подпись", "сырой вывод — передаётся рецензенту как есть"));
+      // Рецензенту пересылаются выводы Claude; выводы самих рецензентов идут
+      // Claude свидетельством, блоком «Проверки рецензента».
+      const caption = e.agent === "claude" ? "сырой вывод — передаётся рецензенту как есть" : "вывод проверки рецензента";
+      call.line.append(makeEl("div", "вывод-подпись", caption));
       call.line.append(makeEl("pre", "вывод", e.text ?? ""));
       return;
     }

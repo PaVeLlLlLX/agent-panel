@@ -3526,3 +3526,177 @@ test("стоп-сигнал: сбой после прерывания (onState �
     process.off("unhandledRejection", onRejection);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Блок «Проверки рецензента» (спецификация 05.10): команды Codex и их выводы
+// идут Claude свидетельством вместе с замечаниями — прежде они выбрасывались,
+// и Claude получал «пересчитайте» без самого пересчёта.
+// ---------------------------------------------------------------------------
+
+/** Конец команды Codex, как у адаптера: text — JSON элемента, вывод — в raw.aggregatedOutput. */
+function codexCommandDone(command, output, id = "cmd-1", exitCode = 0) {
+  const item = { type: "commandExecution", id, command, status: "completed", aggregatedOutput: output, exitCode };
+  return event("codex", "tool_result", { tool: "commandExecution", callId: id, text: JSON.stringify(item), raw: item });
+}
+
+/** Команда Codex целиком: начало и конец. */
+function codexRan(k, command, output, id, exitCode = 0) {
+  k.handle(codexCommand(command, id));
+  k.handle(codexCommandDone(command, output, id, exitCode));
+}
+
+const CHECKS_HEADER = "— Проверки рецензента Codex (скрипты рецензента — свидетельство; не запускай их) —";
+const DD_SCRIPT = "python C:\\Temp\\agent-panel-review\\codex\\dd.py";
+
+/** Блок проверок в сообщении Claude: от шапки до следующего раздела. */
+function checksSection(text) {
+  const start = text.indexOf(CHECKS_HEADER);
+  if (start < 0) return undefined;
+  const rest = text.slice(start);
+  const end = rest.search(/\n\n(— Gemini|Файлы изменились|Исправьте или обоснуйте)/);
+  return end < 0 ? rest : rest.slice(0, end);
+}
+
+/** Выводы команд блока: всё после строки «$ …» (и строки кода выхода) до пустой строки. */
+function checkOutputs(block) {
+  return block
+    .slice(CHECKS_HEADER.length + 1)
+    .split("\n\n")
+    .filter((piece) => piece.startsWith("$ "))
+    .map((piece) => piece.split("\n").slice(1).filter((line) => !/^\[код выхода \d+\]$/.test(line)).join("\n"));
+}
+
+test("проверки рецензента: команда и вывод скрипта Codex — блоком-свидетельством в сообщении Claude", async () => {
+  const { k, claude, gemini, journal } = await pairRoom();
+  codexRan(k, DD_SCRIPT, "max_dd -0.2\n", "cmd-dd");
+  codexRan(k, "python C:\\Temp\\agent-panel-review\\codex\\leak.py", "Traceback: KeyError 'date'\n", "cmd-leak", 1);
+  codexRan(k, "mkdir C:\\Temp\\agent-panel-review\\codex\\out", "", "cmd-mkdir");
+  turn(k, "codex", "Просадка посчитана неверно.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  geminiTurn(k, gemini, "Чек-лист закрыт.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => claude.received.length === 2, "замечания у Claude");
+  const text = claude.received[1].text;
+  assert.ok(text.includes([CHECKS_HEADER, `$ ${DD_SCRIPT}`, "max_dd -0.2"].join("\n")), text);
+  // Провал скрипта виден, пустой вывод назван: Claude не примет трассу за результат.
+  assert.ok(text.includes("$ python C:\\Temp\\agent-panel-review\\codex\\leak.py\n[код выхода 1]\nTraceback: KeyError 'date'"), text);
+  assert.ok(text.includes("$ mkdir C:\\Temp\\agent-panel-review\\codex\\out\n(вывода нет)"), text);
+  assert.doesNotMatch(text, /"type":"commandExecution"/, "команда — строкой, не JSON элемента");
+  // Блок — в разделе Codex, после его замечаний, до раздела Gemini.
+  assert.ok(text.indexOf("Просадка посчитана неверно") < text.indexOf(CHECKS_HEADER));
+  assert.ok(text.indexOf(CHECKS_HEADER) < text.indexOf("— Gemini — методология и факты"));
+  assert.equal(k.state.verdict, "remarks", "вердикт — по реплике, не по выводам");
+  journal.close();
+});
+
+test("проверки рецензента: без команд блока нет", async () => {
+  const { k, claude, gemini, journal } = await pairRoom();
+  // Поиск в вебе — не команда: блока он не создаёт.
+  k.handle(event("codex", "tool_call", { tool: "webSearch", callId: "ws-1", text: "{}" }));
+  k.handle(event("codex", "tool_result", { tool: "webSearch", callId: "ws-1", text: "{}" }));
+  turn(k, "codex", "Просадка посчитана неверно.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  geminiTurn(k, gemini, "Чек-лист закрыт.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => claude.received.length === 2, "замечания у Claude");
+  assert.doesNotMatch(claude.received[1].text, /Проверки рецензента/);
+  journal.close();
+});
+
+test("проверки рецензента: вывод длиннее 4000 знаков — начало и конец с пометкой пропуска", async () => {
+  const { k, claude, gemini, journal } = await pairRoom();
+  const long = `начало вывода\n${"x".repeat(9000)}\nитог: max_dd -0.2`;
+  codexRan(k, DD_SCRIPT, long, "cmd-long");
+  turn(k, "codex", "Просадка посчитана неверно.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  geminiTurn(k, gemini, "Чек-лист закрыт.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => claude.received.length === 2, "замечания у Claude");
+  const block = checksSection(claude.received[1].text);
+  const [output] = checkOutputs(block);
+  assert.ok(output.length <= 4000, `вывод ${output.length} знаков`);
+  assert.ok(output.length > 3900, "предел использован");
+  assert.ok(output.startsWith("начало вывода\n"));
+  assert.ok(output.endsWith("\nитог: max_dd -0.2"));
+  assert.match(output, /\[… пропущены символы [\d ]+–[\d ]+ из 9 032 …\]/);
+  assert.doesNotMatch(block, /блок сокращён/, "блок в пределе — пометки об обрезке блока нет");
+  journal.close();
+});
+
+test("проверки рецензента: весь блок — не больше 20 000 знаков, с пометкой об обрезке", async () => {
+  const { k, claude, gemini, journal } = await pairRoom();
+  for (let i = 0; i < 12; i++) {
+    codexRan(k, `python C:\\Temp\\agent-panel-review\\codex\\check${i}.py`, `проверка ${i}\n${"y".repeat(6000)}\nитог ${i}`, `cmd-${i}`);
+  }
+  turn(k, "codex", "Просадка посчитана неверно.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  geminiTurn(k, gemini, "Чек-лист закрыт.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => claude.received.length === 2, "замечания у Claude");
+  const block = checksSection(claude.received[1].text);
+  assert.ok(block.length <= 20_000, `блок ${block.length} знаков`);
+  assert.ok(block.length > 19_000, "предел использован");
+  assert.match(
+    block,
+    /\n\n\[… блок сокращён до 20 000 символов: длинные выводы урезаны, предел вывода — [\d ]+ символ(а|ов)?\. Полностью — в ленте и журнале панели …\]$/,
+  );
+  // Команды — все, у каждого вывода — начало и конец.
+  const outputs = checkOutputs(block);
+  assert.equal(outputs.length, 12);
+  outputs.forEach((output, i) => {
+    assert.ok(output.length <= 4000, `вывод ${i}: ${output.length} знаков`);
+    assert.ok(output.startsWith(`проверка ${i}\n`) && output.endsWith(`\nитог ${i}`), `вывод ${i}`);
+  });
+  journal.close();
+});
+
+test("проверки рецензента: команд больше, чем помещается, — ранние не входят, поздние остаются, пометка называет число", async () => {
+  // Codex сначала читает код, потом пишет и запускает скрипты: свидетельства,
+  // на которых стоит вердикт, — в поздних командах.
+  const { k, claude, gemini, journal } = await pairRoom();
+  const module = (i) => `src\\models\\classifier_module${String(i).padStart(3, "0")}.py`;
+  for (let i = 0; i < 400; i++) codexRan(k, `rg -n "порог классификатора" ${module(i)}`, "ok", `cmd-${i}`);
+  turn(k, "codex", "Просадка посчитана неверно.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  geminiTurn(k, gemini, "Чек-лист закрыт.\nВЕРДИКТ: ПРИНЯТО");
+  await waitFor(() => claude.received.length === 2, "замечания у Claude");
+  const block = checksSection(claude.received[1].text);
+  assert.ok(block.length <= 20_000, `блок ${block.length} знаков`);
+  const kept = checkOutputs(block).length;
+  assert.ok(kept > 100 && kept < 400, `вошло ${kept}`);
+  assert.ok(block.includes(`$ rg -n "порог классификатора" ${module(399)}\nok`), "последняя команда — в блоке");
+  assert.ok(!block.includes(module(0)), "первая — нет");
+  assert.ok(
+    block.endsWith(`[… блок сокращён до 20 000 символов: ранних команд не вошло — ${400 - kept}. Полностью — в ленте и журнале панели …]`),
+    block.slice(-200),
+  );
+  journal.close();
+});
+
+test("проверки рецензента: в комнате без Gemini блок — в сообщении Claude после замечаний Codex", async () => {
+  const { k, claude, codex, journal } = room();
+  await k.fromHuman("посчитать просадку стратегии", "review");
+  turn(k, "claude", "max_dd -0.1");
+  await waitFor(() => codex.received.length === 1, "проверка у Codex");
+  codexRan(k, DD_SCRIPT, "max_dd -0.2\n", "cmd-dd");
+  turn(k, "codex", "Просадка посчитана неверно.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => claude.received.length === 2, "замечания у Claude");
+  const text = claude.received[1].text;
+  assert.ok(text.startsWith("Замечания рецензента:\nПросадка посчитана неверно."), text);
+  assert.ok(text.includes(`Просадка посчитана неверно.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ\n\n${CHECKS_HEADER}\n$ ${DD_SCRIPT}\nmax_dd -0.2`), text);
+  assert.ok(text.indexOf(CHECKS_HEADER) < text.indexOf("Исправьте или обоснуйте несогласие по каждому пункту."));
+  // Следующий ход Codex — без команд: блока нет.
+  turn(k, "claude", "исправил: max_dd -0.2");
+  await waitFor(() => codex.received.length === 2, "проверка 2 у Codex");
+  turn(k, "codex", "Знак просадки перепутан.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => claude.received.length === 3, "замечания 2 у Claude");
+  assert.doesNotMatch(claude.received[2].text, /Проверки рецензента/);
+  journal.close();
+});
+
+test("проверки рецензента: поздний отзыв Gemini пересобирает удержанные замечания — блок проверок Codex остаётся", async () => {
+  const { k, claude, gemini, events, journal } = await pairRoom({ geminiWaitMs: 40 }, 3, { liveGemini: true });
+  k.setAuto(false);
+  codexRan(k, DD_SCRIPT, "max_dd -0.2\n", "cmd-dd");
+  turn(k, "codex", "Просадка посчитана неверно.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => k.state.stage === "held", "замечания Codex удержаны");
+  geminiTurn(k, gemini, "Пробел: утечка id.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => said(events, /^Gemini опоздал к проверке 1, но успел до отправки/).length === 1, "отзыв добавлен");
+  await k.releaseHeld();
+  const text = claude.received[1].text;
+  assert.ok(text.includes(`${CHECKS_HEADER}\n$ ${DD_SCRIPT}\nmax_dd -0.2`), text);
+  assert.ok(text.indexOf("Просадка посчитана неверно") < text.indexOf(CHECKS_HEADER));
+  assert.ok(text.indexOf(CHECKS_HEADER) < text.indexOf("— Gemini — методология и факты —\nПробел: утечка id"), text);
+  journal.close();
+});
