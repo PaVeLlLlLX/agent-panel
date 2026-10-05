@@ -1746,6 +1746,94 @@ test("Codex: начало команды несёт в raw её строку —
   }
 });
 
+/** Ветка субагента в фальшивом Codex (СУБАГЕНТ) и её короткое имя в диагностике. */
+const SUB_THREAD = "01a10c7d-a1e1-7360-bdd7-bdc2cb8562fe";
+const SUB_SHORT = "01a10c7d-a1e1";
+
+test("Codex: субагент в своей ветке не кончает ход — один turn_completed, реплика основной ветки, команда субагента — инструмент (живой цикл 05.10)", async () => {
+  // Живой цикл 05.10, вечер: GPT-6.1-Sol запустил двух субагентов, их
+  // уведомления шли по тому же соединению. Первый turn_completed (субагента,
+  // «ВЕРДИКТ: ПРИНЯТО») панель приняла за отзыв Codex и закрыла цикл, а
+  // ответ основной ветки с замечаниями пришёл позже и пропал.
+  const s = collector();
+  const sessions = [];
+  const a = codex(s, { onSessionId: (id) => sessions.push(id) });
+  try {
+    await a.send({ text: "СУБАГЕНТ", from: "claude" });
+    await waitFor(() => ends(s.events) === 1, "конец хода");
+    await delay(100);
+    const completions = s.events.filter((e) => e.kind === "turn_completed");
+    assert.equal(completions.length, 1, "ход кончается один раз — концом основной ветки");
+    assert.equal(completions[0].raw.threadId, "fake-thread-1");
+    const starts = s.events.filter((e) => e.kind === "turn_started");
+    assert.equal(starts.length, 1, "начало хода субагента — не начало хода Codex");
+    assert.deepEqual(
+      s.events.filter((e) => e.kind === "message").map((e) => e.text),
+      ["основной: есть замечания\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ"],
+      "реплика субагента в отзыв и вердикт не входит",
+    );
+    assert.deepEqual(
+      s.events.filter((e) => e.kind === "text_delta").map((e) => e.text),
+      ["основной: ", "есть замечания"],
+      "текст субагента в поток ответа не идёт",
+    );
+    const tools = s.events.filter((e) => e.callId === "cmd-sub");
+    assert.deepEqual(
+      tools.map((e) => [e.kind, e.tool, e.visibility]),
+      [
+        ["tool_call", "commandExecution", "turn"],
+        ["tool_result", "commandExecution", "turn"],
+      ],
+      "команда субагента — в ленте, журнале и свидетельстве хода",
+    );
+    for (const e of tools) {
+      assert.equal(e.raw.threadId, SUB_THREAD, "raw помечен веткой субагента");
+      assert.equal(e.raw.command, "rg -n порог src", "стоп-сигнал видит команду субагента");
+      assert.equal(e.turnId, starts[0].turnId, "команда — в ходе основной ветки");
+    }
+    const notes = s.events.filter((e) => e.kind === "diagnostic").map((e) => e.text);
+    assert.ok(notes.includes(`Codex запустил субагента ${SUB_SHORT}`), notes.join("\n"));
+    assert.ok(notes.includes(`субагент ${SUB_SHORT} закончил`), notes.join("\n"));
+    const said = s.events.filter((e) => /^субагент Codex: /.test(e.text ?? ""));
+    assert.deepEqual(
+      said.map((e) => [e.kind, e.visibility, e.text]),
+      [["diagnostic", "stream", "субагент Codex: субагент: всё хорошо\nВЕРДИКТ: ПРИНЯТО"]],
+    );
+    assert.equal(said[0].raw.threadId, SUB_THREAD, "полный текст субагента — в raw журнала");
+    assert.deepEqual(completions[0].usage, { input: 17522 + 3000, cached: 7936 + 1000, output: 5 + 300 }, "расход субагента — в расходе хода");
+    assert.equal(a.sessionId, "fake-thread-1", "ветка субагента не становится веткой рецензента");
+    assert.deepEqual(sessions, ["fake-thread-1"]);
+    assert.equal(a.busy, false);
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Codex: субагент, закончивший после хода основной ветки, — в ленте, но не в ходе; его расход не переходит в следующий ход", async () => {
+  const s = collector();
+  const a = codex(s);
+  try {
+    await a.send({ text: "СУБАГЕНТ-ДОЛЬШЕ", from: "claude" });
+    await waitFor(() => s.events.some((e) => e.text === `субагент ${SUB_SHORT} закончил`), "конец субагента");
+    const tools = s.events.filter((e) => e.callId === "cmd-sub");
+    assert.deepEqual(tools.map((e) => e.visibility), ["stream", "stream"], "в материал следующей проверки не попадёт");
+    for (const e of tools) assert.equal(e.turnId, undefined);
+    assert.equal(ends(s.events), 1, "конца хода от субагента нет");
+    assert.equal(a.busy, false, "поздний субагент занятость не возвращает");
+    await a.send({ text: "здравствуй", from: "claude" });
+    await waitFor(() => ends(s.events) === 2, "следующий ход");
+    assert.deepEqual(
+      s.events.filter((e) => e.kind === "turn_completed").map((e) => e.usage),
+      [
+        { input: 17522, cached: 7936, output: 5 },
+        { input: 17522, cached: 7936, output: 5 },
+      ],
+    );
+  } finally {
+    await a.stop();
+  }
+});
+
 test("Codex: ветка из thread.id, процесс поднимается сам, ответ и поток доходят", async () => {
   const s = collector();
   const a = codex(s);

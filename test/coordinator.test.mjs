@@ -3411,6 +3411,41 @@ test("стоп-сигнал на адаптере Codex (фальшивка): х
   }
 });
 
+test("субагенты Codex (адаптер на фальшивке): итог пары — по ответу основной ветки, «принято» субагента цикл не закрывает (живой цикл 05.10)", async () => {
+  // Живой цикл 05.10, вечер: Gemini принял, Codex запустил двух субагентов, и
+  // конец хода первого («ВЕРДИКТ: ПРИНЯТО») закрыл цикл: «Codex — принято,
+  // Gemini — принято. Рецензенты приняли работу». Замечания второго
+  // субагента и основной ветки Codex пришли позже и пропали.
+  const catalog = mkdtempSync(join(tmpdir(), "panel-"));
+  const journal = new Journal(join(catalog, "j.sqlite"));
+  journal.ensureRoom("r", catalog);
+  const claude = new Stub("claude");
+  const gemini = new Stub("gemini");
+  const events = [];
+  let k;
+  const codex = new CodexAdapter({ command: "node", commandArgs: [FAKE_CODEX], cwd: catalog }, (e) => k.handle(e));
+  k = new Coordinator(claude, codex, journal, { room: "r", cwd: catalog, maxAutoRounds: 3, onEvent: (e) => events.push(e), gemini });
+  try {
+    await k.fromHuman("подобрать порог классификатора", "review");
+    turn(k, "claude", "порог 0.4, F1 на валидации 0.71 СУБАГЕНТ");
+    await waitFor(() => gemini.received.length === 1, "материал Gemini");
+    turn(k, "gemini", "Методология в порядке.\nВЕРДИКТ: ПРИНЯТО");
+    await waitFor(() => said(events, /^Итог проверки 1:/).length === 1, "итог пары", 10_000);
+    assert.equal(said(events, /^Итог проверки 1:/)[0].text, "Итог проверки 1: Codex — есть замечания, Gemini — принято.");
+    assert.equal(said(events, /Рецензенты приняли работу/).length, 0);
+    assert.equal(k.state.verdict, "remarks");
+    await waitFor(() => claude.received.length === 2, "замечания разработчику");
+    const remarks = claude.received[1].text;
+    assert.match(remarks, /основной: есть замечания/);
+    assert.doesNotMatch(remarks, /субагент: всё хорошо/, "реплика субагента — не отзыв Codex");
+    assert.match(remarks, /rg -n порог src/, "команда субагента — в свидетельстве Codex");
+    assert.equal(events.filter((e) => e.agent === "codex" && e.kind === "turn_completed").length, 1);
+  } finally {
+    await codex.stop();
+    journal.close();
+  }
+});
+
 test("профиль прав Codex не принят (Codex обновился): проверка идёт в «только чтение», цикл не падает", async () => {
   // Review Focus 4 (задача 9): откат — строка в ленте без отметки провала;
   // координатор не считает это смертью агента, отзыв засчитан проверке.

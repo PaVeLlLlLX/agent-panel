@@ -19,7 +19,14 @@
  *   ЗАПИСАТЬ    — сервер запрашивает у клиента одобрение на изменение файла
  *                 и пишет в stderr, что клиент ответил;
  *   КОМАНДА-ДАННЫЕ — начало команды `python -c "open('data/x.parquet')"`,
- *                 ход висит до turn/interrupt.
+ *                 ход висит до turn/interrupt;
+ *   СУБАГЕНТ    — до реплики основной ветки («основной: есть замечания»,
+ *                 вердикт ЕСТЬ ЗАМЕЧАНИЯ) и конца её хода идёт целый ход
+ *                 субагента в другой ветке: команда, реплика «субагент: всё
+ *                 хорошо» с вердиктом ПРИНЯТО, расход и turn/completed;
+ *   СУБАГЕНТ-ДОЛЬШЕ — тот же ход субагента, но после конца хода основной.
+ * Уведомления хода идут от ветки из turn/start: адаптер отличает свою ветку
+ * от веток субагентов по threadId.
  * РАЗРЫВ в id возобновляемой ветки — ответ thread/resume с U+2028/U+2029
  * внутри строки JSON.
  *
@@ -141,6 +148,45 @@ const runScript = (id, params, file) => {
   else ok(0, `выполнено ${basename(file)}\n`);
 };
 
+/** Ветка субагента и её ход — номера в форме настоящих (живой цикл 05.10). */
+const SUB_THREAD = "01a10c7d-a1e1-7360-bdd7-bdc2cb8562fe";
+const SUB_TURN = "01a10c7d-a2e0-7c81-8186-b6dd4a1c76b1";
+
+/**
+ * Ход субагента (СУБАГЕНТ): уведомления ветки SUB_THREAD на том же
+ * соединении, как в живом цикле 05.10 (GPT-6.1-Sol xhigh запустил двух).
+ * thread/started субагента настоящий 0.159 тогда не прислал (привязка
+ * комнаты не сменилась), но схема его допускает (Thread.parentThreadId).
+ */
+const subAgentTurn = (parent) => {
+  notify("thread/started", { thread: { id: SUB_THREAD, parentThreadId: parent } });
+  notify("turn/started", { threadId: SUB_THREAD, turn: { id: SUB_TURN, status: "inProgress" } });
+  const command = { type: "commandExecution", id: "cmd-sub", command: "rg -n порог src", status: "inProgress" };
+  notify("item/started", { item: command, threadId: SUB_THREAD, turnId: SUB_TURN });
+  notify("item/completed", {
+    item: { ...command, status: "completed", aggregatedOutput: "src/model.py:3: порог = 0.4", exitCode: 0 },
+    threadId: SUB_THREAD,
+    turnId: SUB_TURN,
+  });
+  for (const chunk of ["субагент: ", "всё хорошо"]) {
+    notify("item/agentMessage/delta", { delta: chunk, itemId: "i-sub", threadId: SUB_THREAD, turnId: SUB_TURN });
+  }
+  notify("item/completed", {
+    item: { type: "agentMessage", id: "i-sub", text: "субагент: всё хорошо\nВЕРДИКТ: ПРИНЯТО" },
+    threadId: SUB_THREAD,
+    turnId: SUB_TURN,
+  });
+  notify("thread/tokenUsage/updated", {
+    threadId: SUB_THREAD,
+    turnId: SUB_TURN,
+    tokenUsage: {
+      total: { inputTokens: 3000, cachedInputTokens: 1000, outputTokens: 300 },
+      last: { inputTokens: 3000, cachedInputTokens: 1000, outputTokens: 300 },
+    },
+  });
+  notify("turn/completed", { threadId: SUB_THREAD, turn: { id: SUB_TURN, status: "completed" } });
+};
+
 process.stderr.write(
   "\x1b[2m2026-09-14T17:07:57Z\x1b[0m \x1b[31mERROR\x1b[0m codex_models_manager::manager: failed to refresh available models\n",
 );
@@ -259,6 +305,9 @@ lines.on("line", (line) => {
     case "turn/start": {
       turnNumber += 1;
       const turnId = `turn-${turnNumber}`;
+      // Уведомления хода — от ветки, в которой он идёт (продолжаемой или новой):
+      // адаптер отличает свою ветку от веток субагентов по threadId.
+      const thread = typeof z.params.threadId === "string" ? z.params.threadId : THREAD;
       const turnText = (z.params.input ?? []).map((v) => v.text ?? "").join("");
       // УПАСТЬ-ХОД: процесс умирает посреди хода.
       if (turnText.includes("УПАСТЬ-ХОД")) {
@@ -271,11 +320,11 @@ lines.on("line", (line) => {
       // прерывания — для стоп-сигнала панели (обычный КОМАНДА ниже не срабатывает).
       if (turnText.includes("ДОЛГИЙ-ХОД") || turnText.includes("ПОЗЖЕ") || turnText.includes("КОМАНДА-ДАННЫЕ")) {
         reply({ turn: { id: turnId, status: "inProgress" } });
-        notify("turn/started", { threadId: THREAD, turn: { id: turnId, status: "inProgress" } });
+        notify("turn/started", { threadId: thread, turn: { id: turnId, status: "inProgress" } });
         if (turnText.includes("КОМАНДА-ДАННЫЕ")) {
           notify("item/started", {
             item: { type: "commandExecution", id: "cmd-data", command: "python -c \"open('data/x.parquet')\"", status: "inProgress" },
-            threadId: THREAD,
+            threadId: thread,
             turnId,
           });
         }
@@ -284,8 +333,8 @@ lines.on("line", (line) => {
           return;
         }
         setTimeout(() => {
-          notify("item/completed", { item: { type: "agentMessage", id: "i-поздно", text: "поздний ответ" }, threadId: THREAD, turnId });
-          notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "completed" } });
+          notify("item/completed", { item: { type: "agentMessage", id: "i-поздно", text: "поздний ответ" }, threadId: thread, turnId });
+          notify("turn/completed", { threadId: thread, turn: { id: turnId, status: "completed" } });
         }, 400);
         return;
       }
@@ -294,7 +343,32 @@ lines.on("line", (line) => {
       reply({ turn: { id: turnId, status: "inProgress" } });
       const text = (z.params.input ?? []).map((v) => v.text ?? "").join("");
       if (!text.includes("РАСХОД-БЕЗ-ХОДА")) {
-        notify("turn/started", { threadId: THREAD, turn: { id: turnId, status: "inProgress" } });
+        notify("turn/started", { threadId: thread, turn: { id: turnId, status: "inProgress" } });
+      }
+
+      if (text.includes("СУБАГЕНТ")) {
+        // СУБАГЕНТ-ДОЛЬШЕ: субагент заканчивает уже после конца хода основной ветки.
+        const late = text.includes("СУБАГЕНТ-ДОЛЬШЕ");
+        if (!late) subAgentTurn(thread);
+        for (const chunk of ["основной: ", "есть замечания"]) {
+          notify("item/agentMessage/delta", { delta: chunk, itemId: "i-main", threadId: thread, turnId });
+        }
+        notify("item/completed", {
+          item: { type: "agentMessage", id: "i-main", text: "основной: есть замечания\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ" },
+          threadId: thread,
+          turnId,
+        });
+        notify("thread/tokenUsage/updated", {
+          threadId: thread,
+          turnId,
+          tokenUsage: {
+            total: { inputTokens: 90000, cachedInputTokens: 80000, outputTokens: 9999 },
+            last: { inputTokens: 17522, cachedInputTokens: 7936, outputTokens: 5 },
+          },
+        });
+        notify("turn/completed", { threadId: thread, turn: { id: turnId, status: "completed" } });
+        if (late) setTimeout(() => subAgentTurn(thread), 100);
+        return;
       }
 
       if (text.includes("ЗАПИСАТЬ")) {
@@ -302,32 +376,32 @@ lines.on("line", (line) => {
           jsonrpc: "2.0",
           id: "srv-1",
           method: "item/fileChange/requestApproval",
-          params: { threadId: THREAD, turnId },
+          params: { threadId: thread, turnId },
         });
       }
       if (text.includes("КОМАНДА")) {
         const command = { type: "commandExecution", id: "cmd-1", command: "git status", status: "inProgress" };
-        notify("item/started", { item: command, threadId: THREAD, turnId });
+        notify("item/started", { item: command, threadId: thread, turnId });
         notify("item/completed", {
           item: { ...command, status: "completed", aggregatedOutput: "чисто", exitCode: 0 },
-          threadId: THREAD,
+          threadId: thread,
           turnId,
         });
       }
       if (text.includes("РАСХОД-БЕЗ-ХОДА")) {
         // Повтор расхода прежнего хода, а turn/started для текущего не пришёл.
         notify("thread/tokenUsage/updated", {
-          threadId: THREAD,
+          threadId: thread,
           turnId: "turn-old",
           tokenUsage: { total: { inputTokens: 5000, cachedInputTokens: 0, outputTokens: 400 }, last: { inputTokens: 900, cachedInputTokens: 0, outputTokens: 40 } },
         });
-        notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "completed" } });
+        notify("turn/completed", { threadId: thread, turn: { id: turnId, status: "completed" } });
         return;
       }
       if (text.includes("РАСХОД-СЛОЖНЫЙ")) {
         const usage = (turn, input, output, lastInput, lastOutput) =>
           notify("thread/tokenUsage/updated", {
-            threadId: THREAD,
+            threadId: thread,
             turnId: turn,
             tokenUsage: {
               total: { inputTokens: input, cachedInputTokens: 0, outputTokens: output },
@@ -338,27 +412,27 @@ lines.on("line", (line) => {
         usage(turnId, 1000, 10, 300, 10); // первый запрос хода; ветка возобновлена — базы нет
         usage(turnId, 1500, 25, 500, 15); // второй запрос
         usage(turnId, 400, 5, 400, 5); // сжатие контекста: итог сброшен
-        notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "completed" } });
+        notify("turn/completed", { threadId: thread, turn: { id: turnId, status: "completed" } });
         return;
       }
       if (text.includes("ОШИБКА-ХОДА")) {
         notify("turn/completed", {
-          threadId: THREAD,
+          threadId: thread,
           turn: { id: turnId, status: "failed", error: { message: "сбой модели" } },
         });
         return;
       }
       for (const chunk of ["при", "вет"]) {
-        notify("item/agentMessage/delta", { delta: chunk, itemId: "i1", threadId: THREAD, turnId });
+        notify("item/agentMessage/delta", { delta: chunk, itemId: "i1", threadId: thread, turnId });
       }
       notify("item/completed", {
         item: { type: "agentMessage", id: "i1", text: "привет" },
-        threadId: THREAD,
+        threadId: thread,
         turnId,
         completedAtMs: Date.now(),
       });
       notify("thread/tokenUsage/updated", {
-        threadId: THREAD,
+        threadId: thread,
         turnId,
         tokenUsage: {
           total: { totalTokens: 99999, inputTokens: 90000, cachedInputTokens: 80000, outputTokens: 9999, reasoningOutputTokens: 0 },
@@ -369,10 +443,11 @@ lines.on("line", (line) => {
       notify("account/rateLimits/updated", {
         rateLimits: { limitId: "codex", primary: { usedPercent: 8, windowDurationMins: 10080, resetsAt: 1791057755 }, planType: "plus" },
       });
-      notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "completed" } });
+      notify("turn/completed", { threadId: thread, turn: { id: turnId, status: "completed" } });
       return;
     }
-    case "turn/interrupt":
+    case "turn/interrupt": {
+      const thread = typeof z.params.threadId === "string" ? z.params.threadId : THREAD;
       if (REJECT_INTERRUPT) {
         send({ jsonrpc: "2.0", id: z.id, error: { code: -32603, message: "ход не найден" } });
         return;
@@ -384,15 +459,16 @@ lines.on("line", (line) => {
         setTimeout(() => {
           notify("item/completed", {
             item: { type: "agentMessage", id: "i-прерванный", text: "поздний кусок" },
-            threadId: THREAD,
+            threadId: thread,
             turnId: z.params.turnId,
           });
         }, 100);
         setTimeout(() => {
-          notify("turn/completed", { threadId: THREAD, turn: { id: z.params.turnId, status: "interrupted" } });
+          notify("turn/completed", { threadId: thread, turn: { id: z.params.turnId, status: "interrupted" } });
         }, 150);
       }
       return;
+    }
     default:
       send({
         jsonrpc: "2.0",

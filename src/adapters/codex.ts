@@ -36,6 +36,14 @@
  * ходе проверки панель прерывает по её началу (стоп-сигнал, coordinator.ts);
  * чтение через импорт кода проекта стоп-сигнал не видит.
  *
+ * # Субагенты
+ *
+ * Codex может запустить субагентов в своих ветках (живой цикл 05.10, вечер:
+ * GPT-6.1-Sol xhigh — двух). Их turn/*, item/* и расход идут по тому же
+ * соединению с их threadId. Ход Codex ведёт только своя ветка: конец хода
+ * субагента — не отзыв Codex, его реплика — не реплика Codex; его команды —
+ * инструменты хода (#childNotification).
+ *
  * # Жизненный цикл процесса
  *
  * Найдено рецензентом и воспроизведено тестами:
@@ -262,47 +270,39 @@ function nonNegative(a: TurnUsage): TurnUsage {
   return { input: Math.max(0, a.input), cached: Math.max(0, a.cached), output: Math.max(0, a.output) };
 }
 
-export class CodexAdapter implements Adapter {
-  /**
-   * Расход хода. app-server шлёт накопительный итог по ветке (total) и итог
-   * последнего запроса модели (last), с turnId. Ход считается от основы
-   * «итог минус последний запрос» в первом уведомлении хода: так верно и для
-   * первого хода возобновлённой ветки, и для хода из нескольких запросов.
-   * Уведомления чужого хода (повтор при возобновлении) не учитываются; сброс
-   * итога после сжатия контекста переносит набранное (рецензия Codex 28.09).
-   */
+function parseUsage(value: unknown): TurnUsage | undefined {
+  const z = value as Record<string, unknown> | undefined;
+  if (!z || typeof z["inputTokens"] !== "number") return undefined;
+  return {
+    input: z["inputTokens"] as number,
+    cached: typeof z["cachedInputTokens"] === "number" ? (z["cachedInputTokens"] as number) : 0,
+    output: typeof z["outputTokens"] === "number" ? (z["outputTokens"] as number) : 0,
+  };
+}
+
+/**
+ * Расход одной ветки за ход основной. app-server шлёт накопительный итог по
+ * ветке (total) и итог последнего запроса модели (last). Ход считается от
+ * основы «итог минус последний запрос» в первом уведомлении хода: так верно и
+ * для первого хода возобновлённой ветки, и для хода из нескольких запросов;
+ * сброс итога после сжатия контекста переносит набранное (рецензия Codex 28.09).
+ */
+class BranchUsage {
   #baseline: TurnUsage | undefined;
   #carry: TurnUsage = { input: 0, cached: 0, output: 0 };
   #previousTotal: TurnUsage | undefined;
-  #turnUsage: TurnUsage | undefined;
-  #limit: LimitInfo | undefined;
+  #usage: TurnUsage | undefined;
 
-  #newUsageTurn(): void {
-    this.#baseline = undefined;
-    this.#carry = { input: 0, cached: 0, output: 0 };
-    this.#previousTotal = undefined;
-    this.#turnUsage = undefined;
+  get usage(): TurnUsage | undefined {
+    return this.#usage;
   }
 
-  #accountUsage(info: unknown, notifiedTurn: unknown): void {
-    // Расход — только своего хода: с turnId — если он совпадает с известным
-    // текущим; без turnId — если ход идёт (рецензия Codex 28.09).
-    const turn = typeof notifiedTurn === "string" ? notifiedTurn : undefined;
-    if (turn !== undefined ? turn !== this.#turn : !this.#busy) return;
+  account(info: unknown): void {
     const s = (info ?? {}) as Record<string, unknown>;
-    const parseUsage = (o: unknown): TurnUsage | undefined => {
-      const z = o as Record<string, unknown> | undefined;
-      if (!z || typeof z["inputTokens"] !== "number") return undefined;
-      return {
-        input: z["inputTokens"] as number,
-        cached: typeof z["cachedInputTokens"] === "number" ? (z["cachedInputTokens"] as number) : 0,
-        output: typeof z["outputTokens"] === "number" ? (z["outputTokens"] as number) : 0,
-      };
-    };
     const result = parseUsage(s["total"]);
     const lastIndex = parseUsage(s["last"]) ?? { input: 0, cached: 0, output: 0 };
     if (!result) {
-      if (s["last"]) this.#turnUsage = add(this.#turnUsage ?? this.#carry, lastIndex);
+      if (s["last"]) this.#usage = add(this.#usage ?? this.#carry, lastIndex);
       return;
     }
     const previous = this.#previousTotal;
@@ -314,7 +314,58 @@ export class CodexAdapter implements Adapter {
       this.#baseline = nonNegative(subtract(result, lastIndex));
     }
     this.#previousTotal = result;
-    this.#turnUsage = add(this.#carry, nonNegative(subtract(result, this.#baseline)));
+    this.#usage = add(this.#carry, nonNegative(subtract(result, this.#baseline)));
+  }
+}
+
+/** Сколько знаков реплики субагента идёт в строку диагностики; целиком она — в raw журнала. */
+const CHILD_TEXT_CHARS = 2000;
+
+/** Короткое имя ветки: у веток одного хода первые 8 знаков UUIDv7 совпадают (это время). */
+const shortThread = (id: string): string => id.slice(0, 13);
+
+export class CodexAdapter implements Adapter {
+  /**
+   * Расход хода: своя ветка и ветки субагентов, работавших на этот ход
+   * (живой цикл 05.10). Уведомления чужого хода своей ветки (повтор при
+   * возобновлении) не учитываются (рецензия Codex 28.09).
+   */
+  #usage = new BranchUsage();
+  readonly #childUsage = new Map<string, BranchUsage>();
+  #limit: LimitInfo | undefined;
+
+  #newUsageTurn(): void {
+    this.#usage = new BranchUsage();
+    this.#childUsage.clear();
+  }
+
+  #accountUsage(info: unknown, notifiedTurn: unknown): void {
+    // Расход — только своего хода: с turnId — если он совпадает с известным
+    // текущим; без turnId — если ход идёт (рецензия Codex 28.09).
+    const turn = typeof notifiedTurn === "string" ? notifiedTurn : undefined;
+    if (turn !== undefined ? turn !== this.#turn : !this.#busy) return;
+    this.#usage.account(info);
+  }
+
+  /** Расход субагента — пока идёт ход основной ветки, на который он работает. */
+  #accountChildUsage(child: string, info: unknown): void {
+    if (!this.#working(child)) return;
+    let counter = this.#childUsage.get(child);
+    if (!counter) {
+      counter = new BranchUsage();
+      this.#childUsage.set(child, counter);
+    }
+    counter.account(info);
+  }
+
+  /** Расход хода: своей ветки и субагентов; ничего не пришло — undefined. */
+  #turnUsage(): TurnUsage | undefined {
+    let total = this.#usage.usage;
+    for (const counter of this.#childUsage.values()) {
+      const usage = counter.usage;
+      if (usage) total = total ? add(total, usage) : usage;
+    }
+    return total;
   }
 
   readonly id = "codex" as const;
@@ -325,6 +376,13 @@ export class CodexAdapter implements Adapter {
   /** После «новой сессии» ветка из настроек комнаты не возобновляется. */
   #noResume = false;
   #turn: string | undefined;
+  /**
+   * Ветки субагентов, которых запустил Codex (живой цикл 05.10, вечер): номер
+   * ветки → ход своей ветки, на который субагент работает (шедший при его
+   * turn/started или первом уведомлении). Пока этот ход идёт, команды
+   * субагента — часть хода; кончился или прерван — только лента и журнал.
+   */
+  readonly #children = new Map<string, string | undefined>();
   /** Ходы, прерванные человеком: их поздний turn/completed не закрывает новый. */
   readonly #interrupted = new Set<string>();
   /** Номер последней отправки: сбой прежней не трогает занятость новой. */
@@ -638,6 +696,7 @@ export class CodexAdapter implements Adapter {
       this.#turn = undefined;
       // Как в stop(): номера ходов нового процесса могут совпасть (рецензия Codex 28.09).
       this.#interrupted.clear();
+      this.#children.clear();
     }
     const err = new Error(k.stopped ? "адаптер Codex остановлен" : errorText);
     for (const [, o] of k.waiters) o.reject(err);
@@ -838,6 +897,7 @@ export class CodexAdapter implements Adapter {
     this.#turn = undefined;
     // Номера ходов нового процесса могут совпасть с прежними.
     this.#interrupted.clear();
+    this.#children.clear();
     if (!k) return;
     k.stopped = true;
     for (const [, o] of k.waiters) o.reject(new Error("адаптер Codex остановлен"));
@@ -926,9 +986,21 @@ export class CodexAdapter implements Adapter {
     const method = String(record["method"] ?? "");
     const p = (record["params"] ?? {}) as Record<string, unknown>;
 
+    const child = this.#childOf(p);
+    if (child !== undefined) {
+      this.#childNotification(child, method, p);
+      return;
+    }
+
     switch (method) {
       case "thread/started": {
-        const id = (p["thread"] as { id?: string } | undefined)?.id;
+        const thread = (p["thread"] ?? {}) as { id?: unknown; parentThreadId?: unknown };
+        const id = typeof thread.id === "string" ? thread.id : undefined;
+        // Ветка субагента — не ветка рецензента комнаты: её номер не
+        // становится своим и не пишется в журнал (живой цикл 05.10).
+        if (typeof thread.parentThreadId === "string" || (id !== undefined && this.#thread !== undefined && id !== this.#thread)) {
+          return;
+        }
         if (this.#heldThread) this.#heldThread.id = id;
         else this.#setThread(id);
         return;
@@ -968,7 +1040,7 @@ export class CodexAdapter implements Adapter {
         this.#busy = false;
         this.#turn = undefined;
         const failed = turn.status === "failed" || turn.status === "interrupted";
-        const usage = this.#turnUsage;
+        const usage = this.#turnUsage();
         this.#newUsageTurn();
         this.#emit("turn_completed", "turn", {
           ...(usage ? { usage: usage } : {}),
@@ -1005,6 +1077,85 @@ export class CodexAdapter implements Adapter {
       default:
         return;
     }
+  }
+
+  /**
+   * Ветка уведомления — чужая: номер есть и не совпадает со своей. Своей ещё
+   * нет — чужих не бывает: субагентов запускает ход своей ветки.
+   */
+  #childOf(p: Record<string, unknown>): string | undefined {
+    const thread = p["threadId"];
+    return typeof thread === "string" && this.#thread !== undefined && thread !== this.#thread ? thread : undefined;
+  }
+
+  /** Ход своей ветки, на который субагент работает, ещё идёт. */
+  #working(child: string): boolean {
+    const owner = this.#children.get(child);
+    return owner !== undefined && owner === this.#turn;
+  }
+
+  /**
+   * Уведомление ветки субагента. Живой цикл 05.10, вечер: Codex запустил
+   * двух субагентов, их уведомления шли по тому же соединению, и конец хода
+   * первого («ВЕРДИКТ: ПРИНЯТО») панель приняла за отзыв Codex — пара
+   * закрылась «принято», а ответ своей ветки с замечаниями пропал.
+   *
+   * Ход Codex ведёт только своя ветка. Начало и конец хода субагента — строки
+   * диагностики, занятость и ход они не трогают. Команды и правки субагента —
+   * инструменты хода (лента, журнал, свидетельство, стоп-сигнал), raw помечен
+   * его веткой. Его реплика — диагностика, а не реплика Codex: в отзыв и
+   * вердикт она не входит. Расход субагента входит в расход хода. Дельты
+   * текста, рассуждений и вывода команд субагента в поток ответа не идут.
+   */
+  #childNotification(child: string, method: string, p: Record<string, unknown>): void {
+    const known = this.#children.has(child);
+    if (!known) this.#children.set(child, this.#turn);
+    switch (method) {
+      case "turn/started":
+        // Субагент работает на ход своей ветки, шедший при его начале.
+        this.#children.set(child, this.#turn);
+        this.#emit("diagnostic", "stream", {
+          text: known ? `субагент ${shortThread(child)} продолжил` : `Codex запустил субагента ${shortThread(child)}`,
+        });
+        return;
+      case "turn/completed": {
+        const status = ((p["turn"] ?? {}) as { status?: unknown }).status;
+        const how = status === undefined || status === "completed" ? "" : `: ${String(status)}`;
+        this.#emit("diagnostic", "stream", { text: `субагент ${shortThread(child)} закончил${how}` });
+        return;
+      }
+      case "thread/tokenUsage/updated":
+        this.#accountChildUsage(child, p["tokenUsage"]);
+        return;
+      case "item/started":
+      case "item/completed":
+        this.#childItem(child, p, method === "item/completed");
+        return;
+      default:
+        return;
+    }
+  }
+
+  #childItem(child: string, p: Record<string, unknown>, completed: boolean): void {
+    const item = (p["item"] ?? p) as Record<string, unknown>;
+    const kind = String(item["type"] ?? "");
+    const text = this.#textOf(item["text"] ?? item["content"]);
+    const raw = { ...item, threadId: child };
+    if (kind === "agentMessage") {
+      if (completed && text) this.#emit("diagnostic", "stream", { text: clamp(`субагент Codex: ${text}`, CHILD_TEXT_CHARS), raw });
+      return;
+    }
+    if (!TOOL_ITEMS.has(kind)) return;
+    // Ход, на который работал субагент, кончился или прерван: команда — в
+    // ленте и журнале (и для стоп-сигнала), но не в материале хода, иначе
+    // вошла бы в свидетельство следующей проверки (как поздние элементы
+    // прерванного хода, рецензия Codex 28.09).
+    this.#emitFor(this.#children.get(child), completed ? "tool_result" : "tool_call", this.#working(child) ? "turn" : "stream", {
+      tool: kind,
+      ...(typeof item["id"] === "string" ? { callId: item["id"] } : {}),
+      ...clampKeepingFull(text || JSON.stringify(item)),
+      raw,
+    });
   }
 
   /**
@@ -1052,13 +1203,23 @@ export class CodexAdapter implements Adapter {
     visibility: PanelEvent["visibility"],
     rest: Partial<PanelEvent>,
   ): void {
+    this.#emitFor(this.#turn, kind, visibility, rest);
+  }
+
+  /** Событие хода turn — не обязательно текущего (команда позднего субагента). */
+  #emitFor(
+    turn: string | undefined,
+    kind: PanelEvent["kind"],
+    visibility: PanelEvent["visibility"],
+    rest: Partial<PanelEvent>,
+  ): void {
     this.sink({
       id: newEventId(),
       agent: this.id,
       kind,
       visibility,
       at: Date.now(),
-      ...(this.#turn ? { turnId: this.#turn } : {}),
+      ...(turn ? { turnId: turn } : {}),
       ...rest,
     } as PanelEvent);
   }
