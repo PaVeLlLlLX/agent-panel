@@ -35,6 +35,11 @@ export interface RoomBinding {
   /** Своя ветка рецензента Codex комнаты: её продолжает следующий ход. */
   readonly codexReviewThreadId: string | undefined;
   readonly geminiConversationId: string | undefined;
+  /**
+   * Переключатель комнаты «Проверки рецензентов» (ступени 2–3): действует,
+   * только если включена и общая настройка agentPanel.reviewerChecks.
+   */
+  readonly reviewerChecks: boolean;
   readonly updatedAt: number;
 }
 
@@ -54,7 +59,8 @@ export class Journal {
         codex_thread   TEXT,
         gemini_conversation TEXT,
         updated_at INTEGER NOT NULL,
-        codex_review_thread TEXT
+        codex_review_thread TEXT,
+        reviewer_checks INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS events (
         seq        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,6 +102,10 @@ export class Journal {
     // codex_thread — чат владельца, панель его больше не продолжает. Новая
     // колонка у прежней базы пуста — первый ход заводит новую ветку.
     if (!roomColumns.has("codex_review_thread")) this.#db.exec("ALTER TABLE rooms ADD COLUMN codex_review_thread TEXT");
+    // Проверки рецензентов комнаты (ступени 2–3, 05.10): у прежней базы — выключены.
+    if (!roomColumns.has("reviewer_checks")) {
+      this.#db.exec("ALTER TABLE rooms ADD COLUMN reviewer_checks INTEGER NOT NULL DEFAULT 0");
+    }
   }
 
   ensureRoom(room: string, cwd: string): void {
@@ -139,6 +149,14 @@ export class Journal {
       .run(threadId, Date.now(), room);
   }
 
+  /** Переключатель комнаты «Проверки рецензентов»: 1 — включён, 0 — выключен. */
+  setReviewerChecks(room: string, enabled: boolean): void {
+    if (this.#closed) return;
+    this.#db
+      .prepare(`UPDATE rooms SET reviewer_checks = ?, updated_at = ? WHERE room = ?`)
+      .run(enabled ? 1 : 0, Date.now(), room);
+  }
+
   /** Разговор Gemini комнаты: следующий запуск agy продолжит его через --conversation. */
   bindGeminiConversation(room: string, conversationId: string): void {
     this.#db
@@ -164,7 +182,7 @@ export class Journal {
   binding(room: string): RoomBinding | undefined {
     const line = this.#db
       .prepare(
-        `SELECT room, cwd, claude_session, codex_thread, codex_review_thread, gemini_conversation, updated_at
+        `SELECT room, cwd, claude_session, codex_thread, codex_review_thread, gemini_conversation, reviewer_checks, updated_at
          FROM rooms WHERE room = ?`,
       )
       .get(room) as Record<string, unknown> | undefined;
@@ -176,6 +194,7 @@ export class Journal {
       codexThreadId: (line["codex_thread"] as string | null) ?? undefined,
       codexReviewThreadId: (line["codex_review_thread"] as string | null) ?? undefined,
       geminiConversationId: (line["gemini_conversation"] as string | null) ?? undefined,
+      reviewerChecks: Number(line["reviewer_checks"] ?? 0) === 1,
       updatedAt: Number(line["updated_at"]),
     };
   }

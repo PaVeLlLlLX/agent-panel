@@ -24,22 +24,77 @@
  * внутри строки JSON.
  *
  * Параметры ветки (thread/start и thread/resume) пишутся в stderr строкой
- * «ПАРАМЕТРЫ-ВЕТКИ {…}»: resume, id продолжаемой ветки, песочница и роль
- * целиком — тест читает их из диагностики.
+ * «ПАРАМЕТРЫ-ВЕТКИ {…}»: resume, id продолжаемой ветки, рабочая папка,
+ * песочница, есть ли профиль прав (profile), config и роль целиком — тест
+ * читает их из диагностики.
+ *
+ * Профиль прав в config (default_permissions + permissions) ответ отражает
+ * как настоящий app-server 0.159 (проба 05.10): sandbox workspaceWrite с
+ * корнями записи профиля, кроме рабочей папки, и activePermissionProfile.
+ * Без профиля — readOnly. Флаги argv:
+ *   --reject-profile — thread/start|resume с профилем отвечает ошибкой
+ *                      (Codex обновился и профиль не принимает);
+ *   --weak-profile   — профиль принят, но ответ — readOnly без профиля
+ *                      (как продолжение без config на пробе);
+ *   --exec-broken    — command/exec пишет куда угодно: «запись в проект
+ *                      прошла».
+ *
+ * command/exec понимает самопроверку панели — `python -c <код> <путь>`:
+ * путь внутри writableRoots политики workspaceWrite — файл пишется на диск
+ * и ответ {exitCode: 0}; иначе — ошибка JSON-RPC «sandbox denied», как у
+ * настоящего (проба 05.10). Параметры — в stderr строкой «ПАРАМЕТРЫ-КОМАНДЫ {…}».
  */
 import { existsSync, writeFileSync } from "node:fs";
+import { resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 
 const THREAD = "fake-thread-1";
+const REJECT_PROFILE = process.argv.includes("--reject-profile");
+const WEAK_PROFILE = process.argv.includes("--weak-profile");
+const EXEC_BROKEN = process.argv.includes("--exec-broken");
 const send = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
 const notify = (method, params) => send({ jsonrpc: "2.0", method, params });
 const logThread = (resume, params) =>
   process.stderr.write(`ПАРАМЕТРЫ-ВЕТКИ ${JSON.stringify({
     resume,
     ...(resume ? { threadId: params.threadId } : {}),
+    cwd: params.cwd,
+    approvalPolicy: params.approvalPolicy,
     sandbox: params.sandbox,
+    profile: Boolean(params.config?.permissions),
+    config: params.config,
     developerInstructions: String(params.developerInstructions ?? ""),
   })}\n`);
+
+/** Путь внутри корня (без учёта регистра, как в Windows). */
+const within = (path, root) => {
+  const inner = resolve(path).toLowerCase();
+  const outer = resolve(root).toLowerCase();
+  return inner === outer || inner.startsWith(outer.endsWith(sep) ? outer : outer + sep);
+};
+
+/** Права ветки в ответе thread/start|resume — как их отражает app-server. */
+const threadRights = (params) => {
+  const name = params.config?.default_permissions;
+  const profile = name ? params.config?.permissions?.[name] : undefined;
+  if (!profile || WEAK_PROFILE) {
+    return { cwd: params.cwd, sandbox: { type: "readOnly", networkAccess: false }, activePermissionProfile: null };
+  }
+  const writableRoots = Object.entries(profile.filesystem ?? {})
+    .filter(([path, access]) => access === "write" && !path.startsWith(":") && !within(path, params.cwd))
+    .map(([path]) => path);
+  return {
+    cwd: params.cwd,
+    sandbox: {
+      type: "workspaceWrite",
+      writableRoots,
+      networkAccess: profile.network?.enabled === true,
+      excludeTmpdirEnvVar: true,
+      excludeSlashTmp: true,
+    },
+    activePermissionProfile: { id: name, extends: null },
+  };
+};
 
 process.stderr.write(
   "\x1b[2m2026-09-14T17:07:57Z\x1b[0m \x1b[31mERROR\x1b[0m codex_models_manager::manager: failed to refresh available models\n",
@@ -79,12 +134,18 @@ lines.on("line", (line) => {
       reply({});
       return;
     case "thread/start":
-      logThread(false, z.params);
-      reply({ thread: { id: THREAD, sessionId: "fake-session" } });
-      notify("thread/started", { thread: { id: THREAD } });
-      return;
-    case "thread/resume":
-      logThread(true, z.params);
+    case "thread/resume": {
+      const resume = z.method === "thread/resume";
+      logThread(resume, z.params);
+      if (REJECT_PROFILE && z.params.config?.permissions) {
+        send({ jsonrpc: "2.0", id: z.id, error: { code: -32600, message: "Invalid request: unknown field `permissions`" } });
+        return;
+      }
+      if (!resume) {
+        reply({ thread: { id: THREAD, sessionId: "fake-session" }, ...threadRights(z.params) });
+        notify("thread/started", { thread: { id: THREAD } });
+        return;
+      }
       // РАЗРЫВ в id ветки: в истории U+2028/U+2029 «как есть» — так их пишет
       // настоящий app-server, и JSON.stringify здесь тоже их не экранирует.
       reply({
@@ -92,8 +153,41 @@ lines.on("line", (line) => {
           id: z.params.threadId,
           ...(String(z.params.threadId).includes("РАЗРЫВ") ? { preview: "до после конец" } : {}),
         },
+        ...threadRights(z.params),
       });
       return;
+    }
+    case "command/exec": {
+      const p = z.params ?? {};
+      process.stderr.write(`ПАРАМЕТРЫ-КОМАНДЫ ${JSON.stringify(p)}\n`);
+      const command = Array.isArray(p.command) ? p.command : [];
+      const target = command[1] === "-c" && typeof command[3] === "string" ? command[3] : undefined;
+      if (!target) {
+        send({ jsonrpc: "2.0", id: z.id, error: { code: -32603, message: "exec failed: фальшивка понимает только самопроверку" } });
+        return;
+      }
+      const policy = p.sandboxPolicy ?? {};
+      const allowed =
+        EXEC_BROKEN || (policy.type === "workspaceWrite" && (policy.writableRoots ?? []).some((root) => within(target, root)));
+      if (allowed) {
+        try {
+          writeFileSync(target, "x");
+          reply({ exitCode: 0, stdout: "", stderr: "" });
+        } catch (err) {
+          reply({ exitCode: 1, stdout: "", stderr: String(err.message) });
+        }
+        return;
+      }
+      send({
+        jsonrpc: "2.0",
+        id: z.id,
+        error: {
+          code: -32603,
+          message: `exec failed: sandbox error: sandbox denied exec error, exit code: 1, stdout: , stderr: PermissionError: [Errno 13] Permission denied: '${target}'`,
+        },
+      });
+      return;
+    }
     case "model/list": {
       // Форма из схемы ModelListResponse (Codex 0.153.0); скрытая модель — чтобы
       // проверить, что панель её не показывает.

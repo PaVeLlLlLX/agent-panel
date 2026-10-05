@@ -235,3 +235,32 @@ test("ветка рецензента Codex переживает повторн�
   assert.equal(reopened.binding("r").codexReviewThreadId, "review-1", "новая сессия Claude ветку Codex не трогает");
   reopened.close();
 });
+
+test("проверки рецензентов комнаты: по умолчанию выключены, прежняя база получает колонку, переключатель переживает повторное открытие", () => {
+  // Ступень 2 (спецификация 05.10): переключатель комнаты хранится в журнале
+  // (rooms.reviewer_checks, 0/1); без решения владельца — выключено.
+  const filePath = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const oldDb = new DatabaseSync(filePath);
+  oldDb.exec(`
+    CREATE TABLE rooms (room TEXT PRIMARY KEY, cwd TEXT NOT NULL, claude_session TEXT, codex_thread TEXT,
+      gemini_conversation TEXT, updated_at INTEGER NOT NULL, codex_review_thread TEXT);
+    INSERT INTO rooms VALUES ('r', 'C:/x', NULL, NULL, NULL, 1, 'review-1');
+  `);
+  oldDb.close();
+  const journal = new Journal(filePath);
+  assert.equal(journal.binding("r").reviewerChecks, false, "прежняя комната — выключено");
+  journal.ensureRoom("new", "C:/y");
+  assert.equal(journal.binding("new").reviewerChecks, false, "новая комната — выключено");
+  journal.setReviewerChecks("r", true);
+  assert.equal(journal.binding("r").reviewerChecks, true);
+  assert.equal(journal.binding("r").codexReviewThreadId, "review-1", "ветка рецензента на месте");
+  assert.equal(journal.binding("new").reviewerChecks, false, "другая комната не задета");
+  journal.close();
+  const reopened = new Journal(filePath);
+  assert.equal(reopened.binding("r").reviewerChecks, true);
+  reopened.setReviewerChecks("r", false);
+  assert.equal(reopened.binding("r").reviewerChecks, false);
+  reopened.close();
+  // После закрытия запись молча не делается: поздний переключатель не роняет закрытие комнаты.
+  assert.doesNotThrow(() => reopened.setReviewerChecks("r", true));
+});

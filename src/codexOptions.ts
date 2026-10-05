@@ -11,10 +11,10 @@
  *
  * Вынесено из extension.ts, чтобы это проверялось тестом без VS Code.
  */
-import { CodexOptions } from "./adapters/codex.js";
+import { CodexOptions, CodexReview } from "./adapters/codex.js";
 import { ModelChoice } from "./adapters/types.js";
 import { CodexLaunch } from "./codexBinary.js";
-import { Journal } from "./journal.js";
+import { Journal, RoomBinding } from "./journal.js";
 
 /** Запрет по умолчанию — как у настройки agentPanel.reviewerForbidden. */
 export const DEFAULT_FORBIDDEN: readonly string[] = [".env"];
@@ -29,10 +29,15 @@ export interface CodexRoomSetup {
   readonly room: string;
   /** Комната закрывается: поздний номер ветки в журнал не пишется. */
   readonly closed: () => boolean;
+  /** Общая настройка agentPanel.reviewerChecks (ступени 2–3); нет — выключена. */
+  readonly checksAllowed?: boolean;
+  /** Папка проверок Codex комнаты (reviewFolder.ts). */
+  readonly reviewFolder?: string;
 }
 
 export function codexRoomOptions(setup: CodexRoomSetup): CodexOptions {
   const binding = setup.journal.binding(setup.room);
+  const review = reviewFor(setup.checksAllowed ?? false, binding, setup.reviewFolder);
   return {
     command: setup.launch.command,
     ...(setup.launch.shell !== undefined ? { shell: setup.launch.shell } : {}),
@@ -45,7 +50,21 @@ export function codexRoomOptions(setup: CodexRoomSetup): CodexOptions {
     onSessionId: (id) => {
       if (!setup.closed()) setup.journal.bindCodexReviewThread(setup.room, id);
     },
+    ...(review ? { review } : {}),
   };
+}
+
+/**
+ * Папка проверок Codex — только когда включены и общая настройка
+ * agentPanel.reviewerChecks, и переключатель комнаты (журнал): без решения
+ * владельца ступени 2–3 не включаются.
+ */
+export function reviewFor(
+  allowed: boolean,
+  binding: RoomBinding | undefined,
+  folder: string | undefined,
+): CodexReview | undefined {
+  return allowed && binding?.reviewerChecks === true && folder ? { folder } : undefined;
 }
 
 /**

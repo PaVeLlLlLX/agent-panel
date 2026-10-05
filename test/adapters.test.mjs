@@ -19,7 +19,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 
 import { ClaudeAdapter, formatForClaude } from "../out/adapters/claude.js";
 import { CodexAdapter, reviewerRole } from "../out/adapters/codex.js";
-import { codexRoomOptions } from "../out/codexOptions.js";
+import { codexRoomOptions, reviewFor } from "../out/codexOptions.js";
 import { Journal } from "../out/journal.js";
 import { GeminiAdapter, formatForGemini } from "../out/adapters/gemini.js";
 
@@ -2052,6 +2052,286 @@ test("Codex: комната, привязанная к чату владельц
     assert.equal(p.codexThreadId, "owner-chat", "чат владельца остаётся в журнале историей");
   } finally {
     await a.stop();
+    journal.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Папка проверок Codex (ступень 2, спецификация 05.10; решения пробы 05.10 —
+// docs/research/2026-10-05-проба-песочницы-codex.md, «Решения для реализации»)
+// ---------------------------------------------------------------------------
+
+const EXEC_PREFIX = "ПАРАМЕТРЫ-КОМАНДЫ ";
+/** Параметры каждого command/exec: фальшивка пишет их в stderr. */
+const execParams = (events) =>
+  events
+    .filter((e) => e.kind === "diagnostic" && (e.text ?? "").startsWith(EXEC_PREFIX))
+    .map((e) => JSON.parse(e.text.slice(EXEC_PREFIX.length)));
+
+/** Проект и папка проверок — разные временные папки: папка вне репозитория. */
+function checksRoom() {
+  return { project: catalog(), folder: join(catalog(), "agent-panel", "review", "x-1", "codex") };
+}
+
+/** Строгая форма политики command/exec: без exclude… корнем записи становится %TEMP% (проба 05.10). */
+const strictPolicy = (folder) => ({
+  type: "workspaceWrite",
+  writableRoots: [folder],
+  networkAccess: false,
+  excludeTmpdirEnvVar: true,
+  excludeSlashTmp: true,
+});
+
+const FALLBACK = /^Песочница Codex не прошла проверку \((.+)\): проверка идёт в режиме «только чтение»\.$/;
+const processStarts = (events) => events.filter((e) => /failed to refresh available models/.test(e.text ?? "")).length;
+
+test("Codex с папкой проверок: самопроверка до ветки, затем thread/start с профилем прав — без sandbox, approvalPolicy never, рабочая папка — папка проверок", async () => {
+  const s = collector();
+  const { project, folder } = checksRoom();
+  const a = codex(s, { cwd: project, forbidden: [".env"], review: { folder } });
+  try {
+    await a.start();
+    await waitFor(() => threadParams(s.events).length === 1, "параметры ветки");
+    assert.ok(existsSync(join(folder, "tmp")), "папка и tmp созданы до запуска: корень записи учитывается, только если существует");
+
+    const checks = execParams(s.events);
+    assert.deepEqual(
+      checks.map((c) => c.command[3]),
+      [join(folder, "probe.txt"), join(project, ".agent-panel-probe")],
+      "запись в папку, затем запись в проект",
+    );
+    for (const c of checks) {
+      assert.equal(c.command[0], "python");
+      assert.equal(c.cwd, folder);
+      assert.deepEqual(c.sandboxPolicy, strictPolicy(folder));
+    }
+    const lines = s.events.map((e) => e.text ?? "");
+    assert.ok(
+      lines.findLastIndex((t) => t.startsWith(EXEC_PREFIX)) < lines.findIndex((t) => t.startsWith(THREAD_PREFIX)),
+      "самопроверка — до ветки",
+    );
+    assert.equal(existsSync(join(folder, "probe.txt")), false, "проба за собой убирает");
+    assert.equal(existsSync(join(project, ".agent-panel-probe")), false);
+
+    const p = threadParams(s.events)[0];
+    assert.equal(p.resume, false);
+    assert.equal(p.profile, true);
+    assert.equal("sandbox" in p, false, "поле sandbox при профиле не передаётся");
+    assert.equal(p.approvalPolicy, "never");
+    assert.equal(p.cwd, folder, "под unelevated команды под профилем идут, только если рабочая папка ветки — папка проверок");
+    assert.deepEqual(p.config, {
+      default_permissions: "agent-panel-review",
+      permissions: {
+        "agent-panel-review": { filesystem: { ":root": "read", [folder]: "write" }, network: { enabled: false } },
+      },
+      shell_environment_policy: {
+        set: {
+          TEMP: join(folder, "tmp"),
+          TMP: join(folder, "tmp"),
+          PYTHONDONTWRITEBYTECODE: "1",
+          MPLCONFIGDIR: join(folder, "tmp", "mpl"),
+        },
+      },
+    });
+    assert.equal(p.developerInstructions, reviewerRole([".env"], { folder, project }));
+    assert.deepEqual(errors(s.events), []);
+    assert.ok(s.events.some((e) => e.kind === "diagnostic" && /профиль agent-panel-review/.test(e.text ?? "")));
+
+    await a.send({ text: "здравствуй", from: "claude" });
+    await waitFor(() => ends(s.events) === 1, "ход под профилем");
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Codex с папкой проверок: продолжение ветки — thread/resume с тем же профилем (без config профиль не сохраняется)", async () => {
+  const s = collector();
+  const { project, folder } = checksRoom();
+  const a = codex(s, { cwd: project, review: { folder }, resumeThreadId: "ветка-рецензента" });
+  try {
+    await a.start();
+    await waitFor(() => threadParams(s.events).length === 1, "параметры продолжения");
+    const p = threadParams(s.events)[0];
+    assert.equal(p.resume, true);
+    assert.equal(p.threadId, "ветка-рецензента");
+    assert.equal(p.profile, true);
+    assert.equal(p.cwd, folder);
+    assert.equal("sandbox" in p, false);
+    assert.deepEqual(errors(s.events), []);
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Codex: профиль прав не принят (Codex обновился) — повтор старта «только чтение», строка в ленте без провала, ход идёт", async () => {
+  // Review Focus 4.
+  const s = collector();
+  const { project, folder } = checksRoom();
+  const a = codex(s, { cwd: project, review: { folder }, commandArgs: [FAKE_CODEX, "--reject-profile"] });
+  try {
+    await a.send({ text: "здравствуй", from: "claude" });
+    await waitFor(() => ends(s.events) === 1, "ход «только чтение»");
+    const [withProfile, readOnly, ...rest] = threadParams(s.events);
+    assert.equal(rest.length, 0);
+    assert.equal(withProfile.profile, true);
+    assert.equal(readOnly.profile, false);
+    assert.equal(readOnly.sandbox, "read-only");
+    assert.equal(readOnly.approvalPolicy, "never");
+    assert.equal(readOnly.cwd, project, "ступень 1 — рабочая папка проект");
+    assert.equal(readOnly.developerInstructions, reviewerRole([]), "роль без папки проверок");
+    assert.equal(processStarts(s.events), 1, "отказ в профиле — тот же процесс: ветка не загружена");
+    const lines = errors(s.events);
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].failed, undefined, "ход не провален");
+    assert.match(lines[0].text, FALLBACK);
+    assert.match(lines[0].text, /профиль прав не принят/);
+    assert.ok(
+      s.events.some((e) => e.kind === "diagnostic" && /^песочница Codex не прошла проверку: .*unknown field `permissions`/.test(e.text ?? "")),
+      "подробности — в диагностике",
+    );
+    assert.equal(s.events.find((e) => e.kind === "turn_completed").failed, undefined);
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Codex: самопроверка — запись в проект прошла: файл удалён, ветка «только чтение» без попытки профиля", async () => {
+  const s = collector();
+  const { project, folder } = checksRoom();
+  const a = codex(s, { cwd: project, review: { folder }, commandArgs: [FAKE_CODEX, "--exec-broken"] });
+  try {
+    await a.start();
+    await waitFor(() => threadParams(s.events).length === 1, "параметры ветки");
+    const [p] = threadParams(s.events);
+    assert.equal(p.profile, false);
+    assert.equal(p.sandbox, "read-only");
+    assert.equal(p.cwd, project);
+    assert.equal(existsSync(join(project, ".agent-panel-probe")), false, "файл пробы в проекте удалён");
+    const lines = errors(s.events);
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].failed, undefined);
+    assert.match(lines[0].text, FALLBACK);
+    assert.match(lines[0].text, /запись в проект прошла/);
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Codex: профиль принят, а ответ без него — новый процесс и ветка «только чтение»", async () => {
+  // Решение пробы (а): принятие профиля видно только по ответу thread/start|resume;
+  // ветка уже загружена с чужими правами — её место в новом процессе.
+  const s = collector();
+  const { project, folder } = checksRoom();
+  const a = codex(s, { cwd: project, review: { folder }, commandArgs: [FAKE_CODEX, "--weak-profile"] });
+  try {
+    await a.send({ text: "здравствуй", from: "claude" });
+    await waitFor(() => ends(s.events) === 1, "ход «только чтение»");
+    const [withProfile, readOnly, ...rest] = threadParams(s.events);
+    assert.equal(rest.length, 0);
+    assert.equal(withProfile.profile, true);
+    assert.equal(readOnly.profile, false);
+    assert.equal(readOnly.sandbox, "read-only");
+    assert.equal(readOnly.resume, false, "новая ветка: первая не продолжается");
+    assert.equal(processStarts(s.events), 2, "ветка с чужими правами осталась в прежнем процессе");
+    const lines = errors(s.events);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0].text, FALLBACK);
+    assert.match(lines[0].text, /ответ на профиль прав не тот/);
+    assert.ok(s.events.some((e) => e.kind === "diagnostic" && /readOnly/.test(e.text ?? "") && /не прошла проверку/.test(e.text ?? "")));
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Codex: переключатель проверок — со следующего хода процесс перезапускается с той же веткой", async () => {
+  const s = collector();
+  const { project, folder } = checksRoom();
+  const a = codex(s, { cwd: project });
+  try {
+    await a.send({ text: "здравствуй", from: "claude" });
+    await waitFor(() => ends(s.events) === 1, "ход 1");
+    a.setReview({ folder });
+    await a.send({ text: "здравствуй", from: "claude" });
+    await waitFor(() => ends(s.events) === 2, "ход 2");
+    a.setReview({ folder });
+    await a.send({ text: "здравствуй", from: "claude" });
+    await waitFor(() => ends(s.events) === 3, "ход 3");
+    a.setReview(undefined);
+    await a.send({ text: "здравствуй", from: "claude" });
+    await waitFor(() => ends(s.events) === 4, "ход 4");
+    const launches = threadParams(s.events);
+    assert.deepEqual(
+      launches.map((p) => [p.resume, p.threadId, p.profile, p.cwd]),
+      [
+        [false, undefined, false, project],
+        [true, "fake-thread-1", true, folder],
+        [true, "fake-thread-1", false, project],
+      ],
+      "то же значение переключателя процесс не перезапускает",
+    );
+    assert.equal(processStarts(s.events), 3);
+    assert.deepEqual(errors(s.events), []);
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Codex: папка проверок больше предела — строка в ленте при запуске процесса, проверка идёт", async () => {
+  const s = collector();
+  const { project, folder } = checksRoom();
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "old.csv"), "x".repeat(2000));
+  const a = codex(s, { cwd: project, review: { folder, sizeLimit: 1000 } });
+  try {
+    await a.start();
+    await waitFor(() => threadParams(s.events).length === 1, "параметры ветки");
+    const lines = errors(s.events);
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].failed, undefined);
+    assert.match(lines[0].text, /^Папка проверок Codex занимает /);
+    assert.ok(lines[0].text.includes(folder), "путь папки назван");
+    assert.equal(threadParams(s.events)[0].profile, true, "размер — предупреждение, не откат");
+  } finally {
+    await a.stop();
+  }
+});
+
+test("роль Codex с папкой проверок: скрипты — в папку, путь и вывод в замечании, без данных, бюджет; проект — абсолютными путями", () => {
+  const folder = "C:\\review\\trading-1\\codex";
+  const project = "C:\\work\\Trading";
+  const role = reviewerRole([".env"], { folder, project });
+  assert.ok(
+    role.includes(
+      [
+        `- Скрипты и их выводы пиши только в ${folder}; в замечании указывай путь скрипта и`,
+        "  строки вывода. Работай на синтетике и числах из материала; данные проекта не",
+        "  читай — ни напрямую, ни через импорт кода проекта.",
+        "- Бюджет: не больше 20 команд и 10 минут счёта за проверку.",
+      ].join("\n"),
+    ),
+    role,
+  );
+  assert.ok(role.includes(`git -C ${project}`), "рабочая папка ветки — папка проверок: команды над репозиторием с абсолютным путём");
+  assert.ok(role.includes(join(project, "AGENTS.md")), "правила проекта Codex сам не подхватит");
+  assert.match(role, /Не открывай и не читай пути: \.env\./);
+  assert.match(role, /ВЕРДИКТ: ПРИНЯТО/);
+  const plain = reviewerRole([".env"]);
+  assert.doesNotMatch(plain, /Скрипты и их выводы|Бюджет|AGENTS\.md/, "без папки — роль ступени 1");
+});
+
+test("опции Codex комнаты: папка проверок — только при включённой настройке и переключателе комнаты", () => {
+  const journal = new Journal(join(catalog(), "j.sqlite"));
+  journal.ensureRoom("r", "C:/x");
+  const folder = "C:\\review\\x-1\\codex";
+  try {
+    assert.equal(codexRoomOptions(roomSetup(journal, { checksAllowed: true, reviewFolder: folder })).review, undefined, "переключатель комнаты выключен");
+    journal.setReviewerChecks("r", true);
+    assert.equal(codexRoomOptions(roomSetup(journal, { checksAllowed: false, reviewFolder: folder })).review, undefined, "общий выключатель");
+    assert.equal(codexRoomOptions(roomSetup(journal)).review, undefined, "без папки — без проверок");
+    assert.deepEqual(codexRoomOptions(roomSetup(journal, { checksAllowed: true, reviewFolder: folder })).review, { folder });
+    assert.deepEqual(reviewFor(true, journal.binding("r"), folder), { folder });
+    assert.equal(reviewFor(true, undefined, folder), undefined);
+  } finally {
     journal.close();
   }
 });

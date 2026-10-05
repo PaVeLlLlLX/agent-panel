@@ -23,7 +23,8 @@ import { Coordinator, RoomState, Route } from "./coordinator.js";
 import { Journal } from "./journal.js";
 import { describeChoice, normalizeChoice, sameChoice } from "./models.js";
 import { resolveCodexCommand } from "./codexBinary.js";
-import { codexRoomOptions } from "./codexOptions.js";
+import { codexRoomOptions, reviewFor } from "./codexOptions.js";
+import { ensureReviewFolder, reviewFolderFor } from "./reviewFolder.js";
 import { resolveGeminiCommand } from "./geminiBinary.js";
 import { addReadOnlyRules, agySettingsPath, checkReadOnlyRules, ensureReviewerAgent, reviewerAgentPath, rulesRefusal } from "./geminiSetup.js";
 import { fetchGeminiUsage } from "./geminiUsage.js";
@@ -38,6 +39,15 @@ const CHOICES = new Set<ApprovalChoice>(["allow", "allowSession", "deny"]);
 
 type SelectableAgent = "claude" | "codex" | "gemini";
 const AGENT_NAMES: Record<SelectableAgent, string> = { claude: "Claude", codex: "Codex", gemini: "Gemini" };
+
+/**
+ * Общий выключатель проверок рецензентов скриптами (ступени 2–3): без него
+ * переключатель комнаты недоступен. Читается каждый раз — владелец может
+ * сменить настройку при открытой комнате.
+ */
+function checksAllowed(): boolean {
+  return vscode.workspace.getConfiguration("agentPanel").get<boolean>("reviewerChecks", false) === true;
+}
 
 /** Режимы разрешений, которые принимает Claude Code (2.1.220 и 2.1.280), плюс default — не передавать флаг. */
 const MODES = new Set(["default", "acceptEdits", "auto", "manual", "dontAsk", "plan", "bypassPermissions"]);
@@ -71,6 +81,10 @@ class Room {
   /** Режим разрешений Claude для папки; по умолчанию — из настройки. */
   #mode: string;
   readonly #modeKey: string;
+  readonly #codex: CodexAdapter;
+  /** Папка проверок Codex комнаты — вне репозитория (ступень 2). */
+  readonly #reviewFolder: string;
+  readonly #listeners: vscode.Disposable[] = [];
 
   constructor(context: vscode.ExtensionContext, cwd: string) {
     const settings = vscode.workspace.getConfiguration("agentPanel");
@@ -142,6 +156,12 @@ class Room {
     // Своя ветка рецензента комнаты, не чат владельца; запрещённые пути —
     // настройка папки проекта (у Trading — данные). Тот же разобранный
     // список получает координатор для стоп-сигнала на командах Codex.
+    // Папка проверок — когда включены и общая настройка, и переключатель комнаты.
+    this.#reviewFolder = reviewFolderFor(
+      process.env["LOCALAPPDATA"] ?? join(homedir(), "AppData", "Local"),
+      this.#name,
+      "codex",
+    );
     const codexOptions = codexRoomOptions({
       launch: codexLaunch,
       cwd,
@@ -150,8 +170,11 @@ class Room {
       journal: this.#journal,
       room: this.#name,
       closed: () => this.#closed,
+      checksAllowed: checksAllowed(),
+      reviewFolder: this.#reviewFolder,
     });
     const codex = new CodexAdapter(codexOptions, accept);
+    this.#codex = codex;
 
     // Gemini — второй рецензент: agy из папки установщика или PATH. Нет — проверяет один Codex.
     this.#agySettings = agySettingsPath(homedir());
@@ -227,6 +250,12 @@ class Room {
     });
 
     this.#panel.webview.onDidReceiveMessage((message: UiMessage) => void this.#fromPanel(message));
+    // Общий выключатель сменили при открытой комнате — со следующего хода.
+    this.#listeners.push(
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration("agentPanel.reviewerChecks")) this.#applyReviewerChecks();
+      }),
+    );
   }
 
   async #fromPanel(message: UiMessage): Promise<void> {
@@ -244,6 +273,7 @@ class Room {
         for (const agent of this.#agents) this.#sendModels(agent);
         this.#postToPanel({ type: "permissions", mode: this.#mode });
         this.#postGemini();
+        this.#postReviewerChecks();
         void this.#coordinator.refreshClaudeUsage();
         void this.#coordinator.refreshGeminiUsage();
         return;
@@ -280,6 +310,34 @@ class Room {
         return;
       case "setAuto":
         this.#coordinator.setAuto(message.on);
+        return;
+      case "setReviewerChecks": {
+        // Без общей настройки комната проверки не включает: переключатель в
+        // webview тогда недоступен, а пришедшее всё равно не применяется.
+        const on = message.on === true;
+        const was = this.#journal.binding(this.#name)?.reviewerChecks === true;
+        if (checksAllowed() && on !== was) {
+          this.#journal.setReviewerChecks(this.#name, on);
+          this.#applyReviewerChecks();
+          this.#coordinator.notice(
+            on
+              ? `Проверки рецензентов включены — со следующего хода Codex пишет и запускает свои скрипты только в папке проверок (${this.#reviewFolder}).`
+              : "Проверки рецензентов выключены — со следующего хода Codex только читает проект.",
+          );
+          return;
+        }
+        this.#postReviewerChecks();
+        return;
+      }
+      case "openReviewFolder":
+        // Папку проверок открывает проводник; её может ещё не быть — создаётся.
+        try {
+          ensureReviewFolder(this.#reviewFolder);
+        } catch (err) {
+          this.#coordinator.notice(`Папка проверок не создана: ${(err as Error).message}.`);
+          return;
+        }
+        await vscode.env.openExternal(vscode.Uri.file(this.#reviewFolder));
         return;
       case "setPermissionMode": {
         if (!MODES.has(message.mode)) return;
@@ -378,6 +436,21 @@ class Room {
     await this.#memento.update(this.#modelsKey, this.#choices);
   }
 
+  /** Переключатель комнаты или общая настройка сменились: Codex — со следующего хода, webview — сразу. */
+  #applyReviewerChecks(): void {
+    this.#codex.setReview(reviewFor(checksAllowed(), this.#journal.binding(this.#name), this.#reviewFolder));
+    this.#postReviewerChecks();
+  }
+
+  /** Проверки рецензентов для webview: доступен ли переключатель и включён ли он в комнате. */
+  #postReviewerChecks(): void {
+    this.#postToPanel({
+      type: "reviewerChecks",
+      allowed: checksAllowed(),
+      on: this.#journal.binding(this.#name)?.reviewerChecks === true,
+    });
+  }
+
   /** Gemini для webview: подключён ли и на месте ли правила «только чтение». */
   #postGemini(): void {
     const present = this.#agents.includes("gemini");
@@ -429,7 +502,8 @@ class Room {
       | { type: "state"; state: RoomState }
       | ModelsMessage
       | { type: "permissions"; mode: string }
-      | { type: "gemini"; present: boolean; rules: { ok: boolean; reason?: string } },
+      | { type: "gemini"; present: boolean; rules: { ok: boolean; reason?: string } }
+      | { type: "reviewerChecks"; allowed: boolean; on: boolean },
   ): void {
     if (this.#closed) return;
     void this.#panel.webview.postMessage(message);
@@ -438,6 +512,7 @@ class Room {
   async dispose(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    for (const listener of this.#listeners) listener.dispose();
     await this.#coordinator.stopAll();
     this.#journal.close();
     room = undefined;
@@ -451,6 +526,8 @@ type UiMessage =
   | { type: "stopAll" }
   | { type: "interrupt" }
   | { type: "setAuto"; on: boolean }
+  | { type: "setReviewerChecks"; on: unknown }
+  | { type: "openReviewFolder" }
   | { type: "approval"; id: string; choice: string }
   | { type: "answerQuestion"; id: unknown; answers: unknown }
   | { type: "openLink"; href: string }
@@ -571,6 +648,8 @@ function markup(webview: vscode.Webview, context: vscode.ExtensionContext): stri
   </div>
   <div class="под-полем">
     <label title="Включено — Claude и Codex передают работу друг другу сами. Выключено — каждую передачу вы подтверждаете кнопкой"><input type="checkbox" id="авто" checked>Автопересылка</label>
+    <label title="Недоступно: включите настройку agentPanel.reviewerChecks"><input type="checkbox" id="проверки-рецензентов" disabled>Проверки рецензентов</label>
+    <button id="папка-проверок" class="ссылка-кнопка" hidden title="Открыть папку, где Codex пишет и запускает свои скрипты (вне проекта)">Папка проверок</button>
     <span class="распорка"></span>
     <button id="диагностика-кнопка" class="ссылка-кнопка" aria-expanded="false" aria-controls="диагностика" title="Служебные логи процессов агентов — не часть разговора">Диагностика <span id="диагностика-счёт">0</span><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg></button>
   </div>

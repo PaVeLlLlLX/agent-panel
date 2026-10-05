@@ -716,7 +716,8 @@ details.действия[open] > summary .шеврон { transform: rotate(90deg
   .режимы { display: none; }
 }
 
-.под-полем { display: flex; align-items: center; gap: 14px; min-width: 0; padding: 0 6px; font-size: 0.85em; color: var(--тихий); }
+/* Узкая панель: переключатели и ссылки переносятся на вторую строку, а не уходят за край. */
+.под-полем { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; min-width: 0; padding: 0 6px; font-size: 0.85em; color: var(--тихий); }
 .под-полем label { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
 #модели-сводка { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--едва); }
 .ссылка-кнопка { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: var(--тихий); flex-shrink: 0; }

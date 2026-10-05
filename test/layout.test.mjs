@@ -183,6 +183,8 @@ for (const width of [WIDTH, 360]) test(`длинная задача, причи�
       { id: "", label: "по умолчанию " + "(очень длинное название модели) ".repeat(5), efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
     ] });
     getById("диагностика-кнопка").click();
+    // Переключатель проверок и ссылка на папку — в той же строке, что «Автопересылка».
+    postToPage({ type: "reviewerChecks", allowed: true, on: true });
     result.scroll = document.documentElement.scrollWidth;
     result.client = document.documentElement.clientWidth;
     result.conversation = getById("беседа").scrollWidth - getById("беседа").clientWidth;
@@ -1036,4 +1038,41 @@ test("сохранённый режим «gemini» без agy — показыв
   assert.deepEqual(r.checked, ["review"]);
   assert.equal(r.name, "Задача с рецензией");
   assert.deepEqual(r.sent, [{ type: "send", text: "вопрос", route: "review" }]);
+});
+
+test("переключатель «Проверки рецензентов»: без общей настройки недоступен; включение уходит расширению; «Папка проверок» — при включённом", { skip: NO_BROWSER }, () => {
+  const r = open(
+    js`
+    const box = getById("проверки-рецензентов");
+    const link = getById("папка-проверок");
+    const look = () => ({ disabled: box.disabled, checked: box.checked, link: link.hidden });
+    result.initial = look();
+    result.nextToAuto = box.closest(".под-полем") === getById("авто").closest(".под-полем");
+    postToPage({ type: "reviewerChecks", allowed: false, on: true });
+    result.denied = look();
+    result.deniedTitle = box.closest("label").title;
+    postToPage({ type: "reviewerChecks", allowed: true, on: false });
+    result.allowed = look();
+    box.click();
+    result.sent = window.sentMessages.filter((m) => m.type === "setReviewerChecks");
+    postToPage({ type: "reviewerChecks", allowed: true, on: true });
+    result.on = look();
+    result.label = link.textContent.trim();
+    link.click();
+    result.open = window.sentMessages.filter((m) => m.type === "openReviewFolder");
+    box.click();
+    result.off = window.sentMessages.filter((m) => m.type === "setReviewerChecks").at(-1);
+  `,
+    { withUi: true },
+  );
+  assert.deepEqual(r.initial, { disabled: true, checked: false, link: true }, "до сведений от расширения — выключено");
+  assert.equal(r.nextToAuto, true, "рядом с «Автопересылкой»");
+  assert.deepEqual(r.denied, { disabled: true, checked: false, link: true }, "без общей настройки комната не включает проверки");
+  assert.match(r.deniedTitle, /agentPanel\.reviewerChecks/);
+  assert.deepEqual(r.allowed, { disabled: false, checked: false, link: true });
+  assert.deepEqual(r.sent, [{ type: "setReviewerChecks", on: true }]);
+  assert.deepEqual(r.on, { disabled: false, checked: true, link: false });
+  assert.equal(r.label, "Папка проверок");
+  assert.deepEqual(r.open, [{ type: "openReviewFolder" }]);
+  assert.deepEqual(r.off, { type: "setReviewerChecks", on: false });
 });

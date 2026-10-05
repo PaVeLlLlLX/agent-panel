@@ -16,6 +16,16 @@
  * `sandbox: "read-only"` и `approvalPolicy: "never"`, а на любой запрос
  * одобрения от сервера панель отвечает отказом.
  *
+ * **Папка проверок** (ступень 2, переключатель комнаты): запись — только в
+ * папку рецензента вне репозитория, профилем прав в config ветки (без поля
+ * sandbox). Решения пробы 05.10 (docs/research/2026-10-05-проба-песочницы-codex.md):
+ * под unelevated команды под профилем идут, только если рабочая папка ветки —
+ * сама папка, поэтому проект Codex читает по абсолютным путям; профиль не
+ * сохраняется при продолжении — config передаётся при каждом thread/resume;
+ * принятие профиля видно только по ответу thread/start|resume. Перед веткой —
+ * самопроверка command/exec (запись в папку проходит, в проект — нет). Любой
+ * провал — ветка «только чтение» (ступень 1) и строка в ленте, ход не провален.
+ *
  * **Команды чтения рецензенту разрешены** (ступень 1, 05.10): rg, git,
  * python -c над кодом — он проверяет утверждения сам, а не по пересказу.
  * Read-only запрещает запись, но не чтение и не сеть: запрет путей из
@@ -41,7 +51,10 @@
  * **Остановка — всем деревом и с подтверждением.** См. process.ts.
  */
 import { ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { ensureReviewFolder, folderSize } from "../reviewFolder.js";
 import { readJsonLines, LineReader } from "./jsonLines.js";
 import { spawnProcess, killTree } from "./process.js";
 import {
@@ -77,11 +90,110 @@ export interface CodexOptions {
   readonly effort?: string;
   readonly shell?: boolean;
   readonly onSessionId?: (id: string) => void;
+  /**
+   * Папка проверок рецензента (ступень 2). Нет — ветка «только чтение»
+   * (ступень 1). Меняется переключателем комнаты: {@link CodexAdapter.setReview}.
+   */
+  readonly review?: CodexReview;
 }
+
+/** Папка, в которую рецензент пишет и где запускает свои скрипты. */
+export interface CodexReview {
+  readonly folder: string;
+  /** Размер папки в байтах, после которого при запуске процесса — строка в ленте; по умолчанию 500 МБ. */
+  readonly sizeLimit?: number;
+}
+
+/** Имя профиля прав рецензента в config ветки. */
+export const REVIEW_PROFILE = "agent-panel-review";
+const FOLDER_SIZE_LIMIT = 500 * 1024 * 1024;
+/** Срок одной команды самопроверки: первая команда под песочницей ставит права на папку. */
+const SELF_CHECK_MS = 30_000;
+/** Запись в путь из argv: путь не попадает в код, кавычки и пробелы в нём не мешают. */
+const WRITE_PROBE = ["python", "-c", "import sys; open(sys.argv[1], 'w').write('agent-panel')"];
 
 interface ThreadResponse {
   readonly thread?: { readonly id?: string };
+  /** Поля прав ветки (app-server 0.159, проба 05.10): по ним видно, принят ли профиль. */
+  readonly cwd?: unknown;
+  readonly sandbox?: {
+    readonly type?: unknown;
+    readonly writableRoots?: unknown;
+    readonly networkAccess?: unknown;
+    readonly excludeTmpdirEnvVar?: unknown;
+  } | null;
+  readonly activePermissionProfile?: { readonly id?: unknown } | null;
 }
+
+/** Ответ command/exec, когда команда выполнилась (отказ песочницы приходит ошибкой JSON-RPC). */
+interface ExecReply {
+  readonly exitCode?: unknown;
+  readonly stdout?: unknown;
+  readonly stderr?: unknown;
+}
+
+/** Почему ветка пошла «только чтение»: what — в ленту, detail — в диагностику. */
+interface Trouble {
+  readonly what: string;
+  readonly detail: string;
+  /** Ветка уже загружена с чужими правами: её место — в новом процессе. */
+  readonly loaded?: boolean;
+}
+
+/**
+ * Профиль прав ветки: читать всё, писать в папку, сеть выключена; TEMP, TMP
+ * и MPLCONFIGDIR команд — в папке, без __pycache__ (спецификация 05.10).
+ */
+function profileConfig(folder: string): Record<string, unknown> {
+  const tmp = join(folder, "tmp");
+  return {
+    default_permissions: REVIEW_PROFILE,
+    permissions: {
+      [REVIEW_PROFILE]: { filesystem: { ":root": "read", [folder]: "write" }, network: { enabled: false } },
+    },
+    shell_environment_policy: {
+      set: { TEMP: tmp, TMP: tmp, PYTHONDONTWRITEBYTECODE: "1", MPLCONFIGDIR: join(tmp, "mpl") },
+    },
+  };
+}
+
+/**
+ * Политика command/exec — строгая форма: без excludeTmpdirEnvVar корнем
+ * записи становится %TEMP% пользователя и всё, что в нём лежит (проба 05.10).
+ */
+function execPolicy(folder: string): Record<string, unknown> {
+  return { type: "workspaceWrite", writableRoots: [folder], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true };
+}
+
+const samePath = (a: unknown, b: string): boolean => typeof a === "string" && resolve(a).toLowerCase() === resolve(b).toLowerCase();
+
+/**
+ * Принят ли профиль — по ответу thread/start|resume (решение пробы (а)):
+ * рабочая папка — папка проверок, workspaceWrite без сети и без %TEMP%, корни
+ * записи — только папка, активный профиль — наш. Расхождение словами или
+ * undefined.
+ */
+function profileMismatch(reply: ThreadResponse, folder: string): string | undefined {
+  if (!samePath(reply.cwd, folder)) return `рабочая папка ${JSON.stringify(reply.cwd ?? null)}`;
+  const sandbox = reply.sandbox ?? undefined;
+  const roots = sandbox?.writableRoots;
+  if (
+    sandbox?.type !== "workspaceWrite" ||
+    sandbox.networkAccess !== false ||
+    sandbox.excludeTmpdirEnvVar !== true ||
+    !Array.isArray(roots) ||
+    roots.some((root) => !samePath(root, folder))
+  ) {
+    return `песочница ${JSON.stringify(reply.sandbox ?? null)}`;
+  }
+  if (reply.activePermissionProfile?.id !== REVIEW_PROFILE) {
+    return `профиль ${JSON.stringify(reply.activePermissionProfile ?? null)}`;
+  }
+  return undefined;
+}
+
+/** Байты — мегабайтами для строки в ленте. */
+const megabytes = (bytes: number): string => String(Math.round(bytes / (1024 * 1024)));
 
 const TOOL_ITEMS = new Set([
   "commandExecution",
@@ -224,6 +336,15 @@ export class CodexAdapter implements Adapter {
   #choiceChanged: boolean;
   #catalog: readonly ModelOption[] | undefined;
   #defaultModel: string | undefined;
+  /** Папка проверок, которую хочет комната; со следующего запуска процесса. */
+  #review: CodexReview | undefined;
+  /** С какой папкой (желанием комнаты) запущен нынешний процесс: сменилась — перезапуск между ходами. */
+  #launchedFolder: string | undefined;
+  /**
+   * Пока проверяется ответ на профиль, номер ветки из thread/started
+   * придерживается: ветка с чужими правами не должна стать веткой комнаты.
+   */
+  #heldThread: { id: string | undefined } | undefined;
 
   constructor(
     private readonly options: CodexOptions,
@@ -231,6 +352,16 @@ export class CodexAdapter implements Adapter {
   ) {
     this.#choice = { model: options.model ?? "", effort: options.effort ?? "" };
     this.#choiceChanged = Boolean(options.model || options.effort);
+    this.#review = options.review;
+  }
+
+  /**
+   * Переключатель комнаты «Проверки рецензентов». Профиль прав задаётся при
+   * thread/start|resume, поэтому действует со следующего хода: send()
+   * перезапускает процесс между ходами, ветка продолжается.
+   */
+  setReview(review: CodexReview | undefined): void {
+    this.#review = review;
   }
 
   get busy(): boolean {
@@ -250,6 +381,71 @@ export class CodexAdapter implements Adapter {
 
   async start(): Promise<void> {
     if (this.#ctx) throw new Error("адаптер Codex уже запущен");
+    const review = this.#review;
+    this.#launchedFolder = review?.folder;
+    let trouble: Trouble | undefined;
+    if (review) {
+      // До запуска процесса: корень записи учитывается, только если существует.
+      try {
+        ensureReviewFolder(review.folder);
+        this.#warnSize(review);
+      } catch (err) {
+        trouble = { what: "папка проверок не создана", detail: (err as Error).message };
+      }
+    }
+    let k = this.#spawn();
+    try {
+      await this.#initialize(k);
+      // Известная ветка продолжается, иначе создаётся новая. Известная — своя
+      // ветка рецензента комнаты (codexOptions.ts); чат владельца с 05.10 не
+      // продолжается. Роль задаётся в обоих случаях: между запусками могли
+      // смениться роль и запрещённые пути, а ветка помнит прежние.
+      // thread/resume принимает developerInstructions наравне с thread/start
+      // (схема app-server 0.153.0).
+      const known = this.#thread ?? (this.#noResume ? undefined : this.options.resumeThreadId);
+      if (review && !trouble) {
+        // Самопроверка — перед каждым запуском процесса: Codex обновляется
+        // вместе с расширением, и профиль может перестать действовать.
+        trouble = await this.#selfCheck(k, review.folder);
+        if (!trouble) {
+          trouble = await this.#openWithProfile(k, review.folder, known);
+          if (!trouble) return;
+        }
+      }
+      if (trouble) {
+        this.#fallBack(trouble);
+        if (trouble.loaded) {
+          // Новый процесс становится текущим сразу: отправка, пришедшая за это
+          // время, ждёт этого же запуска. Прежний снимается до того, как новый
+          // откроет ветку, — два процесса с одной веткой не работают.
+          const previous = k;
+          k = this.#spawn();
+          await this.#retire(previous);
+          await this.#initialize(k);
+        }
+      }
+      const common = {
+        cwd: this.options.cwd,
+        sandbox: "read-only",
+        approvalPolicy: "never",
+        developerInstructions: this.#role(undefined),
+      };
+      const reply = (await (known
+        ? this.#request(k, "thread/resume", { ...common, threadId: known })
+        : this.#request(k, "thread/start", common))) as ThreadResponse;
+      this.#setThread(reply.thread?.id ?? known);
+      this.#emit("diagnostic", "stream", {
+        text: `ветка ${String(this.#thread).slice(0, 8)}, песочница read-only, одобрения never`,
+      });
+    } catch (err) {
+      // Останавливать только СВОЙ процесс: к этому моменту мог быть запущен новый.
+      if (this.#ctx === k) await this.stop();
+      throw err;
+    }
+  }
+
+  /** Процесс app-server с разбором его вывода; становится текущим. */
+  #spawn(): Context {
     const proc = spawnProcess(
       this.options.command,
       [...(this.options.commandArgs ?? []), "app-server"],
@@ -274,38 +470,145 @@ export class CodexAdapter implements Adapter {
     proc.on("exit", (code, signal) =>
       this.#end(k, `процесс Codex завершился неожиданно (код ${code}, сигнал ${signal}). Подробности — в диагностике.`),
     );
+    return k;
+  }
+
+  async #initialize(k: Context): Promise<void> {
+    await this.#request(k, "initialize", {
+      clientInfo: { name: "agent-panel", version: "0.1.0" },
+      capabilities: {},
+    });
+    this.#notify(k, "initialized", {});
+  }
+
+  /** Роль ветки: с папкой проверок — с её правилами (ступень 2). */
+  #role(checks: { folder: string; project: string } | undefined): string {
+    return this.options.reviewerInstructions ?? reviewerRole(this.options.forbidden ?? [], checks);
+  }
+
+  /** Папка больше предела — строка в ленте при запуске процесса: чистит её владелец. */
+  #warnSize(review: CodexReview): void {
+    const limit = review.sizeLimit ?? FOLDER_SIZE_LIMIT;
+    const size = folderSize(review.folder);
+    if (size <= limit) return;
+    this.#emit("error", "turn", {
+      text:
+        `Папка проверок Codex занимает ${megabytes(size)} МБ — больше ${megabytes(limit)} МБ: ${review.folder}. ` +
+        "Старые скрипты и выводы рецензента можно удалить.",
+    });
+  }
+
+  /**
+   * Самопроверка песочницы без хода модели (спецификация 05.10, решение
+   * пробы (в)): command/exec со строгой политикой пишет в папку — должно
+   * пройти, затем в проект — песочница должна отказать, файла быть не должно.
+   * Возвращает, что не так; всё в порядке — undefined. Процесс умер или
+   * остановлен — исключение: это не провал песочницы.
+   */
+  async #selfCheck(k: Context, folder: string): Promise<Trouble | undefined> {
+    const write = async (target: string): Promise<{ reply?: ExecReply; error?: string }> => {
+      try {
+        const params = { command: [...WRITE_PROBE, target], cwd: folder, sandboxPolicy: execPolicy(folder), timeoutMs: SELF_CHECK_MS };
+        return { reply: ((await this.#request(k, "command/exec", params)) ?? {}) as ExecReply };
+      } catch (err) {
+        if (this.#ctx !== k || k.stopped) throw err;
+        return { error: (err as Error).message };
+      }
+    };
+    const outcome = (o: { reply?: ExecReply; error?: string }): string =>
+      o.error ?? `код ${String(o.reply?.exitCode)}${o.reply?.stderr ? `, ${String(o.reply.stderr).trim()}` : ""}`;
 
     try {
-      await this.#request(k, "initialize", {
-        clientInfo: { name: "agent-panel", version: "0.1.0" },
-        capabilities: {},
-      });
-      this.#notify(k, "initialized", {});
-      // Известная ветка продолжается, иначе создаётся новая. Известная — своя
-      // ветка рецензента комнаты (codexOptions.ts); чат владельца с 05.10 не
-      // продолжается. Роль задаётся в обоих случаях: между запусками могли
-      // смениться роль и запрещённые пути, а ветка помнит прежние.
-      // thread/resume принимает developerInstructions наравне с thread/start
-      // (схема app-server 0.153.0).
-      const known = this.#thread ?? (this.#noResume ? undefined : this.options.resumeThreadId);
-      const common = {
-        cwd: this.options.cwd,
-        sandbox: "read-only",
-        approvalPolicy: "never",
-        developerInstructions: this.options.reviewerInstructions ?? reviewerRole(this.options.forbidden ?? []),
-      };
-      const reply = (await (known
-        ? this.#request(k, "thread/resume", { ...common, threadId: known })
-        : this.#request(k, "thread/start", common))) as ThreadResponse;
-      this.#setThread(reply.thread?.id ?? known);
-      this.#emit("diagnostic", "stream", {
-        text: `ветка ${String(this.#thread).slice(0, 8)}, песочница read-only, одобрения never`,
-      });
+      const inFolder = join(folder, "probe.txt");
+      rmSync(inFolder, { force: true });
+      const first = await write(inFolder);
+      const written = existsSync(inFolder);
+      rmSync(inFolder, { force: true });
+      if (first.reply?.exitCode !== 0 || !written) {
+        return { what: "запись в папку проверок не прошла", detail: `${outcome(first)}; файл ${written ? "есть" : "не создан"}` };
+      }
+
+      // Файл с этим именем — только наш: прежний остаток иначе сошёл бы за прорыв.
+      const inProject = join(this.options.cwd, ".agent-panel-probe");
+      rmSync(inProject, { force: true });
+      const second = await write(inProject);
+      if (existsSync(inProject)) {
+        rmSync(inProject, { force: true });
+        return { what: "запись в проект прошла", detail: `${outcome(second)}; файл создан и удалён` };
+      }
+      // Отказ песочницы — ошибка JSON-RPC «sandbox denied» (проба 05.10); обычный
+      // ненулевой выход без файла — тоже отказ. Другая ошибка (нет command/exec,
+      // превышено время) — запрет записи не доказан.
+      if (second.error !== undefined && !/sandbox denied/i.test(second.error)) {
+        return { what: "запись в проект не проверена", detail: second.error };
+      }
+      if (second.error === undefined && second.reply?.exitCode === 0) {
+        return { what: "запись в проект прошла", detail: `${outcome(second)}; файла нет` };
+      }
+      return undefined;
     } catch (err) {
-      // Останавливать только СВОЙ процесс: к этому моменту мог быть запущен новый.
-      if (this.#ctx === k) await this.stop();
-      throw err;
+      if (this.#ctx !== k || k.stopped) throw err;
+      return { what: "самопроверка не выполнилась", detail: (err as Error).message };
     }
+  }
+
+  /**
+   * Ветка с профилем прав: рабочая папка — папка проверок (под unelevated
+   * иначе Codex не запускает ни одной команды, проба 05.10), config — при
+   * каждом start и resume (без него профиль не сохраняется), поля sandbox нет.
+   * Принят ли профиль — по ответу. Всё в порядке — undefined.
+   */
+  async #openWithProfile(k: Context, folder: string, known: string | undefined): Promise<Trouble | undefined> {
+    const params = {
+      cwd: folder,
+      approvalPolicy: "never",
+      developerInstructions: this.#role({ folder, project: this.options.cwd }),
+      config: profileConfig(folder),
+    };
+    this.#heldThread = { id: undefined };
+    let reply: ThreadResponse;
+    try {
+      reply = ((await (known
+        ? this.#request(k, "thread/resume", { ...params, threadId: known })
+        : this.#request(k, "thread/start", params))) ?? {}) as ThreadResponse;
+    } catch (err) {
+      this.#heldThread = undefined;
+      // Процесс умер или остановлен — это не отказ в профиле.
+      if (this.#ctx !== k || k.stopped) throw err;
+      return { what: "профиль прав не принят", detail: (err as Error).message };
+    }
+    const held = this.#heldThread;
+    this.#heldThread = undefined;
+    const mismatch = profileMismatch(reply, folder);
+    if (mismatch) return { what: "ответ на профиль прав не тот", detail: mismatch, loaded: true };
+    this.#setThread(reply.thread?.id ?? held.id ?? known);
+    this.#emit("diagnostic", "stream", {
+      text: `ветка ${String(this.#thread).slice(0, 8)}, профиль ${REVIEW_PROFILE}: запись только в ${folder}, сеть выключена профилем, одобрения never`,
+    });
+    return undefined;
+  }
+
+  /** Откат на «только чтение»: что не так — в ленту строкой без провала хода, подробности — в диагностику. */
+  #fallBack(trouble: Trouble): void {
+    this.#emit("diagnostic", "stream", {
+      text: clamp(`песочница Codex не прошла проверку: ${trouble.what} — ${trouble.detail}`),
+    });
+    this.#emit("error", "turn", {
+      text: `Песочница Codex не прошла проверку (${trouble.what}): проверка идёт в режиме «только чтение».`,
+    });
+  }
+
+  /**
+   * Прежний процесс запуска (ветка загружена с чужими правами) — снять, не
+   * трогая занятость и запуск: текущий уже новый, и поздний exit прежнего
+   * их не сбросит (#end сверяет процесс).
+   */
+  async #retire(k: Context): Promise<void> {
+    k.stopped = true;
+    for (const [, o] of k.waiters) o.reject(new Error("адаптер Codex остановлен"));
+    k.waiters.clear();
+    k.lines.close();
+    await killTree(k.proc);
   }
 
   #end(k: Context, errorText: string): void {
@@ -341,6 +644,15 @@ export class CodexAdapter implements Adapter {
   }
 
   async send(prompt: AgentPrompt): Promise<void> {
+    // Переключатель проверок сменился: профиль прав задаётся при
+    // thread/start|resume — процесс перезапускается между ходами, ветка
+    // продолжается (как смена модели у Claude). Остановка — без ожидания:
+    // её синхронная часть уже сняла процесс, а запуск ниже должен остаться
+    // синхронным.
+    if (this.#ctx && !this.#busy && this.#launchedFolder !== this.#review?.folder) {
+      this.#emit("diagnostic", "stream", { text: "проверки рецензента переключены — перезапуск Codex с той же веткой" });
+      void this.stop().catch(() => undefined);
+    }
     // Проверка и запуск — синхронно до первого ожидания: второе сообщение,
     // пришедшее во время запуска, ждёт того же запуска, а не теряется.
     const mine = ++this.#sends;
@@ -579,9 +891,12 @@ export class CodexAdapter implements Adapter {
     const p = (record["params"] ?? {}) as Record<string, unknown>;
 
     switch (method) {
-      case "thread/started":
-        this.#setThread((p["thread"] as { id?: string } | undefined)?.id);
+      case "thread/started": {
+        const id = (p["thread"] as { id?: string } | undefined)?.id;
+        if (this.#heldThread) this.#heldThread.id = id;
+        else this.#setThread(id);
         return;
+      }
       case "turn/started": {
         const turn = (p["turn"] as { id?: string } | undefined)?.id;
         this.#turn = typeof turn === "string" ? turn : undefined;
@@ -716,9 +1031,15 @@ export class CodexAdapter implements Adapter {
 /**
  * Роль рецензента Codex. Ступень 1 (спека 05.10): репозиторий он читает
  * командами сам; запрещённые пути — данные и секреты проекта, которые
- * песочница read-only от чтения не закрывает.
+ * песочница read-only от чтения не закрывает. Ступень 2 (checks): рабочая
+ * папка ветки — папка проверок, скрипты и выводы — только в ней, проект — по
+ * абсолютным путям; AGENTS.md проекта Codex из чужой рабочей папки, вероятно,
+ * сам не подхватит (проба 05.10).
  */
-export function reviewerRole(forbidden: readonly string[]): string {
+export function reviewerRole(
+  forbidden: readonly string[],
+  checks?: { readonly folder: string; readonly project: string },
+): string {
   return [
     "Ты рецензент в общей комнате с человеком и разработчиком Claude Code.",
     "",
@@ -730,6 +1051,17 @@ export function reviewerRole(forbidden: readonly string[]): string {
       ? [
           `- Не открывай и не читай пути: ${forbidden.join(", ")}. Это данные или секреты проекта:`,
           "  обращение к ним — нарушение правил проекта, даже без расчёта.",
+        ]
+      : []),
+    ...(checks
+      ? [
+          `- Рабочая папка ветки — папка проверок ${checks.folder}; проект — ${checks.project}.`,
+          `  Команды над репозиторием — с абсолютными путями: rg … ${checks.project}, git -C ${checks.project} ….`,
+          `  Правила проекта — в ${join(checks.project, "AGENTS.md")}: прочитай их, если ещё не читал.`,
+          `- Скрипты и их выводы пиши только в ${checks.folder}; в замечании указывай путь скрипта и`,
+          "  строки вывода. Работай на синтетике и числах из материала; данные проекта не",
+          "  читай — ни напрямую, ни через импорт кода проекта.",
+          "- Бюджет: не больше 20 команд и 10 минут счёта за проверку.",
         ]
       : []),
     "",

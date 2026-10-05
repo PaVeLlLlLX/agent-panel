@@ -876,6 +876,27 @@ function receiveGemini(d) {
 }
 byId("добавить-правила").addEventListener("click", () => vscode.postMessage({ type: "addGeminiRules" }));
 
+// --- Проверки рецензентов: Codex пишет и запускает свои скрипты в папке вне проекта.
+const CHECKS_TITLE =
+  "Включено — Codex пишет и запускает свои скрипты в папке проверок вне проекта; запись в проект ему закрыта песочницей. " +
+  "Действует со следующего хода Codex";
+const CHECKS_DENIED = "Недоступно: включите настройку agentPanel.reviewerChecks";
+
+/** Доступен переключатель при общей настройке; включён ли — из журнала комнаты. */
+function receiveReviewerChecks(d) {
+  const allowed = d.allowed === true;
+  const on = allowed && d.on === true;
+  const box = byId("проверки-рецензентов");
+  box.disabled = !allowed;
+  box.checked = on;
+  box.closest("label").title = allowed ? CHECKS_TITLE : CHECKS_DENIED;
+  byId("папка-проверок").hidden = !on;
+}
+byId("проверки-рецензентов").addEventListener("change", (e) =>
+  vscode.postMessage({ type: "setReviewerChecks", on: e.target.checked }),
+);
+byId("папка-проверок").addEventListener("click", () => vscode.postMessage({ type: "openReviewFolder" }));
+
 // --- Модель и уровень рассуждения: шкала «Нить» --------------------------------------
 // Список запрашивается по кнопке, а не при открытии: каждый поднимает
 // короткий процесс агента, а агенты в панели запускаются по делу.
@@ -1143,6 +1164,7 @@ window.addEventListener("message", (event) => {
   else if (d?.type === "models") receiveModels(d);
   else if (d?.type === "permissions") receiveMode(d.mode);
   else if (d?.type === "gemini") receiveGemini(d);
+  else if (d?.type === "reviewerChecks") receiveReviewerChecks(d);
 });
 
 function send() {

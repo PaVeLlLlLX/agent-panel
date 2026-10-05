@@ -3411,6 +3411,37 @@ test("стоп-сигнал на адаптере Codex (фальшивка): х
   }
 });
 
+test("профиль прав Codex не принят (Codex обновился): проверка идёт в «только чтение», цикл не падает", async () => {
+  // Review Focus 4 (задача 9): откат — строка в ленте без отметки провала;
+  // координатор не считает это смертью агента, отзыв засчитан проверке.
+  const project = mkdtempSync(join(tmpdir(), "panel-"));
+  const folder = join(mkdtempSync(join(tmpdir(), "review-")), "codex");
+  const journal = new Journal(join(project, "j.sqlite"));
+  journal.ensureRoom("r", project);
+  const claude = new Stub("claude");
+  const events = [];
+  let k;
+  const codex = new CodexAdapter(
+    { command: "node", commandArgs: [FAKE_CODEX, "--reject-profile"], cwd: project, review: { folder } },
+    (e) => k.handle(e),
+  );
+  k = new Coordinator(claude, codex, journal, { room: "r", cwd: project, maxAutoRounds: 3, onEvent: (e) => events.push(e) });
+  try {
+    await k.fromHuman("подобрать порог классификатора", "review");
+    turn(k, "claude", "порог 0.4, F1 на валидации 0.71");
+    await waitFor(() => k.state.pair?.sides.codex?.state === "done", "отзыв Codex засчитан проверке", 10_000);
+    const fallback = events.filter((e) => e.agent === "codex" && e.kind === "error");
+    assert.equal(fallback.length, 1);
+    assert.match(fallback[0].text, /^Песочница Codex не прошла проверку \(профиль прав не принят\): проверка идёт в режиме «только чтение»\.$/);
+    assert.equal(fallback[0].failed, undefined);
+    assert.notEqual(k.state.stage, "stopped");
+    assert.equal(said(events, /завершился с ошибкой|цикл рецензии остановлен/).length, 0);
+  } finally {
+    await codex.stop();
+    journal.close();
+  }
+});
+
 test("стоп-сигнал: без запрещённого списка команды Codex не проверяются", async () => {
   const { k, codex, journal } = await pairRoom();
   k.handle(codexCommand("python -c \"open('data/x.parquet')\""));
