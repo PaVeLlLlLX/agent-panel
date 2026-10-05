@@ -1944,6 +1944,63 @@ test("Codex: запрещённые пути из опций вписывают�
   }
 });
 
+test("роль Codex: фрагмент от корня проекта назван отдельно и без «./»; одноимённые папки глубже корня — не запрет", () => {
+  // Итоговая рецензия 05.10: «Не открывай и не читай пути: data/» отбивала у
+  // Codex чтение пакета кода tradingbot/data/.
+  const role = reviewerRole(["./data/", ".env"]);
+  assert.match(role, /Не открывай и не читай пути: \.env; от корня проекта: data\/\. Это данные или секреты проекта:/);
+  assert.match(role, /Одноимённые папки глубже корня \(например, пакет кода\) под запрет не попадают\./);
+  assert.match(reviewerRole([".\\data\\"]), /Не открывай и не читай пути: от корня проекта: data\\\. /);
+  assert.doesNotMatch(reviewerRole(["data/", ".env"]), /от корня проекта|Одноимённые/, "простые фрагменты — как прежде");
+});
+
+test("Codex: запрещённые пути сменились — следующий ход перезапускает процесс с той же веткой и новой ролью", async () => {
+  // Итоговая рецензия 05.10, M9: список читался один раз при открытии комнаты.
+  const s = collector();
+  const a = codex(s, { forbidden: [".env"] });
+  try {
+    await a.send({ text: "привет", from: "human" });
+    await waitFor(() => s.events.some((e) => e.kind === "turn_completed"), "первый ход");
+    a.setForbidden(["./data/", ".env"]);
+    s.events.length = 0;
+    await a.send({ text: "привет", from: "human" });
+    await waitFor(() => s.events.some((e) => e.kind === "turn_completed"), "второй ход");
+    assert.ok(s.events.some((e) => e.text === "запрещённые пути сменились — перезапуск Codex с той же веткой"));
+    const [p] = threadParams(s.events);
+    assert.equal(p.resume, true, "ветка та же");
+    assert.equal(p.developerInstructions, reviewerRole(["./data/", ".env"]));
+    s.events.length = 0;
+    await a.send({ text: "привет", from: "human" });
+    await waitFor(() => s.events.some((e) => e.kind === "turn_completed"), "третий ход");
+    assert.deepEqual(threadParams(s.events), [], "тот же список — без перезапуска");
+  } finally {
+    await a.stop();
+  }
+});
+
+test("Codex: сервер не принял прерывание — процесс снимается, ход не идёт дальше втихую; следующая отправка продолжает ветку", async () => {
+  // Итоговая рецензия 05.10, M4: стоп-сигнал прерывает ход, адаптер уже
+  // отбрасывает его элементы — при отказе turn/interrupt команды хода
+  // пропали бы из ленты и журнала.
+  const s = collector();
+  const a = codex(s, { commandArgs: [FAKE_CODEX, "--reject-interrupt"] });
+  try {
+    await a.send({ text: "ДОЛГИЙ-ХОД", from: "human" });
+    await waitFor(() => s.events.some((e) => e.kind === "turn_started"), "начало долгого хода");
+    await a.interrupt();
+    assert.equal(a.busy, false);
+    assert.ok(s.events.some((e) => /^Codex не принял прерывание хода \(ход не найден\) — процесс остановлен$/.test(e.text ?? "")));
+    assert.ok(s.events.some((e) => e.text === "процесс Codex остановлен"));
+    assert.equal(errors(s.events).length, 0, "остановка панелью — не сбой");
+    s.events.length = 0;
+    await a.send({ text: "привет", from: "human" });
+    await waitFor(() => s.events.some((e) => e.kind === "turn_completed"), "ход нового процесса");
+    assert.equal(threadParams(s.events)[0].resume, true);
+  } finally {
+    await a.stop();
+  }
+});
+
 const roomSetup = (journal, extra = {}) => ({
   launch: { command: "codex", shell: false },
   cwd: "C:/x",
@@ -2292,7 +2349,7 @@ test("Codex: папка проверок больше предела — стр�
     const lines = errors(s.events);
     assert.equal(lines.length, 1);
     assert.equal(lines[0].failed, undefined);
-    assert.match(lines[0].text, /^Папка проверок Codex занимает /);
+    assert.match(lines[0].text, /^Папка проверок Codex больше \d+ МБ: /);
     assert.ok(lines[0].text.includes(folder), "путь папки назван");
     assert.equal(threadParams(s.events)[0].profile, true, "размер — предупреждение, не откат");
   } finally {

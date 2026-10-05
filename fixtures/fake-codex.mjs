@@ -37,7 +37,8 @@
  *   --weak-profile   — профиль принят, но ответ — readOnly без профиля
  *                      (как продолжение без config на пробе);
  *   --exec-broken    — command/exec пишет куда угодно: «запись в проект
- *                      прошла».
+ *                      прошла»;
+ *   --reject-interrupt — turn/interrupt отвечает ошибкой, ход идёт дальше.
  *
  * command/exec понимает самопроверку панели — `python -c <код> <путь>`:
  * путь внутри writableRoots политики workspaceWrite — файл пишется на диск
@@ -62,6 +63,7 @@ const THREAD = "fake-thread-1";
 const REJECT_PROFILE = process.argv.includes("--reject-profile");
 const WEAK_PROFILE = process.argv.includes("--weak-profile");
 const EXEC_BROKEN = process.argv.includes("--exec-broken");
+const REJECT_INTERRUPT = process.argv.includes("--reject-interrupt");
 const send = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
 const notify = (method, params) => send({ jsonrpc: "2.0", method, params });
 const logThread = (resume, params) =>
@@ -365,6 +367,10 @@ lines.on("line", (line) => {
       return;
     }
     case "turn/interrupt":
+      if (REJECT_INTERRUPT) {
+        send({ jsonrpc: "2.0", id: z.id, error: { code: -32603, message: "ход не найден" } });
+        return;
+      }
       reply({});
       // Настоящий Codex присылает конец прерванного хода отдельно и позже ответа.
       if (longRunning.delete(z.params.turnId)) {

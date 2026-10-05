@@ -54,7 +54,8 @@ import { ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { ensureReviewFolder, folderSize } from "../reviewFolder.js";
+import { rootAnchored, withoutRoot } from "../forbiddenPaths.js";
+import { ensureReviewFolder, oversizeNote } from "../reviewFolder.js";
 import { readJsonLines, LineReader } from "./jsonLines.js";
 import { spawnProcess, killTree } from "./process.js";
 import {
@@ -81,7 +82,8 @@ export interface CodexOptions {
   readonly reviewerInstructions?: string;
   /**
    * Запрещённые фрагменты путей (agentPanel.reviewerForbidden): вписываются
-   * в роль рецензента. Нет или пусто — роль без запрета путей.
+   * в роль рецензента. Нет или пусто — роль без запрета путей. Меняется
+   * настройкой при открытой комнате: {@link CodexAdapter.setForbidden}.
    */
   readonly forbidden?: readonly string[];
   /** Модель хода; "" или нет — по умолчанию. */
@@ -106,7 +108,6 @@ export interface CodexReview {
 
 /** Имя профиля прав рецензента в config ветки. */
 export const REVIEW_PROFILE = "agent-panel-review";
-const FOLDER_SIZE_LIMIT = 500 * 1024 * 1024;
 /** Срок одной команды самопроверки: первая команда под песочницей ставит права на папку. */
 const SELF_CHECK_MS = 30_000;
 /** Запись в путь из argv: путь не попадает в код, кавычки и пробелы в нём не мешают. */
@@ -192,9 +193,6 @@ function profileMismatch(reply: ThreadResponse, folder: string): string | undefi
   }
   return undefined;
 }
-
-/** Байты — мегабайтами для строки в ленте. */
-const megabytes = (bytes: number): string => String(Math.round(bytes / (1024 * 1024)));
 
 const TOOL_ITEMS = new Set([
   "commandExecution",
@@ -341,6 +339,10 @@ export class CodexAdapter implements Adapter {
   #review: CodexReview | undefined;
   /** С какой папкой (желанием комнаты) запущен нынешний процесс: сменилась — перезапуск между ходами. */
   #launchedFolder: string | undefined;
+  /** Запрещённые пути, которые хочет комната; роль с ними — со следующего запуска процесса. */
+  #forbidden: readonly string[];
+  /** С какими запрещёнными путями запущен нынешний процесс: сменились — перезапуск между ходами. */
+  #launchedForbidden: string | undefined;
   /**
    * Пока проверяется ответ на профиль, номер ветки из thread/started
    * придерживается: ветка с чужими правами не должна стать веткой комнаты.
@@ -354,6 +356,7 @@ export class CodexAdapter implements Adapter {
     this.#choice = { model: options.model ?? "", effort: options.effort ?? "" };
     this.#choiceChanged = Boolean(options.model || options.effort);
     this.#review = options.review;
+    this.#forbidden = options.forbidden ?? [];
   }
 
   /**
@@ -363,6 +366,16 @@ export class CodexAdapter implements Adapter {
    */
   setReview(review: CodexReview | undefined): void {
     this.#review = review;
+  }
+
+  /**
+   * Настройка agentPanel.reviewerForbidden сменилась при открытой комнате.
+   * Роль задаётся при thread/start|resume, поэтому, как и переключатель
+   * проверок, — со следующего хода: send() перезапускает процесс между
+   * ходами, ветка продолжается.
+   */
+  setForbidden(forbidden: readonly string[]): void {
+    this.#forbidden = forbidden;
   }
 
   get busy(): boolean {
@@ -384,6 +397,7 @@ export class CodexAdapter implements Adapter {
     if (this.#ctx) throw new Error("адаптер Codex уже запущен");
     const review = this.#review;
     this.#launchedFolder = review?.folder;
+    this.#launchedForbidden = JSON.stringify(this.#forbidden);
     let trouble: Trouble | undefined;
     if (review) {
       // До запуска процесса: корень записи учитывается, только если существует.
@@ -484,19 +498,13 @@ export class CodexAdapter implements Adapter {
 
   /** Роль ветки: с папкой проверок — с её правилами (ступень 2). */
   #role(checks: { folder: string; project: string } | undefined): string {
-    return this.options.reviewerInstructions ?? reviewerRole(this.options.forbidden ?? [], checks);
+    return this.options.reviewerInstructions ?? reviewerRole(this.#forbidden, checks);
   }
 
   /** Папка больше предела — строка в ленте при запуске процесса: чистит её владелец. */
   #warnSize(review: CodexReview): void {
-    const limit = review.sizeLimit ?? FOLDER_SIZE_LIMIT;
-    const size = folderSize(review.folder);
-    if (size <= limit) return;
-    this.#emit("error", "turn", {
-      text:
-        `Папка проверок Codex занимает ${megabytes(size)} МБ — больше ${megabytes(limit)} МБ: ${review.folder}. ` +
-        "Старые скрипты и выводы рецензента можно удалить.",
-    });
+    const note = oversizeNote(review.folder, "Codex", review.sizeLimit);
+    if (note) this.#emit("error", "turn", { text: note });
   }
 
   /**
@@ -645,14 +653,19 @@ export class CodexAdapter implements Adapter {
   }
 
   async send(prompt: AgentPrompt): Promise<void> {
-    // Переключатель проверок сменился: профиль прав задаётся при
-    // thread/start|resume — процесс перезапускается между ходами, ветка
-    // продолжается (как смена модели у Claude). Остановка — без ожидания:
-    // её синхронная часть уже сняла процесс, а запуск ниже должен остаться
-    // синхронным.
-    if (this.#ctx && !this.#busy && this.#launchedFolder !== this.#review?.folder) {
-      this.#emit("diagnostic", "stream", { text: "проверки рецензента переключены — перезапуск Codex с той же веткой" });
-      void this.stop().catch(() => undefined);
+    // Переключатель проверок или запрещённые пути сменились: профиль прав и
+    // роль задаются при thread/start|resume — процесс перезапускается между
+    // ходами, ветка продолжается (как смена модели у Claude). Остановка — без
+    // ожидания: её синхронная часть уже сняла процесс, а запуск ниже должен
+    // остаться синхронным.
+    if (this.#ctx && !this.#busy) {
+      const switched = this.#launchedFolder !== this.#review?.folder;
+      if (switched || this.#launchedForbidden !== JSON.stringify(this.#forbidden)) {
+        this.#emit("diagnostic", "stream", {
+          text: `${switched ? "проверки рецензента переключены" : "запрещённые пути сменились"} — перезапуск Codex с той же веткой`,
+        });
+        void this.stop().catch(() => undefined);
+      }
     }
     // Проверка и запуск — синхронно до первого ожидания: второе сообщение,
     // пришедшее во время запуска, ждёт того же запуска, а не теряется.
@@ -786,7 +799,19 @@ export class CodexAdapter implements Adapter {
       const turn = this.#turn;
       this.#interrupted.add(turn);
       this.#turn = undefined;
-      await this.#request(k, "turn/interrupt", { threadId: this.#thread, turnId: turn }).catch(() => undefined);
+      let refused: string | undefined;
+      await this.#request(k, "turn/interrupt", { threadId: this.#thread, turnId: turn }).catch((err: Error) => {
+        refused = err.message;
+      });
+      // Сервер прерывание не принял: ход может идти дальше, а его элементы
+      // адаптер уже отбрасывает (#interrupted) — команды пропали бы из ленты и
+      // журнала (итоговая рецензия 05.10). Процесс снимается, следующая
+      // отправка продолжит ветку. Процесс уже другой или остановлен — не трогать.
+      if (refused !== undefined && this.#ctx === k && !k.stopped) {
+        this.#emit("diagnostic", "stream", { text: `Codex не принял прерывание хода (${refused}) — процесс остановлен` });
+        await this.stop();
+        return;
+      }
       this.#busy = false;
       return;
     }
@@ -1030,6 +1055,24 @@ export class CodexAdapter implements Adapter {
 }
 
 /**
+ * Строки роли о запрещённых путях. Фрагмент от корня проекта («./data/»,
+ * forbiddenPaths.ts) назван отдельно и без «./»: одноимённые папки глубже
+ * корня (у Trading — пакет кода tradingbot/data/) под запрет не попадают, и
+ * роль не должна отбить чтение их кода (итоговая рецензия 05.10).
+ */
+function forbiddenLines(forbidden: readonly string[]): string[] {
+  if (forbidden.length === 0) return [];
+  const anywhere = forbidden.filter((f) => !rootAnchored(f));
+  const atRoot = forbidden.filter(rootAnchored).map(withoutRoot);
+  const named = [...(anywhere.length > 0 ? [anywhere.join(", ")] : []), ...(atRoot.length > 0 ? [`от корня проекта: ${atRoot.join(", ")}`] : [])];
+  return [
+    `- Не открывай и не читай пути: ${named.join("; ")}. Это данные или секреты проекта:`,
+    "  обращение к ним — нарушение правил проекта, даже без расчёта.",
+    ...(atRoot.length > 0 ? ["  Одноимённые папки глубже корня (например, пакет кода) под запрет не попадают."] : []),
+  ];
+}
+
+/**
  * Роль рецензента Codex. Ступень 1 (спека 05.10): репозиторий он читает
  * командами сам; запрещённые пути — данные и секреты проекта, которые
  * песочница read-only от чтения не закрывает. Ступень 2 (checks): рабочая
@@ -1048,12 +1091,7 @@ export function reviewerRole(
     "- Читай репозиторий сам: rg, git log/show/diff, python -c над кодом. Сырой вывод Claude",
     "  по-прежнему главное свидетельство о запусках, которые ты не повторяешь.",
     "- Не изменяй проект, не ходи в сеть, не запускай долгие и фоновые процессы.",
-    ...(forbidden.length > 0
-      ? [
-          `- Не открывай и не читай пути: ${forbidden.join(", ")}. Это данные или секреты проекта:`,
-          "  обращение к ним — нарушение правил проекта, даже без расчёта.",
-        ]
-      : []),
+    ...forbiddenLines(forbidden),
     ...(checks
       ? [
           `- Рабочая папка ветки — папка проверок ${checks.folder}; проект — ${checks.project}.`,

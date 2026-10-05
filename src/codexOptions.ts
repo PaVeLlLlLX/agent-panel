@@ -70,9 +70,10 @@ export function reviewFor(
 /**
  * Запрещённые фрагменты путей из настройки. Испорченное значение (не
  * массив) — запрет по умолчанию, а не пустой: пустой молча снял бы запрет
- * секретов.
+ * секретов. Им же читает настройку комната, когда её меняют при открытой
+ * панели (extension.ts).
  */
-function forbiddenFragments(value: unknown): readonly string[] {
+export function forbiddenFragments(value: unknown): readonly string[] {
   if (!Array.isArray(value)) return DEFAULT_FORBIDDEN;
   return value.filter((k): k is string => typeof k === "string").map((k) => k.trim()).filter((k) => k !== "");
 }

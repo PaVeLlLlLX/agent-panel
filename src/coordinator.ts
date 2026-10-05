@@ -54,6 +54,7 @@ import {
   addUsage,
 } from "./adapters/types.js";
 import { CheckBlock, readCheckBlocks } from "./checkBlocks.js";
+import { forbiddenFragment } from "./forbiddenPaths.js";
 import { WEB_BUDGET } from "./geminiSetup.js";
 import { Journal } from "./journal.js";
 import { Snapshot, describeSnapshot, takeSnapshot } from "./snapshot.js";
@@ -183,9 +184,9 @@ export interface CoordinatorOptions {
   readonly geminiRetryMs?: number;
   /**
    * Запрещённые фрагменты путей (agentPanel.reviewerForbidden папки проекта,
-   * тот же список, что в роли Codex). Команда Codex с таким фрагментом в его
-   * ходе проверки прерывает этот ход — стоп-сигнал. Нет или пусто — команды
-   * не проверяются.
+   * тот же список, что в роли Codex; forbiddenPaths.ts). Команда Codex с таким
+   * фрагментом в его ходе проверки прерывает этот ход — стоп-сигнал. Нет или
+   * пусто — команды не проверяются. Меняется: {@link Coordinator.setForbidden}.
    */
   readonly forbidden?: readonly string[];
   /**
@@ -201,10 +202,13 @@ export interface CoordinatorOptions {
  * app-server, command/exec в песочнице Codex) и запрещённые фрагменты путей:
  * скрипт с таким фрагментом не запускается (стоп-сигнал до запуска).
  * Исключение run — исполнитель недоступен; signal — отмена прогона.
+ * oversize — папка проверок Gemini больше предела: строка для ленты
+ * (reviewFolder.ts, oversizeNote) перед скриптами; в порядке — undefined.
  */
 export interface GeminiChecks {
   run(name: string, code: string, signal?: AbortSignal): Promise<CheckResult>;
   readonly forbidden: readonly string[];
+  oversize?(): string | undefined;
 }
 
 type Role = "work" | "review" | "direct";
@@ -275,6 +279,23 @@ const CHECK_RUN_OUTPUT_CHARS = 20_000;
 const CHECKS_OFF =
   "Gemini прислал блоки «проверка», а проверки рецензентов в комнате выключены — скрипты не выполнялись, вердикт — по его ответу.";
 
+/**
+ * Строка материала Gemini, когда проверки рецензентов в комнате выключены
+ * (итоговая рецензия ветки 05.10). Роль agent.md просит блоки «проверка» и
+ * обещает их выполнить, а agentPanel.reviewerChecks по умолчанию выключена:
+ * без этой строки Gemini считал бы свой вердикт предварительным, а Claude
+ * получал бы его скрипты без пометки.
+ */
+const CHECKS_OFF_FOR_GEMINI =
+  "Проверки рецензентов в этой комнате выключены: блоков «проверка» не пиши — панель их не выполнит; вердикт этого ответа окончательный.";
+
+/**
+ * Пометка Claude перед отзывом Gemini, блоки «проверка» в котором панель не
+ * выполняла (проверки выключены, поздний ответ, новые блоки во втором
+ * ответе): это не поручение разработчику (спецификация 05.10, решение 5).
+ */
+const UNEXECUTED_NOTE = "[блоки «проверка» в этом отзыве не выполнялись — не запускай их]";
+
 interface Target {
   readonly role: Role;
   /** Номер цикла; у прямого вопроса отсутствует. */
@@ -303,8 +324,8 @@ type Held = Outgoing & {
 };
 
 /**
- * Исход проверки одного рецензента. checks — блок «Проверки рецензента»
- * (checksBlock): его команды и выводы, если он их запускал.
+ * Исход проверки одного рецензента. checks — блок «Команды и скрипты
+ * рецензента» (checksBlock): его команды и выводы, если он их запускал.
  */
 type ReviewOutcome =
   | {
@@ -313,6 +334,8 @@ type ReviewOutcome =
       readonly text: string;
       readonly snapshot: Snapshot | undefined;
       readonly checks?: string;
+      /** В тексте есть блоки «проверка», которые панель не выполняла: Claude получает их с UNEXECUTED_NOTE. */
+      readonly unexecuted?: boolean;
     }
   | { readonly kind: "unchecked"; readonly reason: string };
 type VerdictOutcome = Extract<ReviewOutcome, { kind: "verdict" }>;
@@ -368,7 +391,10 @@ interface ReviewPair {
   geminiChecks?: "running" | "answered";
   /** Вердикт первого хода Gemini со скриптами: исход, если второй ход сорвётся. */
   preliminary?: VerdictOutcome;
-  /** Блок «Проверки рецензента» из выполненных скриптов Gemini — свидетельство для Claude. */
+  /**
+   * Блок «Команды и скрипты рецензента» из выполненных скриптов Gemini —
+   * свидетельство для Claude; растёт после каждого скрипта.
+   */
   geminiEvidence?: string | undefined;
   /** Отмена идущего прогона скриптов Gemini. */
   checksAbort?: AbortController | undefined;
@@ -462,10 +488,31 @@ function reviewBlock(title: string, outcome: ReviewOutcome, current: Snapshot | 
     outcome.snapshot && current && outcome.snapshot.id !== current.id
       ? `\n\nФайлы изменились после начала проверки: замечания относятся к версии ${describeSnapshot(outcome.snapshot)}, сейчас ${describeSnapshot(current)}.`
       : "";
-  return `— ${title} —\n${outcome.text}${checksPart(outcome)}${shift}`;
+  return `— ${title} —\n${unexecutedPart(outcome)}${outcome.text}${checksPart(outcome)}${shift}`;
 }
 
-/** Блок «Проверки рецензента» после его замечаний; без команд — ничего. */
+/** Пометка перед отзывом с невыполненными блоками «проверка»; иначе ничего. */
+function unexecutedPart(outcome: VerdictOutcome): string {
+  return outcome.unexecuted ? `${UNEXECUTED_NOTE}${NL}` : "";
+}
+
+/** Исход с пометкой о невыполненных блоках «проверка», если они есть. */
+function markUnexecuted(outcome: VerdictOutcome, unexecuted: boolean): VerdictOutcome {
+  return unexecuted ? { ...outcome, unexecuted: true } : outcome;
+}
+
+/**
+ * Сколько блоков «проверка» в тексте не было среди выполненных (ran — ответ,
+ * блоки которого панель выполняла): Gemini, повторяя в окончательном отзыве
+ * свой скрипт, нового блока не прислал. Сверх трёх — считаются новыми.
+ */
+function freshBlocks(text: string, ran?: string): number {
+  const { blocks, dropped } = readCheckBlocks(text);
+  const known = new Set(ran === undefined ? [] : readCheckBlocks(ran).blocks.map((b) => b.code.trim()));
+  return blocks.filter((b) => !known.has(b.code.trim())).length + dropped;
+}
+
+/** Блок «Команды и скрипты рецензента» после его замечаний; без команд — ничего. */
 function checksPart(outcome: VerdictOutcome): string {
   return outcome.checks ? `\n\n${outcome.checks}` : "";
 }
@@ -521,7 +568,7 @@ function acceptanceBlock(acceptance: Acceptance): string {
   const words = [...(codex ? [`Codex — ${outcomeWords(codex)}`] : []), ...(gemini ? [`Gemini — ${outcomeWords(gemini)}`] : [])];
   const notes = [
     ...(codex ? [`— Codex: ${excerpt(codex.text.trim(), ACCEPTANCE_NOTE_CHARS)}`] : []),
-    ...(gemini?.kind === "verdict" ? [`— Gemini: ${excerpt(gemini.text.trim(), ACCEPTANCE_NOTE_CHARS)}`] : []),
+    ...(gemini?.kind === "verdict" ? [`— Gemini: ${unexecutedPart(gemini)}${excerpt(gemini.text.trim(), ACCEPTANCE_NOTE_CHARS)}`] : []),
   ];
   return [
     "[итог прошлой проверки]",
@@ -579,34 +626,6 @@ function commandOf(raw: unknown): string | undefined {
   if (typeof command === "string") return command;
   if (Array.isArray(command)) return command.map(String).join(" ");
   return undefined;
-}
-
-/**
- * Фрагмент — часть пути, а не любая подстрока (рецензия задачи 8). Слева —
- * начало строки или знак вне имени (пробел, кавычка, «/», «=», «(»…), но не
- * буква, цифра, «_», «.» или «-». Справа — конец строки или не буква, не
- * цифра и не «_». Так .env ловит «cat .env», «.env.local», «C:/p/.env», но
- * не process.env и os.environ; data/ — «open('data/x')», но не metadata/ и
- * sample_data/. Косая черта на краю фрагмента сама граница: /secrets
- * ловится и в «C:/p/secrets».
- */
-function fragmentPattern(fragment: string): RegExp {
-  const escaped = fragment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const before = fragment.startsWith("/") ? "" : "(?<![\\p{L}\\p{N}_.\\-])";
-  const after = fragment.endsWith("/") ? "" : "(?![\\p{L}\\p{N}_])";
-  return new RegExp(before + escaped + after, "u");
-}
-
-/**
- * Первый запрещённый фрагмент, найденный в команде: без учёта регистра,
- * «\» и «/» — одно и то же (у Trading запрещены и data/, и data\), по
- * границам имён (fragmentPattern). Пустой фрагмент не считается: он совпал
- * бы с любой командой.
- */
-function forbiddenFragment(command: string, forbidden: readonly string[]): string | undefined {
-  const plain = (s: string): string => s.replace(/\\/g, "/").toLowerCase();
-  const text = plain(command);
-  return forbidden.find((f) => f.trim() !== "" && fragmentPattern(plain(f.trim())).test(text));
 }
 
 /** Местное время ЧЧ:ММ — для строк ленты о сроках Gemini. */
@@ -679,6 +698,8 @@ export class Coordinator {
   #geminiCut = false;
   /** Исполнитель скриптов Gemini; нет — проверки рецензентов в комнате выключены. */
   #checks: GeminiChecks | undefined;
+  /** Запрещённые фрагменты путей для стоп-сигнала на командах Codex. */
+  #forbidden: readonly string[];
   readonly #capture: (cwd: string) => Promise<Snapshot>;
 
   constructor(
@@ -689,6 +710,7 @@ export class Coordinator {
   ) {
     this.#capture = options.snapshot ?? takeSnapshot;
     this.#checks = options.checks;
+    this.#forbidden = options.forbidden ?? [];
   }
 
   /**
@@ -697,6 +719,14 @@ export class Coordinator {
    */
   setChecks(checks: GeminiChecks | undefined): void {
     this.#checks = checks;
+  }
+
+  /**
+   * Настройка agentPanel.reviewerForbidden сменилась при открытой комнате:
+   * стоп-сигнал на командах Codex смотрит новый список со следующей команды.
+   */
+  setForbidden(forbidden: readonly string[]): void {
+    this.#forbidden = forbidden;
   }
 
   get round(): number {
@@ -1293,7 +1323,8 @@ export class Coordinator {
       ? {
           to: "gemini",
           prompt: {
-            text: `${body}\n\n${GEMINI_FOCUS}\n\n${VERDICT_REQUEST}`,
+            // Проверки выключены — так и сказано: роль обещает выполнить блоки «проверка».
+            text: [body, GEMINI_FOCUS, ...(this.#checks ? [] : [CHECKS_OFF_FOR_GEMINI]), VERDICT_REQUEST].join(NL + NL),
             from: "claude",
             heading: "[материал проверки от панели]",
             snapshot: describeSnapshot(snapshot),
@@ -1429,7 +1460,12 @@ export class Coordinator {
       ? { kind: "unchecked", reason: problem }
       : { kind: "verdict", verdict: parseVerdict(text), text, snapshot: this.#snapshots.get(agent), ...checksOf(agent, material) };
     // Скрипты Gemini: его вердикт пока предварительный, исход — после вывода.
-    if (agent === "gemini" && outcome.kind === "verdict" && this.#startGeminiChecks(pair, outcome)) return;
+    // Не начаты при блоках — проверки выключены: Claude получит их с пометкой.
+    if (agent === "gemini" && outcome.kind === "verdict") {
+      if (this.#startGeminiChecks(pair, outcome)) return;
+      await this.#recordOutcome(pair, agent, markUnexecuted(outcome, freshBlocks(outcome.text) > 0));
+      return;
+    }
     await this.#recordOutcome(pair, agent, outcome);
   }
 
@@ -1483,6 +1519,15 @@ export class Coordinator {
     const evidence: PanelEvent[] = [];
     const reports: CheckReport[] = [];
     let unavailable: string | undefined;
+    // Каждый скрипт оставляет файл в папке проверок, а чистит её владелец.
+    // Сбой обхода папки прогон не срывает.
+    let oversize: string | undefined;
+    try {
+      oversize = checks.oversize?.();
+    } catch {
+      oversize = undefined;
+    }
+    if (oversize) this.#report(oversize);
     for (const [index, block] of blocks.entries()) {
       if (!running()) return;
       const callId = `check-${pair.round}-${index + 1}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1491,7 +1536,7 @@ export class Coordinator {
       let report: CheckReport;
       let command = named;
       let exitCode: number | undefined;
-      const fragment = forbiddenFragment(block.code, checks.forbidden);
+      const fragment = forbiddenFragment(block.code, checks.forbidden, this.options.cwd);
       if (fragment !== undefined) {
         report = { name: block.name, status: `не запущено: обращается к ${fragment}` };
       } else if (unavailable !== undefined) {
@@ -1525,10 +1570,12 @@ export class Coordinator {
           ...(exitCode !== undefined ? { exitCode } : {}),
         }),
       );
+      // Свидетельство — после каждого скрипта: прогон, снятый молчанием или
+      // пределом, отдаёт Claude то, что уже выполнено (итоговая рецензия 05.10).
+      pair.geminiEvidence = checksBlock(NAMES.gemini, reviewerChecks(evidence));
     }
     if (!running()) return;
     pair.checksAbort = undefined;
-    pair.geminiEvidence = checksBlock(NAMES.gemini, reviewerChecks(evidence));
     pair.geminiPending = false;
     pair.geminiChecks = "answered";
     if (unavailable !== undefined) this.#report(`Проверки Gemini недоступны: ${unavailable}. Gemini выносит вердикт без них.`);
@@ -1577,19 +1624,37 @@ export class Coordinator {
       await this.#takePreliminary(pair, failure);
       return;
     }
-    this.#skippedChecks(text, "answered");
     await this.#recordOutcome(pair, "gemini", this.#finalGemini(pair, text));
   }
 
-  /** Окончательный отзыв Gemini — со свидетельством его скриптов для Claude. */
+  /**
+   * Окончательный отзыв Gemini — со свидетельством его скриптов для Claude.
+   * Новые блоки «проверка» в нём не выполняются (круг один): строка в ленте,
+   * у Claude — пометка.
+   */
   #finalGemini(pair: ReviewPair, text: string): VerdictOutcome {
-    return {
-      kind: "verdict",
-      verdict: parseVerdict(text),
-      text,
-      snapshot: pair.preliminary?.snapshot ?? this.#snapshots.get("gemini"),
-      ...(pair.geminiEvidence ? { checks: pair.geminiEvidence } : {}),
-    };
+    const fresh = freshBlocks(text, pair.preliminary?.text);
+    if (fresh > 0) this.#report("Gemini прислал новые блоки «проверка» в ответе на вывод проверок — они не выполняются: круг проверок один.");
+    return markUnexecuted(
+      {
+        kind: "verdict",
+        verdict: parseVerdict(text),
+        text,
+        snapshot: pair.preliminary?.snapshot ?? this.#snapshots.get("gemini"),
+        ...(pair.geminiEvidence ? { checks: pair.geminiEvidence } : {}),
+      },
+      fresh > 0,
+    );
+  }
+
+  /**
+   * Предварительный вердикт Gemini исходом — со свидетельством выполненных
+   * скриптов. Ни один не закончился — свидетельства нет, и его блоки идут
+   * Claude с пометкой.
+   */
+  #preliminaryOutcome(pair: ReviewPair, preliminary: VerdictOutcome): VerdictOutcome {
+    const evidence = pair.geminiEvidence;
+    return evidence ? { ...preliminary, checks: evidence } : markUnexecuted(preliminary, freshBlocks(preliminary.text) > 0);
   }
 
   /** У Gemini этой пары есть предварительный вердикт: его скрипты выполнялись или выполняются. */
@@ -1604,28 +1669,49 @@ export class Coordinator {
    */
   async #takePreliminary(pair: ReviewPair, reason: string): Promise<void> {
     const preliminary = pair.preliminary;
-    if (!preliminary || !pair.waiting.has("gemini")) return;
+    if (!preliminary) return;
+    if (!pair.waiting.has("gemini")) {
+      // Пара сведена по сроку, а Gemini отвечал поздно — его ответа не будет.
+      this.#lateLost(pair, reason);
+      return;
+    }
     this.#report(
       pair.geminiChecks === "running"
         ? `Проверки Gemini не закончились (${reason}) — взят предварительный вердикт.`
         : `Gemini не ответил на вывод проверок — взят предварительный вердикт. Причина: ${reason}.`,
     );
-    await this.#recordOutcome(pair, "gemini", { ...preliminary, ...(pair.geminiEvidence ? { checks: pair.geminiEvidence } : {}) });
+    await this.#recordOutcome(pair, "gemini", this.#preliminaryOutcome(pair, preliminary));
   }
 
   /**
-   * Блоки «проверка», которые не выполняются, — строкой в ленте: во втором
-   * ответе (круг один) или в позднем первом (пара уже сведена).
+   * Опоздавший Gemini (срок при замечаниях Codex истёк, его поздний отзыв
+   * ждали) сорвался: процесс упал, сообщение не ушло. Позднего отзыва не
+   * будет — так и сказать, как при сбое его хода (#lateGemini). Сведение ещё
+   * ждёт снимок — исход заменяется, и сведение назовёт причину само.
    */
-  #skippedChecks(text: string, when: "answered" | "late"): void {
-    if (readCheckBlocks(text).blocks.length === 0) return;
+  #lateLost(pair: ReviewPair, reason: string): void {
+    if (!pair.overdue || pair.waiting.has("gemini")) return;
+    pair.overdue = false;
+    if (pair.deadline) clearTimeout(pair.deadline); // сторож опоздавшего больше не нужен
+    pair.deadline = undefined;
+    if (pair.merging) {
+      pair.outcomes.set("gemini", { kind: "unchecked", reason });
+      const step = [...this.#trail].reverse().find((sh) => sh.who === "gemini" && sh.round === pair.round);
+      if (step) step.unchecked = reason;
+      return;
+    }
+    this.#report(`Gemini так и не дал проверки ${pair.round}: ${reason}.`);
+  }
+
+  /** Блоки «проверка» в позднем первом ответе (пара уже сведена) не выполняются — строкой в ленте; есть ли они. */
+  #skippedLate(text: string): boolean {
+    if (freshBlocks(text) === 0) return false;
     this.#report(
-      when === "answered"
-        ? "Gemini прислал новые блоки «проверка» в ответе на вывод проверок — они не выполняются: круг проверок один."
-        : this.#checks
-          ? "Блоки «проверка» в позднем ответе Gemini не выполнялись: проверка уже сведена, его вердикт — предварительный."
-          : CHECKS_OFF,
+      this.#checks
+        ? "Блоки «проверка» в позднем ответе Gemini не выполнялись: проверка уже сведена, его вердикт — предварительный."
+        : CHECKS_OFF,
     );
+    return true;
   }
 
   /**
@@ -1960,7 +2046,7 @@ export class Coordinator {
    */
   #guardCommand(event: PanelEvent): void {
     const command = commandOf(event.raw);
-    const fragment = command === undefined ? undefined : forbiddenFragment(command, this.options.forbidden ?? []);
+    const fragment = command === undefined ? undefined : forbiddenFragment(command, this.#forbidden, this.options.cwd);
     if (fragment === undefined) return;
     const head = this.#targets.get("codex")?.[0];
     const pair = this.#pair;
@@ -2035,19 +2121,20 @@ export class Coordinator {
     let late: VerdictOutcome;
     if (problem && pair.preliminary) {
       this.#report(`Gemini не ответил на вывод проверок — взят предварительный вердикт. Причина: ${problem}.`);
-      late = { ...pair.preliminary, ...(pair.geminiEvidence ? { checks: pair.geminiEvidence } : {}) };
+      late = this.#preliminaryOutcome(pair, pair.preliminary);
     } else if (answered) {
-      this.#skippedChecks(text, "answered");
       late = this.#finalGemini(pair, text);
     } else {
-      this.#skippedChecks(text, "late");
-      late = {
-        kind: "verdict",
-        verdict: parseVerdict(text),
-        text,
-        snapshot: this.#snapshots.get("gemini"),
-        ...checksOf("gemini", material),
-      };
+      late = markUnexecuted(
+        {
+          kind: "verdict",
+          verdict: parseVerdict(text),
+          text,
+          snapshot: this.#snapshots.get("gemini"),
+          ...checksOf("gemini", material),
+        },
+        this.#skippedLate(text),
+      );
     }
     const v = late.verdict;
     pair.outcomes.set("gemini", late);
@@ -2265,8 +2352,10 @@ export class Coordinator {
         pending.some((t) => t.role === "review" && t.cycle === pair.cycle && t.round === pair.round)
       ) {
         const failure = reason ?? "процесс Gemini завершился";
-        // Процесс умер в ответе на вывод скриптов — исход его предварительный вердикт.
-        if (this.#hasPreliminary(pair)) await this.#takePreliminary(pair, failure);
+        // Процесс умер в ответе на вывод скриптов — исход его предварительный
+        // вердикт; в позднем ходе (пара уже сведена) — строка, что отзыва не будет.
+        if (!pair.waiting.has("gemini")) this.#lateLost(pair, failure);
+        else if (this.#hasPreliminary(pair)) await this.#takePreliminary(pair, failure);
         else await this.#recordOutcome(pair, "gemini", { kind: "unchecked", reason: pair.retried ? `${failure}${RETRY_FAILED}` : failure });
       }
     } else if (pending.some((c) => c.cycle !== undefined && this.#isCurrent(c.cycle))) {
@@ -2371,7 +2460,8 @@ export class Coordinator {
         // Не ушёл вывод его скриптов — исход его предварительный вердикт.
         const pair = this.#pair;
         if (pair && pair.cycle === o.target.cycle && pair.round === o.target.round) {
-          if (this.#hasPreliminary(pair)) await this.#takePreliminary(pair, reason);
+          if (!pair.waiting.has("gemini")) this.#lateLost(pair, reason);
+          else if (this.#hasPreliminary(pair)) await this.#takePreliminary(pair, reason);
           else await this.#recordOutcome(pair, "gemini", { kind: "unchecked", reason: pair.retried ? `${reason}${RETRY_FAILED}` : reason });
         }
         return;
@@ -2609,9 +2699,9 @@ function assemble(
   return text.length > 0 ? text : undefined;
 }
 
-/** Предел одного вывода (и строки команды) в блоке «Проверки рецензента». */
+/** Предел одного вывода (и строки команды) в блоке «Команды и скрипты рецензента». */
 const CHECK_OUTPUT_CHARS = 4000;
-/** Предел всего блока «Проверки рецензента». */
+/** Предел всего блока «Команды и скрипты рецензента». */
 const CHECKS_BLOCK_CHARS = 20_000;
 /** Короче этого вывод при дележе места не урезается: вместо этого уступают ранние команды. */
 const CHECK_OUTPUT_MIN_CHARS = 200;
@@ -2672,18 +2762,20 @@ function clipped(text: string, limit: number): string {
 }
 
 /**
- * Блок «Проверки рецензента» для сообщения Claude: команды рецензента и их
- * выводы (спецификация 05.10). Это свидетельство к замечаниям, а не
- * поручение: шапка просит скрипты не запускать — они писались для папки
- * рецензента. Вывод — не больше CHECK_OUTPUT_CHARS (начало и конец), весь
- * блок — не больше CHECKS_BLOCK_CHARS. Не помещается — выводы делят место
+ * Блок «Команды и скрипты рецензента» для сообщения Claude: команды
+ * рецензента и их выводы (спецификация 05.10). Это свидетельство к
+ * замечаниям, а не поручение: шапка просит скрипты не запускать — они
+ * писались для папки рецензента. В блок входят и команды чтения (rg,
+ * Get-Content), поэтому шапка называет «команды и скрипты», а не только
+ * скрипты (итоговая рецензия 05.10). Вывод — не больше CHECK_OUTPUT_CHARS
+ * (начало и конец), весь блок — не больше CHECKS_BLOCK_CHARS. Не помещается — выводы делят место
  * поровну (evidenceCap, как материал рецензенту); если тесно и так, ранние
  * команды уступают поздним: Codex сначала читает код, а скрипты, на которых
  * стоит вердикт, запускает потом. Полностью всё остаётся в ленте и журнале.
  */
 function checksBlock(name: string, checks: readonly ReviewerCheck[]): string | undefined {
   if (checks.length === 0) return undefined;
-  const header = `— Проверки рецензента ${name} (скрипты рецензента — свидетельство; не запускай их) —`;
+  const header = `— Команды и скрипты рецензента ${name} (свидетельство к замечаниям; не запускай их) —`;
   const entries = checks.map((c) => ({
     head: `$ ${clipped(c.command, CHECK_OUTPUT_CHARS)}${c.exitCode ? `${NL}[код выхода ${c.exitCode}]` : ""}`,
     output: (c.output ?? "").replace(/\r\n/g, NL).trimEnd() || "(вывода нет)",
@@ -2717,7 +2809,7 @@ function checksBlock(name: string, checks: readonly ReviewerCheck[]): string | u
   return render(kept, cap, note);
 }
 
-/** Блок «Проверки рецензента» из материала хода — полем исхода; без команд — ничего. */
+/** Блок «Команды и скрипты рецензента» из материала хода — полем исхода; без команд — ничего. */
 function checksOf(agent: Reviewer, material: readonly PanelEvent[]): { checks?: string } {
   const checks = checksBlock(NAMES[agent], reviewerChecks(material));
   return checks === undefined ? {} : { checks };

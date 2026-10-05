@@ -1325,7 +1325,7 @@ test("журнал: материал проверки — по событию н
   // Длиннее предела показа (64 000): журнал хранит материал целиком.
   turn(k, "claude", `итог: ${"ф".repeat(70_000)}`);
   await waitFor(() => codex.received.length === 1 && gemini.received.length === 1, "проверка у обоих");
-  const materials = journal.history("r").filter((e) => e.kind === "material");
+  const materials = journal.materials("r");
   assert.deepEqual(materials.map((e) => e.agent).sort(), ["codex", "gemini"]);
   assert.ok(materials.every((e) => e.visibility === "stream"));
   assert.equal(materials.find((e) => e.agent === "codex").text, codex.received[0].text);
@@ -1338,7 +1338,7 @@ test("журнал: материал проверки — по событию н
   await waitFor(() => k.state.stage === "accepted", "принято");
   await k.fromHuman("а что с порогом?", "codex");
   await waitFor(() => codex.received.length === 2, "прямой вопрос");
-  assert.equal(journal.history("r").filter((e) => e.kind === "material").length, 2);
+  assert.equal(journal.materials("r").length, 2);
   journal.close();
 });
 
@@ -1349,7 +1349,7 @@ test("журнал: материал, ждавший занятого рецен
   await k.fromHuman("задача", "review");
   turn(k, "claude", "сделал");
   await waitFor(() => k.state.stage === "reviewing", "проверка");
-  const materialsFor = (agent) => journal.history("r").filter((e) => e.kind === "material" && e.agent === agent);
+  const materialsFor = (agent) => journal.materials("r").filter((e) => e.agent === agent);
   assert.equal(materialsFor("gemini").length, 0, "материал в очереди ещё не ушёл");
   gemini.busy = false;
   turn(k, "gemini", "ответ на вопрос");
@@ -2098,7 +2098,7 @@ test("Gemini: сбой сети в проверке — пара ждёт его
   assert.match(claude.received[1].text, /— Gemini — методология и факты —\nПробел в разбиении\./);
   assert.equal(said(events, /^Итог проверки 1: Codex — есть замечания, Gemini — есть замечания\.$/).length, 1);
   assert.deepEqual(k.state.trail.find((sh) => sh.who === "gemini" && sh.round === 1), { who: "gemini", round: 1, mark: "!" });
-  const materials = journal.history("r").filter((e) => e.kind === "material" && e.agent === "gemini");
+  const materials = journal.materials("r").filter((e) => e.agent === "gemini");
   assert.equal(materials.length, 2, "в журнале — оба раза, когда материал ушёл Gemini");
   journal.close();
 });
@@ -3463,6 +3463,8 @@ test("стоп-сигнал: process.env, os.environ, metadata/, sample_data\\ �
     "ls metadata/",
     "Get-ChildItem sample_data\\",
     "cat .envrc",
+    // Шаблон секрета Trading держит в репозитории (итоговая рецензия 05.10).
+    "cat .env.example",
   ]) {
     k.handle(codexCommand(command));
     assert.equal(codex.interrupted, 0, command);
@@ -3531,7 +3533,7 @@ test("стоп-сигнал: сбой после прерывания (onState �
 });
 
 // ---------------------------------------------------------------------------
-// Блок «Проверки рецензента» (спецификация 05.10): команды Codex и их выводы
+// Блок «Команды и скрипты рецензента» (спецификация 05.10): команды Codex и их выводы
 // идут Claude свидетельством вместе с замечаниями — прежде они выбрасывались,
 // и Claude получал «пересчитайте» без самого пересчёта.
 // ---------------------------------------------------------------------------
@@ -3548,7 +3550,7 @@ function codexRan(k, command, output, id, exitCode = 0) {
   k.handle(codexCommandDone(command, output, id, exitCode));
 }
 
-const CHECKS_HEADER = "— Проверки рецензента Codex (скрипты рецензента — свидетельство; не запускай их) —";
+const CHECKS_HEADER = "— Команды и скрипты рецензента Codex (свидетельство к замечаниям; не запускай их) —";
 const DD_SCRIPT = "python C:\\Temp\\agent-panel-review\\codex\\dd.py";
 
 /** Блок проверок в сообщении Claude: от шапки до следующего раздела. */
@@ -3598,7 +3600,7 @@ test("проверки рецензента: без команд блока не
   turn(k, "codex", "Просадка посчитана неверно.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
   geminiTurn(k, gemini, "Чек-лист закрыт.\nВЕРДИКТ: ПРИНЯТО");
   await waitFor(() => claude.received.length === 2, "замечания у Claude");
-  assert.doesNotMatch(claude.received[1].text, /Проверки рецензента/);
+  assert.doesNotMatch(claude.received[1].text, /Команды и скрипты рецензента/);
   journal.close();
 });
 
@@ -3684,7 +3686,7 @@ test("проверки рецензента: в комнате без Gemini б�
   await waitFor(() => codex.received.length === 2, "проверка 2 у Codex");
   turn(k, "codex", "Знак просадки перепутан.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
   await waitFor(() => claude.received.length === 3, "замечания 2 у Claude");
-  assert.doesNotMatch(claude.received[2].text, /Проверки рецензента/);
+  assert.doesNotMatch(claude.received[2].text, /Команды и скрипты рецензента/);
   journal.close();
 });
 
@@ -3713,7 +3715,7 @@ test("проверки рецензента: поздний отзыв Gemini п
 const FENCE = "```";
 /** Блок «проверка» в ответе Gemini. */
 const checkBlock = (code) => [`${FENCE}проверка python`, code, FENCE].join("\n");
-const GEMINI_CHECKS_HEADER = "— Проверки рецензента Gemini (скрипты рецензента — свидетельство; не запускай их) —";
+const GEMINI_CHECKS_HEADER = "— Команды и скрипты рецензента Gemini (свидетельство к замечаниям; не запускай их) —";
 const completedTurns = (events, agent) => events.filter((e) => e.agent === agent && e.kind === "turn_completed").length;
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -3755,7 +3757,7 @@ test("проверки Gemini: блок выполнен панелью, Gemini 
     turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
     await waitFor(() => k.state.stage === "accepted", "итог после второго хода Gemini", 10_000);
     assert.deepEqual(calls.map((c) => [c.name, c.code]), [["просадка на отрезке", "# имя: просадка на отрезке\nprint('max_dd', -0.2)"]]);
-    const materials = journal.history("r").filter((e) => e.kind === "material" && e.agent === "gemini");
+    const materials = journal.materials("r").filter((e) => e.agent === "gemini");
     assert.equal(materials.length, 2, "в журнале — и материал, и вывод проверок");
     assert.equal(journal.rawOf("r", materials[1].id).heading, "[вывод твоих проверок]");
     assert.match(materials[1].text, /просадка на отрезке/);
@@ -3884,7 +3886,9 @@ test("проверки Gemini: предел безопасности истёк,
   assert.equal(calls[0].signal.aborted, true, "прогон отменён");
   assert.deepEqual(k.state.pair.sides.gemini, { state: "done", verdict: "remarks" });
   assert.equal(said(events, /^Проверки Gemini не закончились \(не закончил за 1 с после ответа Codex — остановлен\) — взят предварительный вердикт\.$/).length, 1);
-  assert.match(claude.received[1].text, /— Gemini — методология и факты —\nПробел в разбиении\./);
+  // Ни один скрипт не закончился — свидетельства нет, блок идёт Claude с
+  // пометкой (итоговая рецензия 05.10).
+  assert.match(claude.received[1].text, /— Gemini — методология и факты —\n\[блоки «проверка» в этом отзыве не выполнялись — не запускай их\]\nПробел в разбиении\./);
   await sleep(50);
   assert.equal(gemini.received.length, 1, "вывода проверок нет");
   journal.close();
@@ -4017,4 +4021,279 @@ test("проверки Gemini: «Прервать», «Остановить», �
     }
     journal.close();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Итоговая рецензия ветки 05.10: фрагмент от корня проекта, проверки Gemini
+// при выключенных проверках, свидетельство прерванного прогона, опоздавший
+// Gemini, размер папки, смена запрещённых путей.
+// ---------------------------------------------------------------------------
+
+const UNEXECUTED = "[блоки «проверка» в этом отзыве не выполнялись — не запускай их]";
+const CHECKS_OFF_FOR_GEMINI =
+  "Проверки рецензентов в этой комнате выключены: блоков «проверка» не пиши — панель их не выполнит; вердикт этого ответа окончательный.";
+/** Список Trading после рецензии: папка данных — от корня, пакет кода tradingbot/data/ — нет. */
+const TRADING_FORBIDDEN = ["./data/", ".env"];
+
+test("стоп-сигнал: «./data/» — папка данных в корне ловится относительно, через .\\, абсолютно и без косой черты; пакет tradingbot/data/ — нет", async () => {
+  // Прямой вопрос: каждое совпадение — строка-предупреждение, ход не прерывается.
+  const { k, codex, events, journal, catalog } = room(3, { forbidden: TRADING_FORBIDDEN });
+  await k.fromHuman("что лежит в проекте?", "codex");
+  const warned = () => said(events, /^Codex обратился к запрещённому пути «\.\/data\/» вне проверки — ход не прерван\.$/).length;
+  for (const command of [
+    "Get-Content tradingbot\\data\\storage.py",
+    "rg -n fillna tradingbot/data/",
+    "git diff HEAD~1 -- tradingbot/data/market_data.py",
+    `git -C ${catalog} show HEAD:tradingbot/data/storage.py`,
+    `rg -n fillna ${catalog}\\tradingbot\\data`,
+    "ls metadata/",
+  ]) {
+    k.handle(codexCommand(command));
+    assert.equal(warned(), 0, command);
+  }
+  for (const [i, command] of [
+    "Get-Content data\\prices.parquet",
+    "Get-Content .\\data\\prices.parquet",
+    `Get-ChildItem ${catalog}\\data`,
+    `Get-Content ${catalog}\\data\\prices.parquet`,
+    "rg x data",
+    "python -c \"from pathlib import Path; print(list(Path('data').iterdir()))\"",
+  ].entries()) {
+    k.handle(codexCommand(command));
+    assert.equal(warned(), i + 1, command);
+  }
+  assert.equal(codex.interrupted, 0);
+  journal.close();
+});
+
+test("стоп-сигнал: «./data/» в проверке — чтение пакета кода не останавливает её, папка данных проекта по абсолютному пути — останавливает", async () => {
+  const { k, codex, events, journal, catalog } = await pairRoom({ forbidden: TRADING_FORBIDDEN });
+  k.handle(codexCommand("Get-Content tradingbot\\data\\storage.py", "cmd-0"));
+  k.handle(codexCommand("cat .env.example", "cmd-1"));
+  assert.equal(k.state.stage, "reviewing", "пакет кода и шаблон секрета — не запрет");
+  k.handle(codexCommand(`Get-ChildItem ${catalog}\\data`, "cmd-2"));
+  assert.equal(codex.interrupted, 1);
+  assert.equal(k.state.stage, "stopped");
+  assert.equal(said(events, /^Codex обратился к запрещённому пути «\.\/data\/» — проверка остановлена, решите, как продолжить\.$/).length, 1);
+  journal.close();
+});
+
+test("проверки Gemini: «./data/» — скрипт с папкой данных проекта не запускается, скрипт о пакете кода tradingbot/data/ — запускается", async () => {
+  const { calls, checks } = stubChecks(undefined, TRADING_FORBIDDEN);
+  const { k, gemini, journal, catalog } = await pairRoom({ checks }, 3, { liveGemini: true });
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  geminiTurn(
+    k,
+    gemini,
+    [
+      checkBlock(`# имя: данные\nimport pandas as pd\nprint(pd.read_parquet(r'${catalog}\\data\\prices.parquet').shape)`),
+      checkBlock("# имя: пакет\n# как tradingbot/data/storage.py заполняет пропуски — на синтетике\ndata = [1.0, None]\nprint(data)"),
+      "ВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ",
+    ].join("\n\n"),
+  );
+  await waitFor(() => gemini.received.length === 2, "вывод проверок у Gemini");
+  assert.deepEqual(calls.map((c) => c.name), ["пакет"]);
+  assert.match(gemini.received[1].text, /— данные: не запущено: обращается к \.\/data\//);
+  journal.close();
+});
+
+test("проверки выключены: материал Gemini говорит, что блоки «проверка» не выполнятся; включены — этой строки нет", async () => {
+  // Итоговая рецензия 05.10, I2: роль agent.md обещает выполнить блоки, а
+  // проверки по умолчанию выключены.
+  {
+    const { gemini, codex, journal } = await pairRoom({}, 3, { liveGemini: true });
+    const text = gemini.received[0].text;
+    assert.ok(text.includes(CHECKS_OFF_FOR_GEMINI), text);
+    assert.ok(text.indexOf("Код целиком не перепроверяй") < text.indexOf(CHECKS_OFF_FOR_GEMINI), "после напоминания о полосах");
+    assert.ok(text.indexOf(CHECKS_OFF_FOR_GEMINI) < text.lastIndexOf("ВЕРДИКТ: ПРИНЯТО"), "до просьбы о вердикте");
+    assert.ok(!codex.received[0].text.includes(CHECKS_OFF_FOR_GEMINI), "Codex этой строки не получает");
+    journal.close();
+  }
+  {
+    const { checks } = stubChecks();
+    const { gemini, journal } = await pairRoom({ checks }, 3, { liveGemini: true });
+    assert.ok(!gemini.received[0].text.includes(CHECKS_OFF_FOR_GEMINI));
+    journal.close();
+  }
+});
+
+test("проверки выключены: блоки «проверка» Gemini идут Claude с пометкой «не выполнялись — не запускай их», и в итоге приёмки тоже", async () => {
+  {
+    const { k, claude, gemini, journal } = await pairRoom({}, 3, { liveGemini: true });
+    turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+    geminiTurn(k, gemini, `Пробел.\n\n${checkBlock("print(1)")}\n\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ`);
+    await waitFor(() => claude.received.length === 2, "замечания у Claude");
+    const text = claude.received[1].text;
+    assert.ok(text.includes(`— Gemini — методология и факты —\n${UNEXECUTED}\nПробел.`), text);
+    assert.ok(!text.includes(GEMINI_CHECKS_HEADER), "свидетельства нет: ничего не выполнялось");
+    journal.close();
+  }
+  {
+    const { k, claude, gemini, journal } = await pairRoom({}, 3, { liveGemini: true });
+    turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+    geminiTurn(k, gemini, `Чек-лист закрыт.\n\n${checkBlock("print(1)")}\n\nВЕРДИКТ: ПРИНЯТО`);
+    await waitFor(() => k.state.stage === "accepted", "принято");
+    await k.fromHuman("что дальше?", "claude");
+    const text = claude.received.at(-1).text;
+    assert.ok(text.includes(`— Gemini: ${UNEXECUTED}\nЧек-лист закрыт.`), text);
+    journal.close();
+  }
+  {
+    // Без блоков пометки нет.
+    const { k, claude, gemini, journal } = await pairRoom({}, 3, { liveGemini: true });
+    turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+    geminiTurn(k, gemini, "Пробел.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+    await waitFor(() => claude.received.length === 2, "замечания у Claude");
+    assert.ok(!claude.received[1].text.includes(UNEXECUTED));
+    journal.close();
+  }
+});
+
+test("проверки Gemini: блоки в позднем первом ответе не выполнялись — у Claude пометка в удержанных замечаниях", async () => {
+  const { calls, checks } = stubChecks();
+  const { k, claude, gemini, events, journal } = await pairRoom({ checks, geminiWaitMs: 40 }, 3, { liveGemini: true });
+  k.setAuto(false);
+  turn(k, "codex", "Дефект в пороге.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+  await waitFor(() => k.state.stage === "held", "замечания Codex удержаны");
+  geminiTurn(k, gemini, `Пробел: утечка id.\n\n${checkBlock("print(1)")}\n\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ`);
+  await waitFor(() => said(events, /^Gemini опоздал к проверке 1, но успел до отправки/).length === 1, "отзыв добавлен");
+  assert.equal(said(events, /^Блоки «проверка» в позднем ответе Gemini не выполнялись/).length, 1);
+  await k.releaseHeld();
+  assert.equal(calls.length, 0);
+  const text = claude.received[1].text;
+  assert.ok(text.includes(`— Gemini — методология и факты —\n${UNEXECUTED}\nПробел: утечка id.`), text);
+  journal.close();
+});
+
+test("проверки Gemini: новые блоки во втором ответе — у Claude пометка; повтор выполненного блока — не новый блок", async () => {
+  {
+    const { checks } = stubChecks();
+    const { k, claude, gemini, events, journal } = await pairRoom({ checks }, 3, { liveGemini: true });
+    turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+    geminiTurn(k, gemini, `${checkBlock("print(1)")}\n\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ`);
+    await waitFor(() => gemini.received.length === 2, "вывод проверок");
+    geminiTurn(k, gemini, `Пробел остаётся. Ещё бы проверить:\n\n${checkBlock("print(2)")}\n\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ`);
+    await waitFor(() => claude.received.length === 2, "замечания у Claude");
+    const text = claude.received[1].text;
+    assert.ok(text.includes(`— Gemini — методология и факты —\n${UNEXECUTED}\nПробел остаётся.`), text);
+    assert.ok(text.includes(GEMINI_CHECKS_HEADER), "вывод выполненного блока — свидетельством");
+    assert.equal(said(events, /^Gemini прислал новые блоки «проверка»/).length, 1);
+    journal.close();
+  }
+  {
+    const { checks } = stubChecks();
+    const { k, claude, gemini, events, journal } = await pairRoom({ checks }, 3, { liveGemini: true });
+    turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+    geminiTurn(k, gemini, `${checkBlock("# имя: просадка\nprint(-0.2)")}\n\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ`);
+    await waitFor(() => gemini.received.length === 2, "вывод проверок");
+    geminiTurn(k, gemini, `Просадка -0.2, скрипт:\n\n${checkBlock("# имя: просадка\nprint(-0.2)")}\n\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ`);
+    await waitFor(() => claude.received.length === 2, "замечания у Claude");
+    assert.ok(!claude.received[1].text.includes(UNEXECUTED), "свой выполненный скрипт Gemini повторил — он выполнялся");
+    assert.equal(said(events, /новые блоки «проверка»/).length, 0);
+    journal.close();
+  }
+});
+
+test("проверки Gemini: прогон снят пределом после первого скрипта — его вывод всё равно у Claude свидетельством", async () => {
+  // Итоговая рецензия 05.10, M10: свидетельство собиралось только в конце прогона.
+  const { calls, checks } = stubChecks((name, code, signal) =>
+    name === "первый"
+      ? Promise.resolve({ exitCode: 0, output: "первый вывод\n", timedOut: false, command: "python C:\\review\\gemini\\первый.py" })
+      : new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(new Error("проверка отменена")))),
+  );
+  const { k, claude, gemini, events, journal } = await pairRoom({ checks, geminiSafetyMs: 150 }, 3, { liveGemini: true });
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  geminiTurn(k, gemini, `Пробел.\n\n${checkBlock("# имя: первый\nprint(1)")}\n\n${checkBlock("# имя: второй\nprint(2)")}\n\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ`);
+  await waitFor(() => claude.received.length === 2, "замечания у Claude по пределу");
+  assert.equal(calls.length, 2);
+  assert.equal(said(events, /^Проверки Gemini не закончились/).length, 1);
+  const text = claude.received[1].text;
+  assert.ok(text.includes(`${GEMINI_CHECKS_HEADER}\n$ python C:\\review\\gemini\\первый.py\nпервый вывод`), text);
+  assert.ok(!text.includes(UNEXECUTED), "свидетельство есть — его шапка и говорит «не запускай их»");
+  journal.close();
+});
+
+test("опоздавший Gemini сорвался (вывод проверок не ушёл, процесс упал) — строка «Gemini так и не дал проверки N»", async () => {
+  // Итоговая рецензия 05.10, M10: пара сведена по сроку при замечаниях Codex,
+  // поздний отзыв ждали, а сбой в ленте не назывался.
+  const overdueWithChecks = async () => {
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    const { checks } = stubChecks(async () => {
+      await gate;
+      return { exitCode: 0, output: "ok\n", timedOut: false };
+    });
+    const r = await pairRoom({ checks, geminiWaitMs: 60 }, 3, { liveGemini: true });
+    turn(r.k, "codex", "Дефект.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+    geminiTurn(r.k, r.gemini, `${checkBlock("print(1)")}\n\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ`);
+    await waitFor(() => r.claude.received.length === 2, "замечания Codex у Claude по сроку");
+    return { ...r, release };
+  };
+  {
+    const { k, gemini, events, journal, release } = await overdueWithChecks();
+    gemini.send = async () => {
+      throw new Error("agy не запустился");
+    };
+    release();
+    await waitFor(() => said(events, /^Gemini так и не дал проверки 1: agy не запустился\.$/).length === 1, "строка о срыве отправки");
+    assert.equal(k.state.stage, "working");
+    journal.close();
+  }
+  {
+    const { k, gemini, events, journal, release } = await overdueWithChecks();
+    release();
+    await waitFor(() => gemini.received.length === 2, "вывод проверок ушёл опоздавшему");
+    k.handle(event("gemini", "error", { failed: true, text: "процесс agy завершился (код 1)" }));
+    await waitFor(() => said(events, /^Gemini так и не дал проверки 1: процесс agy завершился \(код 1\)\.$/).length === 1, "строка о падении");
+    journal.close();
+  }
+  {
+    // Без скриптов: опоздавший Gemini упал посреди первого хода.
+    const { k, claude, events, journal } = await pairRoom({ geminiWaitMs: 60 }, 3, { liveGemini: true });
+    turn(k, "codex", "Дефект.\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ");
+    await waitFor(() => claude.received.length === 2, "замечания Codex у Claude по сроку");
+    k.handle(event("gemini", "error", { failed: true, text: "процесс agy завершился (код 3)" }));
+    await waitFor(() => said(events, /^Gemini так и не дал проверки 1: процесс agy завершился \(код 3\)\.$/).length === 1, "строка о падении");
+    journal.close();
+  }
+});
+
+test("проверки Gemini: папка проверок больше предела — строка в ленте перед скриптами, один раз на прогон", async () => {
+  const { calls, checks } = stubChecks();
+  const order = [];
+  const sized = {
+    forbidden: checks.forbidden,
+    oversize: () => {
+      order.push("размер");
+      return "Папка проверок Gemini больше 500 МБ: C:\\review\\gemini. Старые скрипты и выводы рецензента можно удалить.";
+    },
+    run: async (...args) => {
+      order.push("скрипт");
+      return checks.run(...args);
+    },
+  };
+  const { k, gemini, events, journal } = await pairRoom({ checks: sized }, 3, { liveGemini: true });
+  turn(k, "codex", "Код верен.\nВЕРДИКТ: ПРИНЯТО");
+  geminiTurn(k, gemini, `${checkBlock("print(1)")}\n\n${checkBlock("print(2)")}\n\nВЕРДИКТ: ЕСТЬ ЗАМЕЧАНИЯ`);
+  await waitFor(() => gemini.received.length === 2, "вывод проверок");
+  assert.deepEqual(order, ["размер", "скрипт", "скрипт"]);
+  assert.equal(calls.length, 2);
+  assert.equal(said(events, /^Папка проверок Gemini больше 500 МБ: /).length, 1);
+  journal.close();
+});
+
+test("запрещённые пути сменились при открытой комнате — стоп-сигнал смотрит новый список со следующей команды", async () => {
+  // Итоговая рецензия 05.10, M9: список читался один раз при открытии комнаты.
+  const { k, events, journal } = room(3, { forbidden: [".env"] });
+  await k.fromHuman("что лежит в проекте?", "codex");
+  k.handle(codexCommand("Get-Content data\\prices.parquet", "cmd-1"));
+  assert.equal(said(events, /запрещённому пути/).length, 0);
+  k.setForbidden(["./data/"]);
+  k.handle(codexCommand("Get-Content data\\prices.parquet", "cmd-2"));
+  k.handle(codexCommand("cat .env", "cmd-3"));
+  assert.deepEqual(
+    said(events, /запрещённому пути/).map((e) => e.text),
+    ["Codex обратился к запрещённому пути «./data/» вне проверки — ход не прерван."],
+  );
+  journal.close();
 });

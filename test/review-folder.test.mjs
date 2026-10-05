@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { ensureReviewFolder, folderSize, reviewFolderFor } from "../out/reviewFolder.js";
+import { FOLDER_SIZE_LIMIT, ensureReviewFolder, folderSize, oversizeNote, reviewFolderFor } from "../out/reviewFolder.js";
 
 const LOCAL = "C:\\Users\\21435\\AppData\\Local";
 
@@ -52,4 +52,27 @@ test("размер папки — сумма файлов во вложенны�
   assert.equal(folderSize(folder), 2600);
   assert.equal(folderSize(join(folder, "нет-такой")), 0);
   assert.equal(existsSync(join(folder, "нет-такой")), false, "размер папку не создаёт");
+});
+
+test("размер папки с пределом: обход останавливается, как только сумма его превысила", () => {
+  // Итоговая рецензия 05.10, M6: обход идёт синхронно в процессе расширения
+  // при каждом запуске Codex, а большой папке точный размер не нужен.
+  const folder = mkdtempSync(join(tmpdir(), "review-size-"));
+  for (const name of ["a.py", "b.py", "c.py"]) writeFileSync(join(folder, name), "x".repeat(600));
+  assert.equal(folderSize(folder), 1800);
+  const stopped = folderSize(folder, 1000);
+  assert.ok(stopped > 1000 && stopped < 1800, `обход остановлен: ${stopped}`);
+  assert.equal(folderSize(folder, 5000), 1800, "предел не превышен — сумма вся");
+});
+
+test("строка о размере папки проверок: больше предела — с путём и рецензентом, иначе ничего; предел по умолчанию — 500 МБ", () => {
+  const folder = mkdtempSync(join(tmpdir(), "review-size-"));
+  writeFileSync(join(folder, "old.csv"), "x".repeat(2000));
+  assert.equal(oversizeNote(folder, "Gemini", 5000), undefined);
+  const note = oversizeNote(folder, "Gemini", 1000);
+  assert.match(note, /^Папка проверок Gemini больше \d+ МБ: /);
+  assert.ok(note.includes(folder));
+  assert.match(note, /Старые скрипты и выводы рецензента можно удалить\.$/);
+  assert.equal(FOLDER_SIZE_LIMIT, 500 * 1024 * 1024);
+  assert.equal(oversizeNote(folder, "Gemini"), undefined);
 });

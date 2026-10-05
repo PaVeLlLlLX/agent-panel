@@ -240,14 +240,29 @@ export class Journal {
       );
   }
 
-  /** История комнаты для восстановления панели после перезапуска. */
+  /**
+   * История комнаты для восстановления панели после перезапуска. Материал
+   * рецензентам (kind material, до ~240 тыс. знаков на проверку) лента не
+   * рисует — он не читается и не занимает окно истории (итоговая рецензия
+   * 05.10); его отдаёт materials.
+   */
   history(room: string, limit = 2000): PanelEvent[] {
+    return this.#events(room, "kind != 'material'", limit);
+  }
+
+  /** Материал рецензентам — что каждый получил на проверку, по порядку. */
+  materials(room: string, limit = 2000): PanelEvent[] {
+    return this.#events(room, "kind = 'material'", limit);
+  }
+
+  /** Последние limit событий комнаты по условию на вид, по порядку. */
+  #events(room: string, kindFilter: string, limit: number): PanelEvent[] {
     if (this.#closed) return [];
     const lines = this.#db
       .prepare(
         `SELECT id, agent, kind, visibility, at, text, tool, call_id, turn_id, snapshot,
                 tool_call_id, parent_call_id, unsolicited, failed, late_error, usage
-         FROM events WHERE room = ? ORDER BY seq DESC LIMIT ?`,
+         FROM events WHERE room = ? AND ${kindFilter} ORDER BY seq DESC LIMIT ?`,
       )
       .all(room, limit) as Record<string, unknown>[];
     return lines.reverse().map((s) => ({

@@ -83,13 +83,33 @@ test("журнал хранит действия человека и матер�
   const long = "м".repeat(70_000);
   journal.append("r", event({ agent: "human", kind: "action", text: "Автопересылка выключена" }));
   journal.append("r", event({ agent: "codex", kind: "material", visibility: "stream", text: long }));
-  const [action, material] = journal.history("r");
+  const [action] = journal.history("r");
   assert.equal(action.kind, "action");
   assert.equal(action.agent, "human");
   assert.equal(action.text, "Автопересылка выключена");
+  const [material] = journal.materials("r");
   assert.equal(material.kind, "material");
   assert.equal(material.visibility, "stream");
   assert.equal(material.text, long);
+  journal.close();
+});
+
+test("история для ленты не читает материал рецензентам: он не занимает окно истории", () => {
+  // Итоговая рецензия 05.10: материал — до ~240 тыс. знаков на проверку, лента
+  // его не рисует, а history() читал его в окно последних 2000 строк при
+  // каждом открытии панели.
+  const filePath = join(mkdtempSync(join(tmpdir(), "journal-")), "j.sqlite");
+  const journal = new Journal(filePath);
+  journal.ensureRoom("r", "C:/x");
+  journal.append("r", event({ agent: "human", kind: "message", text: "задача" }));
+  journal.append("r", event({ agent: "claude", kind: "message", text: "готово" }));
+  for (const agent of ["codex", "gemini", "codex"]) {
+    journal.append("r", event({ agent, kind: "material", visibility: "stream", text: "м".repeat(1000) }));
+  }
+  const shown = journal.history("r", 2);
+  assert.deepEqual(shown.map((e) => e.text), ["задача", "готово"], "окно — две последние строки ленты, а не материал");
+  assert.equal(journal.history("r").some((e) => e.kind === "material"), false);
+  assert.deepEqual(journal.materials("r").map((e) => e.agent), ["codex", "gemini", "codex"]);
   journal.close();
 });
 

@@ -24,8 +24,8 @@ import { Journal } from "./journal.js";
 import { describeChoice, normalizeChoice, sameChoice } from "./models.js";
 import { resolveCodexCommand } from "./codexBinary.js";
 import { pythonFor, runCheck } from "./checkRunner.js";
-import { codexRoomOptions, reviewFor } from "./codexOptions.js";
-import { ensureReviewFolder, reviewFolderFor } from "./reviewFolder.js";
+import { codexRoomOptions, forbiddenFragments, reviewFor } from "./codexOptions.js";
+import { ensureReviewFolder, oversizeNote, reviewFolderFor } from "./reviewFolder.js";
 import { resolveGeminiCommand } from "./geminiBinary.js";
 import { addReadOnlyRules, agySettingsPath, checkReadOnlyRules, ensureReviewerAgent, reviewerAgentPath, rulesRefusal } from "./geminiSetup.js";
 import { fetchGeminiUsage } from "./geminiUsage.js";
@@ -94,9 +94,13 @@ class Room {
   /** Исполнитель скриптов Gemini (ступень 3), если проверки включены; Gemini нет — никогда. */
   readonly #geminiChecks: () => GeminiChecks | undefined;
   readonly #listeners: vscode.Disposable[] = [];
+  readonly #cwd: string;
+  /** Запрещённые пути рецензентов (agentPanel.reviewerForbidden папки проекта), разобранные. */
+  #forbidden: readonly string[];
 
   constructor(context: vscode.ExtensionContext, cwd: string) {
     const settings = vscode.workspace.getConfiguration("agentPanel");
+    this.#cwd = cwd;
     this.#name = `room:${cwd}`;
     this.#memento = context.workspaceState;
     this.#modelsKey = `agentPanel.models:${cwd}`;
@@ -181,6 +185,7 @@ class Room {
     });
     const codex = new CodexAdapter(codexOptions, accept);
     this.#codex = codex;
+    this.#forbidden = codexOptions.forbidden ?? [];
 
     // Gemini — второй рецензент: agy из папки установщика или PATH. Нет — проверяет один Codex.
     this.#agySettings = agySettingsPath(homedir());
@@ -229,7 +234,8 @@ class Room {
     this.#geminiChecks = () => {
       if (!gemini || !reviewFor(checksAllowed(), this.#journal.binding(this.#name), geminiFolder)) return undefined;
       return {
-        forbidden: codexOptions.forbidden ?? [],
+        forbidden: this.#forbidden,
+        oversize: () => oversizeNote(geminiFolder, "Gemini"),
         run: (name, code, signal) =>
           runCheck({
             command: codexLaunch.command,
@@ -251,7 +257,7 @@ class Room {
       maxAutoRounds: settings.get<number>("maxAutoRounds", 5),
       evidenceBudget: settings.get<number>("reviewEvidenceChars", 240_000),
       taskTokenLimit: settings.get<number>("taskTokenLimit", 0),
-      ...(codexOptions.forbidden ? { forbidden: codexOptions.forbidden } : {}),
+      forbidden: this.#forbidden,
       ...(geminiChecks ? { checks: geminiChecks } : {}),
       ...(memoryCommand
         ? { memory: (text: string, catalog: string) => runMemorySearch(memoryCommand, catalog, text) }
@@ -285,6 +291,7 @@ class Room {
     this.#listeners.push(
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration("agentPanel.reviewerChecks")) this.#applyReviewerChecks();
+        if (e.affectsConfiguration("agentPanel.reviewerForbidden", vscode.Uri.file(cwd))) this.#applyForbidden();
       }),
     );
   }
@@ -294,7 +301,8 @@ class Room {
       case "ready":
         for (const event of this.#journal.history(this.#name)) {
           // Материал рецензенту — только журнал: лента его не рисует, а это
-          // сотни тысяч символов на проверку.
+          // сотни тысяч символов на проверку. history() его уже не читает;
+          // проверка здесь — страховка.
           if (event.kind === "material") continue;
           const light = forDisplay(event);
           const clean = light.text ? { ...light, text: stripAnsi(light.text) } : light;
@@ -477,6 +485,27 @@ class Room {
     this.#codex.setReview(reviewFor(checksAllowed(), this.#journal.binding(this.#name), this.#reviewFolder));
     this.#coordinator.setChecks(this.#geminiChecks());
     this.#postReviewerChecks();
+  }
+
+  /**
+   * Запрещённые пути сменились при открытой комнате (прежде — только после
+   * переоткрытия, итоговая рецензия 05.10): стоп-сигнал и скрипты Gemini —
+   * сразу, роль Codex — со следующего хода (процесс перезапускается с той же
+   * веткой).
+   */
+  #applyForbidden(): void {
+    const forbidden = forbiddenFragments(
+      vscode.workspace.getConfiguration("agentPanel", vscode.Uri.file(this.#cwd)).get("reviewerForbidden"),
+    );
+    if (JSON.stringify(forbidden) === JSON.stringify(this.#forbidden)) return;
+    this.#forbidden = forbidden;
+    this.#codex.setForbidden(forbidden);
+    this.#coordinator.setForbidden(forbidden);
+    this.#coordinator.setChecks(this.#geminiChecks());
+    this.#coordinator.notice(
+      `Запрещённые пути рецензентов: ${forbidden.length > 0 ? forbidden.join(", ") : "нет"}. ` +
+        "Стоп-сигнал и скрипты Gemini — сразу, роль Codex — со следующего хода.",
+    );
   }
 
   /** Проверки рецензентов для webview: доступен ли переключатель и включён ли он в комнате. */

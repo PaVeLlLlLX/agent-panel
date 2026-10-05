@@ -169,30 +169,43 @@ test("python проекта — из .venv, если он есть, иначе �
 });
 
 test(
-  "после скрипта снимаются процессы, в командной строке которых — папка проверок (фоновые переживают app-server, проба 05.10)",
+  "после скрипта снимаются процессы интерпретатора, начатые не раньше скрипта, в командной строке которых — папка проверок (проба 05.10)",
   { skip: process.platform !== "win32" && "только Windows" },
   async () => {
+    // Фоновые процессы скрипта переживают app-server (проба 05.10). Но
+    // редактор, в котором владелец открыл скрипт из папки до запуска, и
+    // программа не-Python с тем же путём — не процессы скрипта (итоговая
+    // рецензия 05.10). Интерпретатор здесь — node: python в тестах не нужен.
     const folder = freshFolder();
     mkdirSync(folder, { recursive: true });
-    const stray = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", join(folder, "bg_loop.py")], {
+    const loop = ["-e", "setInterval(() => {}, 1000)"];
+    const editor = spawn(process.execPath, [...loop, join(folder, "открыт-в-редакторе.py")], { stdio: "ignore", windowsHide: true });
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const since = Date.now();
+    const stray = spawn(process.execPath, [...loop, join(folder, "bg_loop.py")], {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
     });
     const exited = new Promise((resolve) => stray.once("exit", resolve));
-    const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", join(folder + "-другая", "x.py")], {
+    const other = spawn(process.execPath, [...loop, join(folder + "-другая", "x.py")], {
       stdio: "ignore",
       windowsHide: true,
     });
     try {
-      const killed = await sweepFolderProcesses(folder);
+      const notPython = await sweepFolderProcesses(folder, { since, interpreter: "C:\\нет\\python.exe" });
+      assert.deepEqual(notPython.filter((pid) => [stray.pid, editor.pid, other.pid].includes(pid)), [], "node — не Python скрипта: никто не снят");
+      const killed = await sweepFolderProcesses(folder, { since, interpreter: process.execPath });
       assert.ok(killed.includes(stray.pid), `снят: ${killed.join(", ")}`);
+      assert.ok(!killed.includes(editor.pid), "процесс, начатый до скрипта, не тронут");
       assert.ok(!killed.includes(other.pid), "процесс с похожей папкой не тронут");
       assert.ok(!killed.includes(process.pid));
       await exited;
       assert.equal(other.exitCode, null, "другой процесс жив");
+      assert.equal(editor.exitCode, null, "редактор жив");
     } finally {
       other.kill();
+      editor.kill();
       try {
         stray.kill();
       } catch {

@@ -17,9 +17,9 @@
  *   * (г) превышение срока — ошибка ровно по сроку, без кода и вывода:
  *     панель пишет «превышено время» и вывода не ждёт;
  *   * фоновые процессы скрипта переживают и команду, и остановку app-server:
- *     после скрипта панель снимает процессы, в командной строке которых есть
- *     путь папки проверок. Процесс без этого пути так не найти — остаточный
- *     риск.
+ *     после скрипта панель снимает процессы Python, начатые не раньше
+ *     скрипта, в командной строке которых есть путь папки проверок. Процесс
+ *     без этого пути так не найти — остаточный риск.
  * Перед скриптом — та же самопроверка, что у Codex (codex.ts): запись в папку
  * проходит, в проект — отклонена. Не прошла — исключение: скрипт не
  * выполняется, Gemini получает «проверки недоступны».
@@ -307,6 +307,8 @@ async function selfCheck(server: Server, run: CheckRun, project: string): Promis
  */
 export async function runCheck(run: CheckRun): Promise<CheckResult> {
   if (run.signal?.aborted) throw cancelled();
+  // Секунда запаса: время создания процесса и Date.now() — разные часы.
+  const since = Date.now() - 1000;
   ensureReviewFolder(run.folder);
   const file = scriptFile(run.folder, run.name);
   writeFileSync(file, run.code.endsWith("\n") ? run.code : `${run.code}\n`, "utf8");
@@ -338,32 +340,58 @@ export async function runCheck(run: CheckRun): Promise<CheckResult> {
     return { exitCode, output: clipOutput(joinOutput(reply["stdout"], reply["stderr"])), timedOut: false, ...shown };
   } finally {
     await server.close();
-    if (run.sweep ?? true) await sweepFolderProcesses(run.folder).catch(() => []);
+    if (run.sweep ?? true) await sweepFolderProcesses(run.folder, { since, interpreter: run.python }).catch(() => []);
   }
 }
 
+/** Какие процессы с путём папки снимаются после скрипта. */
+export interface SweepFilter {
+  /** Начатые не раньше, мс epoch: редактор, открытый на скрипте до него, не трогается. */
+  readonly since: number;
+  /** Python скрипта (pythonFor): кроме python*.exe и py.exe — процесс с этим исполняемым файлом. */
+  readonly interpreter?: string;
+}
+
 /**
- * Снять процессы, в командной строке которых есть путь папки проверок (проба
- * 05.10: фоновый python скрипта жил после ответа command/exec и после
- * остановки app-server; найден по командной строке). Путь сравнивается с
- * разделителем на конце и без учёта регистра и вида косой черты: папка
- * gemini-другая не задевается. Возвращает снятые номера процессов. Только
- * Windows; сбой поиска — пустой список.
+ * Снять процессы скрипта (проба 05.10: фоновый python скрипта жил после
+ * ответа command/exec и после остановки app-server; найден по командной
+ * строке). Снимаются только процессы Python (python*.exe, py.exe или сам
+ * interpreter), начатые не раньше since, в командной строке которых есть путь
+ * папки проверок: редактор, в котором владелец открыл скрипт из этой папки,
+ * не задевается (итоговая рецензия 05.10). Путь сравнивается с разделителем
+ * на конце и без учёта регистра и вида косой черты: папка gemini-другая не
+ * задевается. Возвращает снятые номера процессов. Только Windows; сбой
+ * поиска — пустой список.
  */
-export async function sweepFolderProcesses(folder: string): Promise<number[]> {
+export async function sweepFolderProcesses(folder: string, filter: SweepFilter): Promise<number[]> {
   if (process.platform !== "win32") return [];
   const powershell = join(process.env["SystemRoot"] ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  // Путь — через переменную окружения: в тексте команды он не нуждается в кавычках.
+  // Путь, время и интерпретатор — через переменные окружения: в тексте
+  // команды им не нужны кавычки.
   const script =
     "$f = $env:AGENT_PANEL_SWEEP.ToLowerInvariant(); " +
+    "$since = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$env:AGENT_PANEL_SWEEP_SINCE).UtcDateTime; " +
+    "$exe = ([string]$env:AGENT_PANEL_SWEEP_EXE).ToLowerInvariant(); " +
     "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and " +
-    "$_.CommandLine.Replace('/', '\\').ToLowerInvariant().Contains($f) } | ForEach-Object { $_.ProcessId }";
+    "$_.CommandLine.Replace('/', '\\').ToLowerInvariant().Contains($f) -and " +
+    "$_.CreationDate -and $_.CreationDate.ToUniversalTime() -ge $since -and " +
+    "($_.Name -match '^(pythonw?[0-9.]*|pyw?)\\.exe$' -or " +
+    "($exe -and $_.ExecutablePath -and $_.ExecutablePath.ToLowerInvariant() -eq $exe)) } | ForEach-Object { $_.ProcessId }";
   const marker = `${folder.replace(/\//g, "\\").replace(/\\+$/, "")}\\`;
   const found = await new Promise<string>((resolve) => {
     execFile(
       powershell,
       ["-NoProfile", "-NonInteractive", "-Command", script],
-      { env: { ...process.env, AGENT_PANEL_SWEEP: marker }, windowsHide: true, timeout: SWEEP_MS },
+      {
+        env: {
+          ...process.env,
+          AGENT_PANEL_SWEEP: marker,
+          AGENT_PANEL_SWEEP_SINCE: String(Math.floor(filter.since)),
+          AGENT_PANEL_SWEEP_EXE: filter.interpreter ?? "",
+        },
+        windowsHide: true,
+        timeout: SWEEP_MS,
+      },
       (err, stdout) => resolve(err ? "" : String(stdout)),
     );
   });

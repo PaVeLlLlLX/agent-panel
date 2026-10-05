@@ -6,13 +6,17 @@
  * линтеры проекта. Песочница Codex разрешает в неё запись профилем прав, а
  * корень записи учитывается, только если папка существует, — поэтому панель
  * создаёт её до запуска процесса. Хранится между проверками; очищает её
- * владелец.
+ * владелец. Больше FOLDER_SIZE_LIMIT — строка в ленте (oversizeNote): у Codex
+ * при запуске процесса, у Gemini — перед его скриптами.
  */
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync } from "node:fs";
 import { join, win32 } from "node:path";
 
 export type Reviewer = "codex" | "gemini";
+
+/** Размер папки проверок, после которого — строка в ленте: 500 МБ. */
+export const FOLDER_SIZE_LIMIT = 500 * 1024 * 1024;
 
 /** Символы, запрещённые в именах файлов Windows, и управляющие. */
 const UNSAFE = /[<>:"/\\|?*\u0000-\u001f]/g;
@@ -37,12 +41,14 @@ export function ensureReviewFolder(folder: string): void {
 
 /**
  * Размер папки в байтах: сумма файлов во вложенных папках. Ссылки не
- * раскрываются; нечитаемое пропускается; нет папки — ноль.
+ * раскрываются; нечитаемое пропускается; нет папки — ноль. above — обход
+ * останавливается, как только сумма его превысила: обход идёт в процессе
+ * расширения синхронно, а большой папке точный размер не нужен.
  */
-export function folderSize(folder: string): number {
+export function folderSize(folder: string, above = Infinity): number {
   let total = 0;
   const pending = [folder];
-  while (pending.length > 0) {
+  while (pending.length > 0 && total <= above) {
     const dir = pending.pop() as string;
     let names: string[];
     try {
@@ -55,10 +61,20 @@ export function folderSize(folder: string): number {
         const info = lstatSync(join(dir, name));
         if (info.isDirectory()) pending.push(join(dir, name));
         else if (info.isFile()) total += info.size;
+        if (total > above) return total;
       } catch {
         // Файл удалён между чтением папки и stat — не в счёт.
       }
     }
   }
   return total;
+}
+
+/**
+ * Строка ленты, когда папка проверок рецензента больше предела; иначе
+ * undefined. Панель папку не чистит — старое удаляет владелец.
+ */
+export function oversizeNote(folder: string, who: string, limit: number = FOLDER_SIZE_LIMIT): string | undefined {
+  if (folderSize(folder, limit) <= limit) return undefined;
+  return `Папка проверок ${who} больше ${Math.round(limit / (1024 * 1024))} МБ: ${folder}. Старые скрипты и выводы рецензента можно удалить.`;
 }

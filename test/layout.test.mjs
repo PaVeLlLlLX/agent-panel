@@ -531,7 +531,7 @@ test("действия хода: бусина на вызов, форма по �
 
 test("подпись вывода инструмента: у Claude — «передаётся рецензенту», у рецензента — «вывод проверки рецензента»", { skip: NO_BROWSER }, () => {
   // Выводы команд рецензента рецензенту не пересылаются — они идут Claude
-  // блоком «Проверки рецензента» (задача 10 плана 05.10).
+  // блоком «Команды и скрипты рецензента» (задача 10 плана 05.10).
   const r = open(
     js`
     const ev = (agent, kind, extra) => ({ id: agent + kind + Math.random(), agent, kind, visibility: "turn", at: Date.now(), ...extra });
@@ -548,6 +548,35 @@ test("подпись вывода инструмента: у Claude — «пер
   );
   assert.deepEqual(r.labels, ["сырой вывод — передаётся рецензенту как есть", "вывод проверки рецензента", "вывод проверки рецензента"]);
   assert.deepEqual(r.outputs, ["5 passed", "max_dd -0.2", "2 lines"]);
+});
+
+test("скрипт Gemini, выполненный панелью (инструмент «проверка»): код в вызове, вывод с кодом выхода — «вывод проверки рецензента»", { skip: NO_BROWSER }, () => {
+  // Итоговая рецензия 05.10, M11: события «проверка» координатор пишет от
+  // имени Gemini (coordinator.ts, #checkEvent) — лента рисует их, как вызовы
+  // его инструментов.
+  const r = open(
+    js`
+    const newline = String.fromCharCode(10);
+    const ev = (kind, extra) => ({ id: kind + Math.random(), agent: "gemini", kind, visibility: "turn", at: Date.now(), tool: "проверка", callId: "check-1-1-ab", ...extra });
+    const code = ["# имя: просадка на отрезке", "print('max_dd', -0.2)"].join(newline);
+    postToPage({ type: "event", event: ev("tool_call", { text: code }) });
+    postToPage({ type: "event", event: ev("tool_result", { text: ["[код выхода 1]", "Traceback: KeyError 'date'"].join(newline) }) });
+    const call = document.querySelector(".действия.gemini .вызов");
+    result.calls = document.querySelectorAll(".действия.gemini .вызов").length;
+    result.name = call.querySelector("summary .имя")?.textContent;
+    result.code = call.querySelector("pre.аргументы")?.textContent;
+    result.label = call.querySelector(".вывод-подпись")?.textContent;
+    result.output = call.querySelector("pre.вывод")?.textContent;
+    result.bead = document.querySelector(".действия.gemini .чётки .бусина")?.className;
+  `,
+    { withUi: true },
+  );
+  assert.equal(r.calls, 1, "вызов и вывод — одна строка по callId");
+  assert.equal(r.name, "проверка");
+  assert.equal(r.code, "# имя: просадка на отрезке\nprint('max_dd', -0.2)");
+  assert.equal(r.label, "вывод проверки рецензента");
+  assert.equal(r.output, "[код выхода 1]\nTraceback: KeyError 'date'");
+  assert.match(r.bead, /done/);
 });
 
 test("эстафета и дорожка цикла: кто работает, счёт проверок, след по клику", { skip: NO_BROWSER }, () => {

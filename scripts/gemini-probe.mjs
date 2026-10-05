@@ -308,9 +308,11 @@ function charsWord(n) {
 /**
  * Проверка так, как её собирает координатор (#afterWork и assemble): задача
  * человека, материал Claude — реплики, вызовы и сырые выводы его ходов после
- * сообщения задачи до реплики материала, затем ABOUT_TRUNCATION, GEMINI_FOCUS и
- * VERDICT_REQUEST. Бюджет выводов (EVIDENCE_BUDGET) не применяется: проба
- * останавливается, если материал в него не помещается.
+ * сообщения задачи до реплики материала, затем ABOUT_TRUNCATION, GEMINI_FOCUS,
+ * строка о выключенных проверках рецензентов (CHECKS_OFF_FOR_GEMINI: проба
+ * блоков «проверка» не выполняет, как комната по умолчанию) и VERDICT_REQUEST.
+ * Бюджет выводов (EVIDENCE_BUDGET) не применяется: проба останавливается,
+ * если материал в него не помещается.
  */
 function reviewFromJournal(db, cwd, taskSeq, materialSeq) {
   const room = db.prepare("select room, cwd from rooms where lower(cwd) = lower(?)").get(cwd.replace(/\//g, "\\"));
@@ -340,7 +342,7 @@ function reviewFromJournal(db, cwd, taskSeq, materialSeq) {
   const assembled = parts.join("\n\n").trim();
   if (assembled.length > 240_000) throw new Error("материал длиннее EVIDENCE_BUDGET — проба его не режет");
   const body = `Задача человека:\n${task.text}\n\nМатериал разработчика:\n${assembled}\n\n${coordinatorConstant("ABOUT_TRUNCATION")}`;
-  const text = `${body}\n\n${coordinatorConstant("GEMINI_FOCUS")}\n\n${VERDICT_REQUEST}`;
+  const text = [body, coordinatorConstant("GEMINI_FOCUS"), coordinatorConstant("CHECKS_OFF_FOR_GEMINI"), VERDICT_REQUEST].join("\n\n");
   // Шапка — как у координатора; версии файлов нет: снимок 03.10 не воспроизвести.
   const content = formatForGemini({ text, from: "claude", heading: "[материал проверки от панели]" }, room.cwd);
   return { room: room.room, cwd: room.cwd, taskSeq, materialSeq, materialEvents: material.length, content };
