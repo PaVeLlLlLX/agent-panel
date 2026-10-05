@@ -3418,3 +3418,80 @@ test("стоп-сигнал: без запрещённого списка ком
   assert.equal(k.state.stage, "reviewing");
   journal.close();
 });
+
+// Фрагмент из списка — часть пути, а не любая подстрока: «.env» в
+// process.env и os.environ, «data/» в metadata/ — не путь к секретам или
+// данным, а обычное чтение кода (рецензия задачи 8). Ложное срабатывание
+// стоило бы проверки и звало бы человека.
+test("стоп-сигнал: process.env, os.environ, metadata/, sample_data\\ — не запрещённые пути, проверка идёт", async () => {
+  const { k, codex, events, journal } = await pairRoom({ forbidden: ["data/", ".env"] });
+  for (const command of [
+    'rg -n "process.env" src',
+    "rg os.environ",
+    "python -c \"import os; print(os.environ.get('X'))\"",
+    "ls metadata/",
+    "Get-ChildItem sample_data\\",
+    "cat .envrc",
+  ]) {
+    k.handle(codexCommand(command));
+    assert.equal(codex.interrupted, 0, command);
+  }
+  assert.equal(k.state.stage, "reviewing");
+  assert.equal(said(events, /запрещённому пути/).length, 0);
+  // .env.local — тот же секрет с суффиксом: ловится.
+  k.handle(codexCommand("cat .env.local"));
+  assert.equal(codex.interrupted, 1);
+  assert.equal(k.state.stage, "stopped");
+  assert.equal(said(events, /^Codex обратился к запрещённому пути «\.env» — проверка остановлена, решите, как продолжить\.$/).length, 1);
+  journal.close();
+});
+
+test("стоп-сигнал: путь ловится в начале команды, после пробела, кавычки, косой черты, «=»; фрагмент с косой черты — внутри пути", async () => {
+  // Прямой вопрос: каждое совпадение даёт строку-предупреждение, ход не прерывается.
+  const { k, codex, events, journal } = room(3, { forbidden: ["data/", ".env", "\\secrets"] });
+  await k.fromHuman("что лежит в проекте?", "codex");
+  const warned = () => said(events, /вне проверки — ход не прерван/).length;
+  for (const command of [
+    ".env",
+    "cat .env.local",
+    "type C:\\p\\.env",
+    "python -c \"open('data/x')\"",
+    "dir DATA\\\\x",
+    "tool --config=.env",
+    "Get-Content `data\\x.csv`",
+    "type C:\\Users\\me\\Trading\\data\\prices.parquet",
+    "ls C:/p/secrets/key",
+  ]) {
+    const before = warned();
+    k.handle(codexCommand(command));
+    assert.equal(warned(), before + 1, command);
+  }
+  assert.equal(codex.interrupted, 0);
+  journal.close();
+});
+
+test("стоп-сигнал: сбой после прерывания (onState бросил) не становится необработанным отказом", async () => {
+  // Хвост после interrupt() — очередь и обновление панели. Брось он, отказ
+  // без обработчика уронил бы процесс расширения (Node 24: --unhandled-rejections=throw).
+  const rejections = [];
+  const onRejection = (err) => rejections.push(err);
+  process.on("unhandledRejection", onRejection);
+  let broken = false;
+  try {
+    const { k, codex, journal } = await pairRoom({
+      forbidden: ["data/"],
+      onState: () => {
+        if (broken) throw new Error("панель закрыта");
+      },
+    });
+    k.handle(codexCommand("cat data/x.csv"));
+    broken = true;
+    await sleep(50);
+    assert.equal(codex.interrupted, 1);
+    assert.deepEqual(rejections, []);
+    journal.close();
+  } finally {
+    broken = false;
+    process.off("unhandledRejection", onRejection);
+  }
+});

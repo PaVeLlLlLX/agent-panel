@@ -496,14 +496,31 @@ function commandOf(raw: unknown): string | undefined {
 }
 
 /**
+ * Фрагмент — часть пути, а не любая подстрока (рецензия задачи 8). Слева —
+ * начало строки или знак вне имени (пробел, кавычка, «/», «=», «(»…), но не
+ * буква, цифра, «_», «.» или «-». Справа — конец строки или не буква, не
+ * цифра и не «_». Так .env ловит «cat .env», «.env.local», «C:/p/.env», но
+ * не process.env и os.environ; data/ — «open('data/x')», но не metadata/ и
+ * sample_data/. Косая черта на краю фрагмента сама граница: /secrets
+ * ловится и в «C:/p/secrets».
+ */
+function fragmentPattern(fragment: string): RegExp {
+  const escaped = fragment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const before = fragment.startsWith("/") ? "" : "(?<![\\p{L}\\p{N}_.\\-])";
+  const after = fragment.endsWith("/") ? "" : "(?![\\p{L}\\p{N}_])";
+  return new RegExp(before + escaped + after, "u");
+}
+
+/**
  * Первый запрещённый фрагмент, найденный в команде: без учёта регистра,
- * «\» и «/» — одно и то же (у Trading запрещены и data/, и data\). Пустой
- * фрагмент не считается: он совпал бы с любой командой.
+ * «\» и «/» — одно и то же (у Trading запрещены и data/, и data\), по
+ * границам имён (fragmentPattern). Пустой фрагмент не считается: он совпал
+ * бы с любой командой.
  */
 function forbiddenFragment(command: string, forbidden: readonly string[]): string | undefined {
   const plain = (s: string): string => s.replace(/\\/g, "/").toLowerCase();
   const text = plain(command);
-  return forbidden.find((f) => f.trim() !== "" && text.includes(plain(f.trim())));
+  return forbidden.find((f) => f.trim() !== "" && fragmentPattern(plain(f.trim())).test(text));
 }
 
 /** Местное время ЧЧ:ММ — для строк ленты о сроках Gemini. */
@@ -1653,7 +1670,10 @@ export class Coordinator {
         // пересылки остановленного цикла очередь отбросит сама.
         await this.#flushQueue();
         this.#refresh();
-      });
+      })
+      // Сбой очереди или панели (журнал, onState) — не необработанный отказ:
+      // тот уронил бы процесс расширения (Node 24 --unhandled-rejections=throw).
+      .catch(() => undefined);
   }
 
   /**
