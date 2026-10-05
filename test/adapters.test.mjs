@@ -1079,6 +1079,26 @@ test("Claude: выбранные модель и уровень передают
   }
 });
 
+test("Claude: запускается с --append-system-prompt «Будь честен в своём ответе.» — и после перезапуска (просьба владельца 05.10)", async () => {
+  const s = collector();
+  const a = claude(s);
+  try {
+    await a.send({ text: "здравствуй", from: "human" });
+    await waitFor(() => ends(s.events) === 1, "ход 1");
+    a.setModel({ model: "opus", effort: "" });
+    await a.send({ text: "здравствуй", from: "human" });
+    await waitFor(() => ends(s.events) === 2, "ход 2 после перезапуска");
+    const all = launches(s.events);
+    assert.equal(all.length, 2);
+    for (const argv of all) {
+      assert.equal(flag(argv, "--append-system-prompt"), "Будь честен в своём ответе.", argv.join(" "));
+      assert.equal(argv.filter((it) => it === "--append-system-prompt").length, 1);
+    }
+  } finally {
+    await a.stop();
+  }
+});
+
 test("Claude: смена модели между ходами — перезапуск с той же сессией", async () => {
   const s = collector();
   const a = claude(s);
@@ -2001,6 +2021,11 @@ test("Codex: без продолжаемой ветки — thread/start с ро
   } finally {
     await a.stop();
   }
+});
+
+test("роль Codex: первая строка — «Будь честен в своём ответе.», и с папкой проверок тоже (просьба владельца 05.10)", () => {
+  assert.equal(reviewerRole([]).split("\n")[0], "Будь честен в своём ответе.");
+  assert.equal(reviewerRole([".env"], { folder: "C:\\review\\x-1\\codex", project: "C:\\work\\x" }).split("\n")[0], "Будь честен в своём ответе.");
 });
 
 test("роль Codex: читать репозиторий командами можно; проект, сеть, долгие процессы и запрещённые пути — нельзя", () => {

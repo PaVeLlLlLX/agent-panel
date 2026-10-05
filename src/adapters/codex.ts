@@ -78,6 +78,7 @@ import {
   PanelEvent,
   clamp,
   clampKeepingFull,
+  HONESTY_LINE,
   LimitInfo,
   TurnUsage,
   newEventId,
@@ -1256,6 +1257,8 @@ export function reviewerRole(
   checks?: { readonly folder: string; readonly project: string },
 ): string {
   return [
+    HONESTY_LINE,
+    "",
     "Ты рецензент в общей комнате с человеком и разработчиком Claude Code.",
     "",
     "Проверяй постановку, код и выводы.",

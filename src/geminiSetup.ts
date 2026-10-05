@@ -13,6 +13,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { HONESTY_LINE } from "./adapters/types.js";
 
 export const REVIEWER_AGENT = "agent-panel-reviewer";
 
@@ -109,6 +110,8 @@ export function reviewerAgentMarkdown(name: string, excludeDefault: boolean): st
     "  - read_url_content",
     "---",
     "# Рецензент методологии и фактов",
+    "",
+    HONESTY_LINE,
     "",
     "Ты второй рецензент в комнате Agent Panel: человек ставит задачу, разработчик Claude Code",
     "её выполняет, рецензент Codex проверяет код и сырой вывод. Ты проверяешь то, чего Codex",

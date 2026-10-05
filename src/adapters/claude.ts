@@ -43,6 +43,7 @@
  */
 import { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
+import { argumentForLaunch } from "../claudeBinary.js";
 import { sameChoice } from "../models.js";
 import { readJsonLines, LineReader } from "./jsonLines.js";
 import { spawnProcess, killTree } from "./process.js";
@@ -58,6 +59,7 @@ import {
   clamp,
   clampKeepingFull,
   addUsage,
+  HONESTY_LINE,
   LimitInfo,
   NO_USAGE,
   TurnUsage,
@@ -405,6 +407,10 @@ export class ClaudeAdapter implements Adapter {
       "--replay-user-messages",
       "--permission-prompt-tool",
       "stdio",
+      // Просьба владельца 05.10 — всем агентам. В кавычках через cmd.exe:
+      // пробелы иначе разбили бы строку на слова.
+      "--append-system-prompt",
+      argumentForLaunch(HONESTY_LINE, this.options.shell),
       ...(settingSources ? ["--setting-sources", settingSources] : []),
       ...(this.#choice.model ? ["--model", this.#choice.model] : []),
       ...(this.#choice.effort ? ["--effort", this.#choice.effort] : []),

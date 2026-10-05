@@ -324,6 +324,14 @@ export interface LimitInfo {
   readonly resetsAt?: number;
 }
 
+/**
+ * Строка для всех агентов комнаты — просьба владельца 05.10 после живого
+ * цикла, где отзыв субагента Codex («принято») сошёл за отзыв самого Codex.
+ * Codex — первая строка роли (codex.ts), Gemini — в начале роли agy
+ * (geminiSetup.ts), Claude — --append-system-prompt (claude.ts).
+ */
+export const HONESTY_LINE = "Будь честен в своём ответе.";
+
 /** Предел длины текста события. Сырые выводы инструментов бывают огромными. */
 export const MAX_TEXT = 64_000;
 

@@ -116,6 +116,13 @@ test("роль рецензента: правило вердикта — про�
 const roleBody = () => reviewerAgentMarkdown("x", false).split("\n---\n")[1];
 const flatRole = () => roleBody().replace(/\s+/g, " ");
 
+test("роль рецензента: в начале тела, сразу под заголовком, — «Будь честен в своём ответе.» (просьба владельца 05.10)", () => {
+  const lines = roleBody().split("\n").filter((line) => line.trim() !== "");
+  assert.equal(lines[0], "# Рецензент методологии и фактов");
+  assert.equal(lines[1], "Будь честен в своём ответе.");
+  assert.equal(REVIEWER_AGENT_MD.split("\n---\n")[1].split("\n").filter((line) => line.trim() !== "")[1], "Будь честен в своём ответе.");
+});
+
 test("роль рецензента: правила проекта — файл из шапки, иначе GEMINI.md, иначе AGENTS.md, перечитать при изменении; роль важнее (проверка Trading 02.10)", () => {
   // Единственная настоящая проверка Trading: с excludeDefaultComponents agy
   // правил проекта не подаёт, а Gemini сам не открыл ни AGENTS.md, ни
